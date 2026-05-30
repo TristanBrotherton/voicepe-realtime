@@ -18,8 +18,9 @@ class RawAudioSerializer(FrameSerializer):
     def __init__(self, input_sample_rate: int | None = None):
         # The Home Assistant Voice PE firmware (va_client) streams 16 kHz PCM16
         # mono from the XMOS mic. We tag incoming frames with the device's true
-        # rate; Pipecat's input transport resamples to the pipeline rate
-        # (24 kHz) that the OpenAI Realtime API expects.
+        # rate. NOTE: pipecat 0.0.97's input transport does NOT resample — the
+        # InputResampler processor in websocket_handler.py upsamples 16k->24k
+        # before the audio reaches OpenAI (which requires 24 kHz pcm16 input).
         if input_sample_rate is None:
             input_sample_rate = int(os.environ.get("DEVICE_INPUT_SAMPLE_RATE", "16000"))
         self._input_sample_rate = input_sample_rate
@@ -47,8 +48,8 @@ class RawAudioSerializer(FrameSerializer):
             logger.warning(f"⚠️ Received audio with odd byte count: {len(message)} bytes, skipping")
             return None
 
-        # Create InputAudioRawFrame at the device's mic rate; the transport
-        # resamples to the pipeline rate downstream.
+        # Create InputAudioRawFrame at the device's mic rate; the InputResampler
+        # processor (right after transport.input()) upsamples it to 24 kHz.
         frame = InputAudioRawFrame(
             audio=message,
             sample_rate=self._input_sample_rate,

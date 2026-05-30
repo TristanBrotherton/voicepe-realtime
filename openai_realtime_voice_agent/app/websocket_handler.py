@@ -13,6 +13,7 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, InputAudioRawFrame, OutputAudioRawFrame, StartFrame, EndFrame
+from pipecat.audio.utils import create_stream_resampler
 
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
@@ -22,7 +23,12 @@ from app.phase_emitter import PhaseEmitter
 logger = logging.getLogger(__name__)
 
 # The OpenAI Realtime API works in 24 kHz PCM16. The Voice PE firmware plays
-# 24 kHz back, and streams 16 kHz up (resampled here by the transport).
+# 24 kHz back and streams 16 kHz up. IMPORTANT: pipecat 0.0.97's websocket INPUT
+# transport does NOT resample (only the OUTPUT transport does), and OpenAI
+# Realtime's pcm16 input rate is hard-locked to 24000 (PCMAudioFormat.rate =
+# Literal[24000]) — you cannot tell it the audio is 16 kHz. So the device's
+# 16 kHz frames would be read 1.5x too fast / pitched up, garbling the whole
+# transcript. The InputResampler below upsamples 16k->24k in the pipeline.
 PIPELINE_SAMPLE_RATE = 24000
 
 
@@ -51,6 +57,45 @@ class SessionActivityTracker(FrameProcessor):
             logger.debug(f"🎵 SessionActivityTracker: Processing {type(frame).__name__} ({len(frame.audio)} bytes)")
         
         # Pass frame through to next processor
+        await self.push_frame(frame, direction)
+
+
+class InputResampler(FrameProcessor):
+    """Upsample incoming device mic audio to the OpenAI Realtime input rate.
+
+    The Voice PE streams 16 kHz PCM16. pipecat 0.0.97's websocket input transport
+    forwards those frames unchanged, and OpenAI Realtime reads pcm16 input at a
+    fixed 24 kHz — so without this the audio is interpreted ~1.5x too fast,
+    badly degrading transcription (e.g. first word dropped, words mangled). This
+    sits right after transport.input() and resamples each InputAudioRawFrame to
+    out_rate. Uses a streaming resampler so there are no per-chunk edge artifacts.
+    """
+
+    def __init__(self, out_rate: int = PIPELINE_SAMPLE_RATE, **kwargs):
+        super().__init__(**kwargs)
+        self._out_rate = out_rate
+        self._resampler = create_stream_resampler()
+        self._logged = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame) and frame.sample_rate != self._out_rate:
+            try:
+                resampled = await self._resampler.resample(
+                    frame.audio, frame.sample_rate, self._out_rate
+                )
+                if not self._logged:
+                    logger.info(
+                        f"🎙️ Resampling device input {frame.sample_rate}Hz -> {self._out_rate}Hz for OpenAI"
+                    )
+                    self._logged = True
+                frame = InputAudioRawFrame(
+                    audio=resampled,
+                    sample_rate=self._out_rate,
+                    num_channels=frame.num_channels,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ input resample {frame.sample_rate}->{self._out_rate} failed: {e!r}")
         await self.push_frame(frame, direction)
 
 
@@ -158,9 +203,13 @@ class WebSocketHandler:
             context_aggregator = self.session_manager.create_context_aggregator(client_id)
             context_initializer = self.session_manager.create_context_initializer(client_id, context_aggregator)
         
-        # Build pipeline components
+        # Build pipeline components. InputResampler runs FIRST (right after the
+        # transport) so every later stage — VAD, context aggregator, OpenAI
+        # service — sees correctly-rated 24 kHz audio instead of the device's
+        # raw 16 kHz (which OpenAI would otherwise read 1.5x too fast).
         pipeline_components = [
             transport.input(),
+            InputResampler(out_rate=PIPELINE_SAMPLE_RATE),
             input_activity_tracker,
         ]
         
