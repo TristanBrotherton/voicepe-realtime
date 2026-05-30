@@ -285,9 +285,11 @@ class Application:
                     # that silently broke every turn after the first (device hung
                     # in "thinking"). True is the correct trade: the server drives
                     # all user-turn responses; Pipecat still creates the post-tool
-                    # response via _process_completed_function_calls. If a turn-1
-                    # double resurfaces, the proper fix is to seed self._context
-                    # at session start so turn 1 also goes through the server.
+                    # response via _process_completed_function_calls. To stop the
+                    # turn-1 double (server + Pipecat-first-context both creating →
+                    # conversation_already_has_active_response), run() seeds
+                    # self._context once at startup with a kickoff LLMRunFrame, so
+                    # the user's first real turn hits the else-branch too.
                     create_response=self.semantic_vad_create_response,
                     interrupt_response=self.interrupt_response,
                 )
@@ -374,7 +376,28 @@ class Application:
         # Build pipeline - based on pipecat-examples, one pipeline handles all connections
         # The transport manages multiple connections internally
         self._build_pipeline_for_transport(self.websocket_transport, "server")
-        
+
+        # Seed the realtime service's context ONCE at startup with a throwaway
+        # kickoff run. WHY: pipecat 0.0.97's OpenAIRealtimeLLMService only
+        # auto-creates a response for the FIRST context it ever receives; every
+        # later context just updates state (no response unless a tool result is
+        # pending). With semantic_vad create_response=True the SERVER creates a
+        # response on every user turn — but pipecat's first-context path would
+        # ALSO fire on the user's very first turn → two response.create →
+        # `conversation_already_has_active_response`, which cut turn 1 short and
+        # left turn 2 hanging. Kicking off one empty run here consumes that
+        # first-context path now, before any device/user turn, so every real
+        # user turn routes cleanly through the server (else-branch, no double).
+        # The throwaway greeting it may generate goes to no device (nothing is
+        # connected at startup) and is discarded by the transport.
+        if self.turn_detection_type == "semantic_vad" and self.semantic_vad_create_response:
+            try:
+                from pipecat.frames.frames import LLMRunFrame
+                await self.current_task.queue_frames([LLMRunFrame()])
+                logger.info("🚀 Seeded realtime context with a startup kickoff run")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not seed startup context (turn-1 double may occur): {e}")
+
         # Setup WebSocket event handlers
         async def on_client_connected(client_id: str):
             """Handle new client connection."""
