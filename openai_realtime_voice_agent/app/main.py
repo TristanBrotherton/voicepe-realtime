@@ -414,7 +414,7 @@ class Application:
             logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
             
             # Create new service instance
-            self.openai_service = OpenAIRealtimeLLMService(
+            self.openai_service = SafeRealtimeLLMService(
                 api_key=self.openai_api_key,
                 model=self.model,
                 session_properties=session_properties,

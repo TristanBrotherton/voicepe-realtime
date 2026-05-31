@@ -1,5 +1,5 @@
 name: OpenAI Realtime Voice Agent
-version: "0.4.12"
+version: "0.4.13"
 slug: openai_realtime_voice_agent
 description: Voice control using OpenAI Realtime API with WebSocket support for ESP32 devices
 url: https://github.com/fjfricke/ha-openai-realtime
