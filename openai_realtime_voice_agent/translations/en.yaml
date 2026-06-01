@@ -7,13 +7,25 @@ configuration:
   openai_model:
     name: OpenAI model
     description: >-
-      Realtime model to use. Default gpt-realtime-2. If the API rejects it,
-      fall back to "gpt-realtime".
+      Realtime (speech-to-speech) model. gpt-realtime-2 = newest/recommended,
+      gpt-realtime-1.5 = fast non-reasoning, gpt-realtime-mini = cost-efficient,
+      gpt-realtime = older/legacy. Pick "custom" to type your own below.
+  openai_model_custom:
+    name: OpenAI model (custom)
+    description: >-
+      Only used when OpenAI model is set to "custom". Enter any valid Realtime
+      model id.
   openai_voice:
     name: Assistant voice
     description: >-
-      The voice the assistant speaks with (e.g. marin, alloy, echo). Voices
-      depend on the model.
+      The voice the assistant speaks with. marin and cedar are the newest /
+      recommended. Pick "custom" to type your own below. The voice is fixed once
+      a session starts speaking.
+  openai_voice_custom:
+    name: Assistant voice (custom)
+    description: >-
+      Only used when Assistant voice is set to "custom". Enter any valid voice
+      name.
   websocket_port:
     name: WebSocket port
     description: >-
@@ -108,8 +120,14 @@ configuration:
     description: >-
       Model that turns your speech into the side-channel TEXT transcript (NOT how
       the assistant understands you — it hears the audio natively). Only used when
-      a transcription language is set. gpt-4o-transcribe (default) /
-      gpt-4o-mini-transcribe / whisper-1 / gpt-realtime-whisper.
+      a transcription language is set. gpt-4o-transcribe (default, most accurate) /
+      gpt-realtime-whisper (streaming) / gpt-4o-mini-transcribe (cheapest) /
+      whisper-1 (legacy). Pick "custom" to type your own below.
+  transcription_model_custom:
+    name: Transcription model (custom)
+    description: >-
+      Only used when Transcription model is set to "custom". Enter any valid
+      transcription model id.
   phase_idle_debounce_ms:
     name: Idle debounce (ms)
     description: >-
@@ -167,10 +185,15 @@ configuration:
   web_search_model:
     name: Web search model
     description: >-
-      OpenAI model used for the web_search lookup. gpt-5.4-mini is the cheapest
-      model verified to support web search. Only change to trade price/quality,
-      or if your account uses a different model name. If the model is rejected
-      the assistant just says it couldn't search — it won't crash the session.
+      OpenAI model used for the web_search lookup. Ordered cheapest→best:
+      nano (weakest at search) < mini < full. gpt-5.4-mini (default) is a good
+      cost/quality midpoint. Pick "custom" to type your own below. If the model
+      is rejected the assistant just says it couldn't search — no crash.
+  web_search_model_custom:
+    name: Web search model (custom)
+    description: >-
+      Only used when Web search model is set to "custom". Enter any model that
+      supports the OpenAI Responses web_search tool.
   enable_recording:
     name: Record audio (debug)
     description: >-

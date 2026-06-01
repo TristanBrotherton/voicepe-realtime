@@ -4,7 +4,9 @@ set -e
 # Get configuration
 OPENAI_API_KEY=$(bashio::config 'openai_api_key')
 OPENAI_MODEL=$(bashio::config 'openai_model')
+OPENAI_MODEL_CUSTOM=$(bashio::config 'openai_model_custom')
 OPENAI_VOICE=$(bashio::config 'openai_voice')
+OPENAI_VOICE_CUSTOM=$(bashio::config 'openai_voice_custom')
 WEBSOCKET_PORT=$(bashio::config 'websocket_port')
 DEVICE_INPUT_SAMPLE_RATE=$(bashio::config 'device_input_sample_rate')
 HA_MCP_URL=$(bashio::config 'ha_mcp_url')
@@ -22,6 +24,7 @@ ENABLE_DISCONNECT_TOOL=$(bashio::config 'enable_disconnect_tool')
 INTERRUPT_RESPONSE=$(bashio::config 'interrupt_response')
 TRANSCRIPTION_LANGUAGE=$(bashio::config 'transcription_language')
 TRANSCRIPTION_MODEL=$(bashio::config 'transcription_model')
+TRANSCRIPTION_MODEL_CUSTOM=$(bashio::config 'transcription_model_custom')
 PHASE_IDLE_DEBOUNCE_MS=$(bashio::config 'phase_idle_debounce_ms')
 FOLLOW_UP_LISTEN_SECONDS=$(bashio::config 'follow_up_listen_seconds')
 FOLLOW_UP_OPEN_DELAY_MS=$(bashio::config 'follow_up_open_delay_ms')
@@ -37,6 +40,7 @@ MAX_CONTEXT_MESSAGES=$(bashio::config 'max_context_messages')
 # Get web search settings
 ENABLE_WEB_SEARCH=$(bashio::config 'enable_web_search')
 WEB_SEARCH_MODEL=$(bashio::config 'web_search_model')
+WEB_SEARCH_MODEL_CUSTOM=$(bashio::config 'web_search_model_custom')
 
 # Get audio recording setting
 ENABLE_RECORDING=$(bashio::config 'enable_recording')
@@ -50,7 +54,9 @@ fi
 # Export environment variables
 export OPENAI_API_KEY
 export OPENAI_MODEL
+export OPENAI_MODEL_CUSTOM
 export OPENAI_VOICE
+export OPENAI_VOICE_CUSTOM
 export WEBSOCKET_PORT
 export DEVICE_INPUT_SAMPLE_RATE
 export LONGLIVED_TOKEN
@@ -67,6 +73,7 @@ export ENABLE_DISCONNECT_TOOL
 export INTERRUPT_RESPONSE
 export TRANSCRIPTION_LANGUAGE
 export TRANSCRIPTION_MODEL
+export TRANSCRIPTION_MODEL_CUSTOM
 export PHASE_IDLE_DEBOUNCE_MS
 export FOLLOW_UP_LISTEN_SECONDS
 export FOLLOW_UP_OPEN_DELAY_MS
@@ -82,6 +89,7 @@ export MAX_CONTEXT_MESSAGES
 # Export web search settings
 export ENABLE_WEB_SEARCH
 export WEB_SEARCH_MODEL
+export WEB_SEARCH_MODEL_CUSTOM
 
 # Export audio recording setting
 export ENABLE_RECORDING

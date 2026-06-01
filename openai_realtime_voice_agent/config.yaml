@@ -1,5 +1,5 @@
 name: OpenAI Realtime Voice Agent
-version: "0.4.20"
+version: "0.4.21"
 slug: openai_realtime_voice_agent
 description: Voice control using OpenAI Realtime API with WebSocket support for ESP32 devices
 url: https://github.com/fjfricke/ha-openai-realtime
@@ -15,10 +15,18 @@ host_network: true
 homeassistant_api: true
 options:
   openai_api_key: ""
-  # OpenAI Realtime model. Defaults to gpt-realtime-2 (this fork's target). If
-  # the API rejects it, fall back to "gpt-realtime".
+  # OpenAI Realtime (speech-to-speech) model. Pick from the dropdown, or choose
+  # "custom" and fill openai_model_custom below. gpt-realtime-2 = newest /
+  # recommended; gpt-realtime-1.5 = fast non-reasoning; gpt-realtime-mini =
+  # cost-efficient; gpt-realtime = older/legacy.
   openai_model: "gpt-realtime-2"
+  # Used ONLY when openai_model is set to "custom". Any valid Realtime model id.
+  openai_model_custom: ""
+  # TTS voice. Pick from the dropdown, or "custom" + openai_voice_custom below.
+  # marin and cedar are the newest / recommended voices.
   openai_voice: "marin"
+  # Used ONLY when openai_voice is set to "custom".
+  openai_voice_custom: ""
   websocket_port: 8080
   # PCM sample rate (Hz) the device microphone streams in. The Home Assistant
   # Voice PE firmware (va_client) sends 16000; the backend resamples to the
@@ -91,6 +99,8 @@ options:
   # the Realtime API — faster/cheaper, try it if you like). Only used when
   # transcription_language is set.
   transcription_model: "gpt-4o-transcribe"
+  # Used ONLY when transcription_model is set to "custom".
+  transcription_model_custom: ""
   # Milliseconds the bot must stay silent after a reply before the device
   # returns to idle. Bridges the gaps between TTS sentences / tool-calls so the
   # LED ring and the "stop" wake word stay active for the whole answer.
@@ -143,12 +153,17 @@ options:
   # or if your account uses a different model name (the handler fails gracefully
   # with a spoken "couldn't search" message if the model is rejected).
   web_search_model: "gpt-5.4-mini"
+  # Used ONLY when web_search_model is set to "custom". Any model that supports
+  # the OpenAI Responses web_search tool.
+  web_search_model_custom: ""
   # Audio recording (optional, for debugging)
   enable_recording: false
 schema:
   openai_api_key: password
-  openai_model: str
-  openai_voice: str
+  openai_model: "list(gpt-realtime-2|gpt-realtime-1.5|gpt-realtime-mini|gpt-realtime|custom)"
+  openai_model_custom: str
+  openai_voice: "list(marin|cedar|alloy|ash|ballad|coral|echo|sage|shimmer|verse|custom)"
+  openai_voice_custom: str
   websocket_port: int(1024,65535)
   device_input_sample_rate: int(8000,48000)
   ha_mcp_url: str
@@ -163,7 +178,8 @@ schema:
   enable_disconnect_tool: bool
   interrupt_response: bool
   transcription_language: str?
-  transcription_model: str
+  transcription_model: "list(gpt-4o-transcribe|gpt-realtime-whisper|gpt-4o-mini-transcribe|whisper-1|custom)"
+  transcription_model_custom: str
   phase_idle_debounce_ms: int(0,10000)
   follow_up_listen_seconds: int(0,60)
   follow_up_open_delay_ms: int(0,5000)
@@ -172,7 +188,8 @@ schema:
   session_reuse_timeout_seconds: int(0,3600)  # bis 1 Stunde
   max_context_messages: int(0,100)
   enable_web_search: bool
-  web_search_model: str
+  web_search_model: "list(gpt-5-nano|gpt-5.4-nano|gpt-5-mini|gpt-5.4-mini|gpt-5|gpt-5.4|gpt-5.5|custom)"
+  web_search_model_custom: str
   enable_recording: bool
 # No `image:` key -> Home Assistant builds the add-on locally from the
 # Dockerfile in this directory (see build.yaml). This makes the fork work

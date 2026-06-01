@@ -29,6 +29,27 @@ logging.getLogger("aiortc").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("__main__").setLevel(logging.INFO)
 
+
+def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:
+    """Resolve a dropdown option that supports a 'custom' escape hatch.
+
+    The add-on UI renders these as a `list(...|custom)` dropdown plus a sibling
+    free-text *_custom field. When the dropdown is set to "custom", use the
+    custom field's value; otherwise use the dropdown value. Falls back to
+    `default` if the resolved value is empty (e.g. "custom" picked but the custom
+    field left blank).
+    """
+    choice = os.environ.get(env_var, default).strip()
+    if choice.lower() == "custom":
+        custom = os.environ.get(custom_env_var, "").strip()
+        if custom:
+            return custom
+        logger.warning(
+            f"⚠️ {env_var}=custom but {custom_env_var} is empty; falling back to {default!r}"
+        )
+        return default
+    return choice or default
+
 dotenv.load_dotenv()
 
 
@@ -132,15 +153,18 @@ class Application:
         # streaming "gpt-realtime-whisper" (purpose-built for the Realtime API,
         # faster/cheaper). If the API rejects a value, transcription silently
         # falls back; check the logs.
-        transcription_model = os.environ.get("TRANSCRIPTION_MODEL", "gpt-4o-transcribe").strip()
+        transcription_model = _resolve_choice(
+            "TRANSCRIPTION_MODEL", "TRANSCRIPTION_MODEL_CUSTOM", "gpt-4o-transcribe"
+        )
 
         # Get instructions with default
         instructions = os.environ.get("INSTRUCTIONS", "You are the Home Assistant Voice Agent and can control the Smart Home.")
 
-        # OpenAI Realtime model + voice. Defaults to gpt-realtime-2 (this fork's
-        # target); fall back to "gpt-realtime" if the API rejects it.
-        openai_model = os.environ.get("OPENAI_MODEL", "gpt-realtime-2")
-        openai_voice = os.environ.get("OPENAI_VOICE", "marin")
+        # OpenAI Realtime model + voice. These are dropdowns in the add-on UI with
+        # a "custom" sentinel + a sibling *_CUSTOM free-text field; _resolve_choice
+        # returns the custom value when the dropdown is "custom", else the dropdown.
+        openai_model = _resolve_choice("OPENAI_MODEL", "OPENAI_MODEL_CUSTOM", "gpt-realtime-2")
+        openai_voice = _resolve_choice("OPENAI_VOICE", "OPENAI_VOICE_CUSTOM", "marin")
 
         # Optional allow-list to trim the (large) ha-mcp tool set exposed to the
         # model. Comma-separated tool names; empty means expose all.
@@ -153,7 +177,9 @@ class Application:
         # and returns a short spoken answer. The model is configurable so a
         # different price/quality — or a renamed model — needs no code change.
         enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
-        web_search_model = os.environ.get("WEB_SEARCH_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
+        web_search_model = _resolve_choice(
+            "WEB_SEARCH_MODEL", "WEB_SEARCH_MODEL_CUSTOM", "gpt-5.4-mini"
+        )
 
         # Get recording setting (optional, defaults to false)
         enable_recording = os.environ.get("ENABLE_RECORDING", "false").lower() == "true"
