@@ -1,5 +1,5 @@
 name: OpenAI Realtime Voice Agent
-version: "0.4.19"
+version: "0.4.20"
 slug: openai_realtime_voice_agent
 description: Voice control using OpenAI Realtime API with WebSocket support for ESP32 devices
 url: https://github.com/fjfricke/ha-openai-realtime
@@ -132,6 +132,17 @@ options:
   # cheap while preserving recent context. Lower if you still hit rate limits;
   # 12 is a good default, 0 disables the cap.
   max_context_messages: 12
+  # Web search: let the assistant look things up online (weather, news, facts,
+  # opening hours, recent events). Off by default. When on, a web_search tool
+  # calls OpenAI's Responses web_search built-in tool server-side and returns a
+  # short spoken answer (~$0.016/search on the default model; uses your existing
+  # OPENAI_API_KEY — no extra account or vendor).
+  enable_web_search: false
+  # Model used for the web_search lookup. gpt-5.4-mini is the cheapest model
+  # verified to support the web_search tool. Change only to trade price/quality
+  # or if your account uses a different model name (the handler fails gracefully
+  # with a spoken "couldn't search" message if the model is rejected).
+  web_search_model: "gpt-5.4-mini"
   # Audio recording (optional, for debugging)
   enable_recording: false
 schema:
@@ -160,6 +171,8 @@ schema:
   instructions: str
   session_reuse_timeout_seconds: int(0,3600)  # bis 1 Stunde
   max_context_messages: int(0,100)
+  enable_web_search: bool
+  web_search_model: str
   enable_recording: bool
 # No `image:` key -> Home Assistant builds the add-on locally from the
 # Dockerfile in this directory (see build.yaml). This makes the fork work

@@ -12,6 +12,7 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.transports.websocket.server import WebsocketServerTransport
 from app.mcp_service import HomeAssistantMCPService
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
+from app.web_search_tool import get_web_search_tool_definition, create_web_search_tool_handler
 from app.audio_recording_service import AudioRecordingService
 from app.session_manager import SessionManager
 from app.websocket_handler import WebSocketHandler
@@ -145,6 +146,15 @@ class Application:
         # model. Comma-separated tool names; empty means expose all.
         mcp_tool_allowlist = [t.strip() for t in os.environ.get("MCP_TOOL_ALLOWLIST", "").split(",") if t.strip()]
         
+        # Web search: let the assistant look things up online (weather, news,
+        # facts). Off by default so the add-on Update doesn't silently change
+        # behaviour. When on, a `web_search` function tool calls OpenAI's
+        # Responses web_search built-in tool server-side (using OPENAI_API_KEY)
+        # and returns a short spoken answer. The model is configurable so a
+        # different price/quality — or a renamed model — needs no code change.
+        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
+        web_search_model = os.environ.get("WEB_SEARCH_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
+
         # Get recording setting (optional, defaults to false)
         enable_recording = os.environ.get("ENABLE_RECORDING", "false").lower() == "true"
         
@@ -249,7 +259,9 @@ class Application:
         self.voice = openai_voice
         self.mcp_tool_allowlist = mcp_tool_allowlist
         self.mcp_client = mcp_client
-        
+        self.enable_web_search = enable_web_search
+        self.web_search_model = web_search_model
+
         # Initialize audio recording service (optional)
         self.audio_recording_service = AudioRecordingService(
             enable_recording=enable_recording,
@@ -329,7 +341,12 @@ class Application:
             all_tools = []
             if self.enable_disconnect_tool:
                 all_tools.append(get_disconnect_tool_definition())
-            
+
+            # Web search tool (optional). Lets the model look things up online via
+            # a secondary OpenAI Responses web_search call in the handler.
+            if self.enable_web_search:
+                all_tools.append(get_web_search_tool_definition())
+
             # Get MCP tool definitions if available
             mcp_tools_schema = None
             if self.mcp_client:
@@ -452,6 +469,14 @@ class Application:
                 disconnect_tool_handler = create_disconnect_tool_handler(self.websocket_transport)
                 self.openai_service.register_function("disconnect_client", disconnect_tool_handler)
                 logger.info("✅ Registered disconnect tool handler")
+
+            # Register web search tool handler (only when the tool is exposed)
+            if self.enable_web_search:
+                self.openai_service.register_function(
+                    "web_search",
+                    create_web_search_tool_handler(self.openai_api_key, self.web_search_model),
+                )
+                logger.info(f"✅ Registered web_search tool handler (model={self.web_search_model})")
             
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:

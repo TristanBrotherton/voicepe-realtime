@@ -156,6 +156,21 @@ configuration:
       tokens-per-minute limit ("Rate limit reached"). Capping this keeps each turn
       cheap while preserving recent context. 12 is a good default; lower if you still
       hit rate limits, 0 disables the cap.
+  enable_web_search:
+    name: Enable web search
+    description: >-
+      Let the assistant look things up online (weather, news, facts, opening
+      hours, recent events). Off by default. When on, a web_search tool runs a
+      secondary OpenAI Responses web_search call in the add-on and returns a
+      short spoken answer — uses your existing OpenAI key, ~$0.016 per search on
+      the default model. Adds ~1-3s while it searches (device shows "thinking").
+  web_search_model:
+    name: Web search model
+    description: >-
+      OpenAI model used for the web_search lookup. gpt-5.4-mini is the cheapest
+      model verified to support web search. Only change to trade price/quality,
+      or if your account uses a different model name. If the model is rejected
+      the assistant just says it couldn't search — it won't crash the session.
   enable_recording:
     name: Record audio (debug)
     description: >-
