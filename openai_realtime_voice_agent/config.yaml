@@ -1,5 +1,5 @@
 name: OpenAI Realtime Voice Agent
-version: "0.4.18"
+version: "0.4.19"
 slug: openai_realtime_voice_agent
 description: Voice control using OpenAI Realtime API with WebSocket support for ESP32 devices
 url: https://github.com/fjfricke/ha-openai-realtime
@@ -25,17 +25,22 @@ options:
   # 24000 OpenAI requires. Only change if you flash a device that sends a
   # different rate.
   device_input_sample_rate: 16000
-  # MCP server for Home Assistant control. For the unofficial homeassistant-ai/
-  # ha-mcp server set its Streamable-HTTP endpoint, e.g.
-  # "http://homeassistant.local:8086/mcp". Leave blank to use HA's built-in MCP
-  # at http://supervisor/core/api/mcp.
+  # MCP server for Home Assistant control. OPTION A (recommended): leave BLANK to
+  # use HA's built-in "MCP Server" integration at http://supervisor/core/api/mcp
+  # (small fixed Assist toolset scoped to exposed entities; lowest token use —
+  # needs the "Model Context Protocol Server" integration + entities exposed to
+  # Assist). OPTION B: set the unofficial homeassistant-ai/ha-mcp Streamable-HTTP
+  # endpoint, e.g. "http://homeassistant.local:8086/mcp", for the full tool set.
   ha_mcp_url: ""
-  # Long-lived Home Assistant access token for the MCP server. Leave blank to
-  # use the add-on's supervisor token (built-in MCP only).
+  # Long-lived Home Assistant access token for the MCP server. OPTION A (built-in
+  # MCP): leave BLANK to use the add-on's supervisor token — only fill this if
+  # startup logs a 401/403 on /core/api/mcp. OPTION B (ha-mcp): set a long-lived
+  # token (from your HA profile page) if that add-on needs it.
   longlived_token: ""
-  # Optional comma-separated allow-list of MCP tool names to expose to the
-  # model. ha-mcp ships 80+ tools; trimming the set keeps the realtime session
-  # fast and focused. Leave blank to expose all tools.
+  # Optional comma-separated allow-list of MCP tool names to expose to the model;
+  # blank = expose all. OPTION A (built-in MCP): leave BLANK — already a small set
+  # (names are Hass*, not ha_*). OPTION B (ha-mcp): it ships 80+ tools, so trim the
+  # set here to keep the realtime session fast and cheap.
   mcp_tool_allowlist: ""
   # Turn detection settings (server-side VAD). A higher threshold reduces false
   # barge-ins from speaker->mic echo when handsfree barge-in is enabled.

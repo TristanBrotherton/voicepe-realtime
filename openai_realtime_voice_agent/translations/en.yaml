@@ -28,20 +28,29 @@ configuration:
   ha_mcp_url:
     name: Home Assistant MCP URL
     description: >-
-      Endpoint of the MCP server used for Home Assistant control. For the
-      homeassistant-ai/ha-mcp add-on, its Streamable-HTTP URL (e.g.
-      http://homeassistant.local:8086/mcp). Leave blank to use HA's built-in MCP.
+      Which MCP server handles Home Assistant control. OPTION A (recommended):
+      leave BLANK to use HA's built-in "MCP Server" integration (small fixed set
+      of Assist tools — HassTurnOn/Off, HassLightSet, etc. — scoped to your
+      exposed entities; lowest token use). Requires the "Model Context Protocol
+      Server" integration installed in HA + entities exposed to Assist. OPTION B:
+      paste the homeassistant-ai/ha-mcp add-on's Streamable-HTTP URL (e.g.
+      http://homeassistant.local:8086/mcp) for the full ha-mcp tool set.
   longlived_token:
     name: Home Assistant token
     description: >-
-      Long-lived access token for the MCP server. Leave blank to use the add-on's
-      own supervisor token (built-in MCP only).
+      Long-lived access token for the MCP server. OPTION A (built-in MCP): leave
+      BLANK to use the add-on's own supervisor token — only set a token here if
+      startup logs a 401/403 on /core/api/mcp. OPTION B (ha-mcp): fill in a
+      long-lived token (create one at your HA profile page) if that add-on needs
+      it.
   mcp_tool_allowlist:
     name: MCP tool allow-list
     description: >-
-      Comma-separated list of MCP tool names to expose to the model. ha-mcp ships
-      80+ tools; trimming the set keeps the session fast and focused. Blank =
-      expose all.
+      Comma-separated list of MCP tool names to expose to the model; blank =
+      expose all. OPTION A (built-in MCP): leave BLANK — it already ships a small
+      focused set (and the tool names are Hass*, not ha_*). OPTION B (ha-mcp):
+      ha-mcp ships 80+ tools, so trimming the set here keeps the session fast and
+      cheap.
   vad_threshold:
     name: VAD threshold (server_vad)
     description: >-
