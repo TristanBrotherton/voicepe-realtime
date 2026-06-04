@@ -8,9 +8,9 @@ SECOND, server-side OpenAI call (the Responses API `web_search` built-in tool),
 then returns a short, spoken-friendly answer the Realtime model reads aloud.
 
 Uses the add-on's existing OPENAI_API_KEY — no extra account/vendor. Default
-model gpt-5.4-mini is the cheapest model verified to support the web_search tool
-(~$0.016/search); it's configurable via WEB_SEARCH_MODEL so a different
-price/quality (or a renamed model) can be swapped in without a code change.
+model gpt-5.5 gives the best-quality search answers; it's configurable via
+WEB_SEARCH_MODEL (the mini/nano models are cheaper) so a different price/quality
+(or a renamed model) can be swapped in without a code change.
 """
 import logging
 from typing import Dict, Any, Callable, Awaitable, TYPE_CHECKING

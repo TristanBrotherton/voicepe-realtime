@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.4.26
+
+- **Web search is now ON by default**, using **gpt-5.5** (the best-quality search
+  model), so the assistant can look things up online — weather, news, facts — out
+  of the box. **Existing installs keep their saved setting**: if you had it off,
+  switch `enable_web_search` on (and set `web_search_model` to `gpt-5.5`) in the
+  add-on Configuration. The cheaper mini/nano models stay available.
+
 ## 0.4.25
 
 - **Fix:** the first thing you said in the few seconds right after an automatic

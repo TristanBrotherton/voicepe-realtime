@@ -23,8 +23,8 @@ drop-in for the stock HA voice pipeline.
 - **Controls Home Assistant** through the official HA *MCP Server* integration —
   lights, switches, scenes, climate, etc., scoped to the entities you expose to
   Assist.
-- **Web search** (optional) — the assistant can look things up online (weather,
-  news, facts) via a single OpenAI call, off by default.
+- **Web search** (on by default) — the assistant can look things up online
+  (weather, news, facts) via a single OpenAI call. Turn it off if you don't want it.
 - **Tunable from the UI** — model, voice, speaking speed, turn detection, a
   post-reply follow-up window, transcription language, and more. Every option has
   inline help on the Configuration tab.

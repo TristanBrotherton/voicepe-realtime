@@ -226,9 +226,9 @@ class Application:
         # Responses web_search built-in tool server-side (using OPENAI_API_KEY)
         # and returns a short spoken answer. The model is configurable so a
         # different price/quality — or a renamed model — needs no code change.
-        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
+        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "true").lower() == "true"
         web_search_model = _resolve_choice(
-            "WEB_SEARCH_MODEL", "WEB_SEARCH_MODEL_CUSTOM", "gpt-5.4-mini"
+            "WEB_SEARCH_MODEL", "WEB_SEARCH_MODEL_CUSTOM", "gpt-5.5"
         )
 
         # Get recording setting (optional, defaults to false)

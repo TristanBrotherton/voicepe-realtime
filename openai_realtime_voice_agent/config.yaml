@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.4.25"
+version: "0.4.26"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/xandervanerven/ha-openai-realtime
@@ -168,16 +168,16 @@ options:
   # 12 is a good default, 0 disables the cap.
   max_context_messages: 12
   # Web search: let the assistant look things up online (weather, news, facts,
-  # opening hours, recent events). Off by default. When on, a web_search tool
-  # calls OpenAI's Responses web_search built-in tool server-side and returns a
-  # short spoken answer (~$0.016/search on the default model; uses your existing
-  # OPENAI_API_KEY — no extra account or vendor).
-  enable_web_search: false
-  # Model used for the web_search lookup. gpt-5.4-mini is the cheapest model
-  # verified to support the web_search tool. Change only to trade price/quality
+  # opening hours, recent events). ON by default. A web_search tool calls
+  # OpenAI's Responses web_search built-in tool server-side and returns a short
+  # spoken answer (a few cents/search; uses your existing OPENAI_API_KEY — no
+  # extra account or vendor). Set false to turn it off.
+  enable_web_search: true
+  # Model used for the web_search lookup. gpt-5.5 (default) gives the best
+  # answers; the mini/nano models are cheaper. Change to trade price/quality
   # or if your account uses a different model name (the handler fails gracefully
   # with a spoken "couldn't search" message if the model is rejected).
-  web_search_model: "gpt-5.4-mini"
+  web_search_model: "gpt-5.5"
   # Used ONLY when web_search_model is set to "custom". Any model that supports
   # the OpenAI Responses web_search tool.
   web_search_model_custom: ""

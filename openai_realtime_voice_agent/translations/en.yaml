@@ -197,17 +197,19 @@ configuration:
     name: Enable web search
     description: >-
       Let the assistant look things up online (weather, news, facts, opening
-      hours, recent events). Off by default. When on, a web_search tool runs a
-      secondary OpenAI Responses web_search call in the add-on and returns a
-      short spoken answer — uses your existing OpenAI key, ~$0.016 per search on
-      the default model. Adds ~1-3s while it searches (device shows "thinking").
+      hours, recent events). ON by default — set this off to disable it. A
+      web_search tool runs a secondary OpenAI Responses web_search call in the
+      add-on and returns a short spoken answer, using your existing OpenAI key
+      (a few cents per search). Adds ~1-3s while it searches (device shows
+      "thinking").
   web_search_model:
     name: Web search model
     description: >-
       OpenAI model used for the web_search lookup. Ordered cheapest→best:
-      nano (weakest at search) < mini < full. gpt-5.4-mini (default) is a good
-      cost/quality midpoint. Pick "custom" to type your own below. If the model
-      is rejected the assistant just says it couldn't search — no crash.
+      nano (weakest at search) < mini < full. gpt-5.5 (default) gives the best
+      answers; drop to a mini/nano model to cut cost. Pick "custom" to type your
+      own below. If the model is rejected the assistant just says it couldn't
+      search — no crash.
   web_search_model_custom:
     name: Web search model (custom)
     description: >-

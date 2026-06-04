@@ -79,21 +79,21 @@ on the Configuration tab.
 | `follow_up_open_delay_ms` | `0` | raise to ~200 if the device hears its own tail |
 | `playback_prebuffer_ms` | `0` | raise to ~150 if you hear crackle |
 | `max_context_messages` | `12` | bounds per-turn token cost |
-| `enable_web_search` | `false` | turn on to allow online lookups |
-| `web_search_model` | `gpt-5.4-mini` | cheapest model that supports web search |
+| `enable_web_search` | `true` | online lookups on by default; set `false` to disable |
+| `web_search_model` | `gpt-5.5` | best-quality search model; mini/nano are cheaper |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
 
 ## 5. Web search
 
-When **`enable_web_search`** is `true`, the assistant gets a `web_search` tool. When
+When **`enable_web_search`** is on (**the default**), the assistant gets a `web_search` tool. When
 it needs current or general info (weather, news, facts), it calls that tool; the
 add-on then makes a **second, server-side OpenAI call** (the Responses API
 `web_search` built-in tool, on **`web_search_model`**) and reads a short spoken
 answer back.
 
 - Uses your **existing OpenAI key** — no extra account.
-- Default model `gpt-5.4-mini` ≈ **$0.016 per search**. Other options trade
-  price/quality (`gpt-5-mini`, `gpt-5.4`, `gpt-5.5`, …).
+- Default model `gpt-5.5` (best quality). Cheaper options trade price/quality
+  (`gpt-5.4`, `gpt-5-mini`, the nano models, …) — a few cents per search.
 - Adds ~1–3 s while it searches (the device shows "thinking").
 - If the model name is rejected, the assistant just says it couldn't search — it
   won't crash the session, so you can change `web_search_model` and retry.
