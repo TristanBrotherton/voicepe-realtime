@@ -17,17 +17,25 @@ from app.audio_recording_service import AudioRecordingService
 from app.session_manager import SessionManager
 from app.websocket_handler import WebSocketHandler
 
-# Configure logging
+# Configure logging. LOG_LEVEL (add-on option) is INFO on stable; the dev add-on
+# defaults it to DEBUG, which turns on the verbose diagnostics (DebugFrameLogger
+# pipeline tap, turn/connection timing) without touching stable.
+_LOG_LEVEL_NAME = os.environ.get("LOG_LEVEL", "INFO").upper()
+_LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Reduce verbosity of noisy loggers
+# Reduce verbosity of noisy libraries. In DEBUG, surface the `websockets`
+# connection lifecycle (close codes / keepalive) — that's what reveals the brief
+# OpenAI link drops & reconnects; keep it quiet otherwise.
 logging.getLogger("aiortc").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-logging.getLogger("__main__").setLevel(logging.INFO)
+logging.getLogger("websockets").setLevel(logging.INFO if _LOG_LEVEL <= logging.DEBUG else logging.WARNING)
+logging.getLogger("__main__").setLevel(_LOG_LEVEL)
+if _LOG_LEVEL <= logging.DEBUG:
+    logger.info("🔎 verbose diagnostics ON (LOG_LEVEL=%s)", _LOG_LEVEL_NAME)
 
 
 def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:

@@ -22,6 +22,7 @@ from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
 from app.phase_emitter import PhaseEmitter
 from app.transcript_logger import TranscriptLogger
+from app.debug_frame_logger import DebugFrameLogger
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,10 @@ class ConnectionRecovery(FrameProcessor):
         self._reconnecting = False
         self._last_attempt = 0.0
         self._last_idle_unstick = 0.0
+        # Diagnostics: when the current OpenAI session connected, so we can log its
+        # age at a drop (the 60-min cap shows up as ~3600 s) and the reconnect
+        # duration (the brief gap the user hears).
+        self._connected_at = time.monotonic()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -209,8 +214,13 @@ class ConnectionRecovery(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _recover(self, reason: str):
+        t0 = time.monotonic()
+        age_s = t0 - self._connected_at
         try:
-            logger.warning(f"🔌 OpenAI Realtime connection lost ({reason[:90]}) — reconnecting…")
+            logger.warning(
+                f"🔌 OpenAI Realtime connection lost after {age_s:.0f}s "
+                f"({reason[:90]}) — reconnecting…"
+            )
             # Unstick the device first, regardless of how the reconnect goes.
             if self._emit_idle is not None:
                 try:
@@ -222,7 +232,11 @@ class ConnectionRecovery(FrameProcessor):
                 logger.error("❌ service has no reset_conversation(); cannot reconnect in place")
                 return
             await reset()
-            logger.info("✅ OpenAI Realtime session reconnected")
+            self._connected_at = time.monotonic()
+            logger.info(
+                f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "
+                f"(gap the user may have heard)"
+            )
         except Exception as e:
             logger.error(f"❌ OpenAI reconnect attempt failed: {e!r}")
         finally:
@@ -388,11 +402,21 @@ class WebSocketHandler:
         # aggregator can consume it) — opposite directions, so they need taps on
         # opposite sides of the service (see transcript_logger.py): "user" before
         # the LLM, "assistant" after it.
+        # DEV diagnostics: a passive frame logger that surfaces the turn / audio /
+        # interruption lifecycle. Only active when LOG_LEVEL=DEBUG (the dev add-on
+        # default; silent on stable). Placed right after the LLM so it sees the
+        # response / TTS / interruption frames plus the VAD speech frames passing
+        # through.
+        _debug_taps = logging.getLogger().isEnabledFor(logging.DEBUG)
         if context_aggregator:
             pipeline_components.extend([
                 context_aggregator.user(),
                 TranscriptLogger(capture="user"),
                 openai_service,
+            ])
+            if _debug_taps:
+                pipeline_components.append(DebugFrameLogger(label="llm"))
+            pipeline_components.extend([
                 TranscriptLogger(capture="assistant"),
                 context_aggregator.assistant(),
             ])
@@ -400,8 +424,10 @@ class WebSocketHandler:
             pipeline_components.extend([
                 TranscriptLogger(capture="user"),
                 openai_service,
-                TranscriptLogger(capture="assistant"),
             ])
+            if _debug_taps:
+                pipeline_components.append(DebugFrameLogger(label="llm"))
+            pipeline_components.append(TranscriptLogger(capture="assistant"))
 
         pipeline_components.append(output_activity_tracker)
 

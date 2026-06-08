@@ -219,4 +219,10 @@ configuration:
     name: Record audio (debug)
     description: >-
       Save the input/output audio to files for debugging. Off by default.
+  log_level:
+    name: Log level (diagnostics)
+    description: >-
+      Logging verbosity. INFO is normal; DEBUG turns on the verbose pipeline /
+      turn / connection diagnostics (the dev add-on defaults to DEBUG). Switch to
+      DEBUG to capture a detailed log for troubleshooting, then back to INFO.
 network: {}

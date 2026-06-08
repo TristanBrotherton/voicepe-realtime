@@ -15,6 +15,7 @@ DEVICE_INPUT_SAMPLE_RATE=$(bashio::config 'device_input_sample_rate')
 HA_MCP_URL=$(bashio::config 'ha_mcp_url')
 LONGLIVED_TOKEN=$(bashio::config 'longlived_token')
 MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
+LOG_LEVEL=$(bashio::config 'log_level')
 
 # Get turn detection settings
 VAD_THRESHOLD=$(bashio::config 'vad_threshold')
@@ -99,6 +100,9 @@ export WEB_SEARCH_MODEL_CUSTOM
 
 # Export audio recording setting
 export ENABLE_RECORDING
+
+# Export diagnostics log level (dev channel defaults to DEBUG)
+export LOG_LEVEL
 
 # Export HA_MCP_URL if set (empty string means use default in main.py)
 if [ -n "$HA_MCP_URL" ]; then

@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (dev)
-version: "0.4.26"
+version: "0.4.27"
 slug: openai_realtime_voice_agent_dev
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/xandervanerven/ha-openai-realtime
@@ -183,6 +183,11 @@ options:
   web_search_model_custom: ""
   # Audio recording (optional, for debugging)
   enable_recording: false
+  # Diagnostics log level. INFO = normal; DEBUG turns on the verbose pipeline /
+  # turn / connection logging (DebugFrameLogger + session-age/reconnect timing).
+  # The DEV add-on defaults to DEBUG; set DEBUG on stable too to capture a
+  # detailed log for a bug report.
+  log_level: "DEBUG"
 schema:
   openai_api_key: password
   openai_model: "list(gpt-realtime-2|gpt-realtime-1.5|gpt-realtime-mini|gpt-realtime|custom)"
@@ -219,6 +224,7 @@ schema:
   web_search_model: "list(gpt-5-nano|gpt-5.4-nano|gpt-5-mini|gpt-5.4-mini|gpt-5|gpt-5.4|gpt-5.5|custom)"
   web_search_model_custom: str
   enable_recording: bool
+  log_level: "list(DEBUG|INFO|WARNING)"
 # No `image:` key -> Home Assistant builds the add-on locally from the
 # Dockerfile in this directory (see build.yaml). This makes the fork work
 # without publishing images to a registry. Advanced users who prefer fast

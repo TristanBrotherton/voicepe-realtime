@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.4.27 (dev channel)
+
+- **Dev diagnostics:** new `log_level` option (the dev add-on defaults to
+  `DEBUG`). At DEBUG the add-on logs the full turn / audio / interruption
+  lifecycle (`🎚️` markers), the OpenAI session age at a drop + the reconnect gap
+  duration, and surfaces the `websockets` connection events. Stable stays at INFO.
+  Helps diagnose connection blips, stop-word timing, and stale-audio-after-stop.
+
 ## 0.4.26
 
 - **Web search is now ON by default**, using **gpt-5.5** (the best-quality search
