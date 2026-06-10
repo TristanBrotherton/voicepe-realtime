@@ -8,9 +8,7 @@ TRANSCRIPTION_LANGUAGE=$(bashio::config 'transcription_language')
 
 # --- 🗣️ Model & voice ---
 OPENAI_MODEL=$(bashio::config 'openai_model')
-OPENAI_MODEL_CUSTOM=$(bashio::config 'openai_model_custom')
 OPENAI_VOICE=$(bashio::config 'openai_voice')
-OPENAI_VOICE_CUSTOM=$(bashio::config 'openai_voice_custom')
 OPENAI_SPEED=$(bashio::config 'openai_speed')
 MAX_OUTPUT_TOKENS=$(bashio::config 'max_output_tokens')
 
@@ -23,7 +21,6 @@ PHASE_IDLE_DEBOUNCE_MS=$(bashio::config 'phase_idle_debounce_ms')
 # --- 🌐 Web search ---
 ENABLE_WEB_SEARCH=$(bashio::config 'enable_web_search')
 WEB_SEARCH_MODEL=$(bashio::config 'web_search_model')
-WEB_SEARCH_MODEL_CUSTOM=$(bashio::config 'web_search_model_custom')
 
 # --- 🎚️ Audio ---
 PLAYBACK_PREBUFFER_MS=$(bashio::config 'playback_prebuffer_ms')
@@ -39,7 +36,6 @@ WEBSOCKET_PORT=$(bashio::config 'websocket_port')
 SESSION_REUSE_TIMEOUT_SECONDS=$(bashio::config 'session_reuse_timeout_seconds')
 MAX_CONTEXT_MESSAGES=$(bashio::config 'max_context_messages')
 TRANSCRIPTION_MODEL=$(bashio::config 'transcription_model')
-TRANSCRIPTION_MODEL_CUSTOM=$(bashio::config 'transcription_model_custom')
 
 # --- 🔍 Debug ---
 ENABLE_RECORDING=$(bashio::config 'enable_recording')
@@ -56,9 +52,7 @@ export OPENAI_API_KEY
 export INSTRUCTIONS
 export TRANSCRIPTION_LANGUAGE
 export OPENAI_MODEL
-export OPENAI_MODEL_CUSTOM
 export OPENAI_VOICE
-export OPENAI_VOICE_CUSTOM
 export OPENAI_SPEED
 export MAX_OUTPUT_TOKENS
 export FOLLOW_UP_LISTEN_SECONDS
@@ -67,7 +61,6 @@ export VAD_EAGERNESS
 export PHASE_IDLE_DEBOUNCE_MS
 export ENABLE_WEB_SEARCH
 export WEB_SEARCH_MODEL
-export WEB_SEARCH_MODEL_CUSTOM
 export PLAYBACK_PREBUFFER_MS
 export NOISE_REDUCTION
 export LONGLIVED_TOKEN
@@ -76,9 +69,29 @@ export WEBSOCKET_PORT
 export SESSION_REUSE_TIMEOUT_SECONDS
 export MAX_CONTEXT_MESSAGES
 export TRANSCRIPTION_MODEL
-export TRANSCRIPTION_MODEL_CUSTOM
 export ENABLE_RECORDING
 export LOG_LEVEL
+
+# The *_custom escape hatches (🗣️/🌐/⚙️) are optional WITHOUT defaults —
+# bashio::config prints "null" for unset optionals, and main.py's
+# _resolve_choice would treat that literal string as a real custom value.
+# Only export when actually set.
+if bashio::config.has_value 'openai_model_custom'; then
+    OPENAI_MODEL_CUSTOM=$(bashio::config 'openai_model_custom')
+    export OPENAI_MODEL_CUSTOM
+fi
+if bashio::config.has_value 'openai_voice_custom'; then
+    OPENAI_VOICE_CUSTOM=$(bashio::config 'openai_voice_custom')
+    export OPENAI_VOICE_CUSTOM
+fi
+if bashio::config.has_value 'web_search_model_custom'; then
+    WEB_SEARCH_MODEL_CUSTOM=$(bashio::config 'web_search_model_custom')
+    export WEB_SEARCH_MODEL_CUSTOM
+fi
+if bashio::config.has_value 'transcription_model_custom'; then
+    TRANSCRIPTION_MODEL_CUSTOM=$(bashio::config 'transcription_model_custom')
+    export TRANSCRIPTION_MODEL_CUSTOM
+fi
 
 # Legacy server_vad escape hatch (⚙️ Advanced, optional WITHOUT defaults).
 # bashio::config prints the string "null" for unset optional keys, which would

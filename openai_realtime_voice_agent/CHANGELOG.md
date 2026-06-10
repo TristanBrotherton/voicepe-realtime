@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.4.30 (dev channel)
+
+- The four "custom" text fields (model / voice / search model / transcript
+  model) no longer clutter the page: they stay hidden until you need them
+  (pick "custom" in the dropdown, then enable "Show unused optional
+  configuration options" at the bottom).
+- The system-prompt field now explains how to edit it comfortably: the ⋮ menu
+  → "Edit in YAML" gives a full text editor (the add-on UI itself only
+  supports single-line fields).
+
 ## 0.4.29 (dev channel)
 
 - **Cleaner Configuration tab.** Options are now grouped and ordered (Basics →

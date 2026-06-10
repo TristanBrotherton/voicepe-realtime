@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (dev)
-version: "0.4.29"
+version: "0.4.30"
 slug: openai_realtime_voice_agent_dev
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/xandervanerven/ha-openai-realtime
@@ -31,7 +31,13 @@ homeassistant_api: true
 #   device_input_sample_rate → 16000  (the Voice PE firmware always sends 16k)
 # The server_vad escape hatch (turn_detection_type + vad_*) is KEPT but
 # optional-without-default → hidden behind the UI's "Show unused optional
-# configuration options" toggle on fresh installs.
+# configuration options" toggle on fresh installs. Same trick (v0.4.30) for
+# the four *_custom escape-hatch fields: optional, no default, hidden until
+# needed (the dropdown descriptions tell users how to reveal them).
+# NB the add-on UI renders every string option as a SINGLE-LINE input — there
+# is no multiline/textarea support in the frontend (verified in
+# supervisor-app-config.ts), so long text like `instructions` is best edited
+# via the Configuration tab's ⋮ → "Edit in YAML".
 # ----------------------------------------------------------------------------
 options:
   # --- 🔑 Basics ---
@@ -53,10 +59,10 @@ options:
   transcription_language: ""
 
   # --- 🗣️ Model & voice ---
+  # (*_custom fields have NO defaults: optional → hidden until revealed via
+  # "Show unused optional configuration options" or set in YAML.)
   openai_model: "gpt-realtime-2"
-  openai_model_custom: ""
   openai_voice: "marin"
-  openai_voice_custom: ""
   openai_speed: 1.0
   max_output_tokens: 0
 
@@ -71,7 +77,6 @@ options:
   # --- 🌐 Web search ---
   enable_web_search: true
   web_search_model: "gpt-5.5"
-  web_search_model_custom: ""
 
   # --- 🎚️ Audio ---
   # 150 (not 0): cushions WS jitter so the speaker doesn't run dry mid-word
@@ -89,7 +94,6 @@ options:
   session_reuse_timeout_seconds: 300
   max_context_messages: 12
   transcription_model: "gpt-4o-transcribe"
-  transcription_model_custom: ""
   # (turn_detection_type + vad_* deliberately have NO defaults here — see the
   # header comment; semantic_vad is the hardwired default in main.py.)
 
@@ -104,9 +108,9 @@ schema:
   transcription_language: str?
   # --- 🗣️ Model & voice ---
   openai_model: "list(gpt-realtime-2|gpt-realtime-1.5|gpt-realtime-mini|gpt-realtime|custom)"
-  openai_model_custom: str
+  openai_model_custom: str?
   openai_voice: "list(marin|cedar|alloy|ash|ballad|coral|echo|sage|shimmer|verse|custom)"
-  openai_voice_custom: str
+  openai_voice_custom: str?
   openai_speed: float(0.25,1.5)
   max_output_tokens: int(0,4096)
   # --- 💬 Conversation ---
@@ -117,7 +121,7 @@ schema:
   # --- 🌐 Web search ---
   enable_web_search: bool
   web_search_model: "list(gpt-5-nano|gpt-5.4-nano|gpt-5-mini|gpt-5.4-mini|gpt-5|gpt-5.4|gpt-5.5|custom)"
-  web_search_model_custom: str
+  web_search_model_custom: str?
   # --- 🎚️ Audio ---
   playback_prebuffer_ms: int(0,2000)
   noise_reduction: "list(off|near_field|far_field)"
@@ -130,7 +134,7 @@ schema:
   session_reuse_timeout_seconds: int(0,3600)
   max_context_messages: int(0,100)
   transcription_model: "list(gpt-4o-transcribe|gpt-realtime-whisper|gpt-4o-mini-transcribe|whisper-1|custom)"
-  transcription_model_custom: str
+  transcription_model_custom: str?
   # Legacy server_vad escape hatch — optional, hidden until "Show unused
   # optional configuration options" is toggled (or a value is saved).
   turn_detection_type: "list(semantic_vad|server_vad)?"

@@ -18,6 +18,10 @@ configuration:
       er op een spraakapparaat toe doen: leg de taal vast ("Spreek en versta
       uitsluitend Nederlands. Wissel nooit van taal.") en zeg dat hij zijn
       gereedschap stil moet gebruiken in plaats van "momentje" te zeggen.
+      BEWERK-TIP: dit veld is hier één regel (een beperking van de Home
+      Assistant-interface) — gebruik voor comfortabel bewerken het ⋮-menu
+      bovenaan dit tabblad → "Bewerken als YAML": dan krijg je een volwaardige
+      teksteditor.
   transcription_language:
     name: "🔑 Basis · Spreektaal (bijv. nl, en, de)"
     description: >-
@@ -32,22 +36,27 @@ configuration:
     description: >-
       Het OpenAI-model dat luistert en praat. gpt-realtime-2 (standaard) is
       het nieuwste en slimste. gpt-realtime-mini is merkbaar goedkoper maar
-      minder slim. Kies "custom" om hieronder een ander model-id te typen.
+      minder slim. Wil je een model dat er niet tussen staat? Kies "custom"
+      en zet onderaan deze pagina "Toon ongebruikte optionele
+      configuratie-opties" aan om het custom-veld zichtbaar te maken.
   openai_model_custom:
     name: "🗣️ Model & stem · Model (custom)"
     description: >-
       Alleen gebruikt als Model op "custom" staat. Elk geldig OpenAI
-      Realtime-model-id.
+      Realtime-model-id. (Standaard verborgen — dit is een expert-optie.)
   openai_voice:
     name: "🗣️ Model & stem · Stem"
     description: >-
       De stem waarmee hij praat. marin en cedar zijn de nieuwste en klinken
       het natuurlijkst. Een lopend gesprek houdt zijn stem — herstart de
-      add-on na het wijzigen.
+      add-on na het wijzigen. Voor een stem die er niet tussen staat: kies
+      "custom" en zet onderaan "Toon ongebruikte optionele
+      configuratie-opties" aan.
   openai_voice_custom:
     name: "🗣️ Model & stem · Stem (custom)"
     description: >-
-      Alleen gebruikt als Stem op "custom" staat. Elke geldige OpenAI-stemnaam.
+      Alleen gebruikt als Stem op "custom" staat. Elke geldige
+      OpenAI-stemnaam. (Standaard verborgen.)
   openai_speed:
     name: "🗣️ Model & stem · Spreektempo"
     description: >-
@@ -103,12 +112,13 @@ configuration:
     description: >-
       Het model dat de zoekopdracht uitvoert en het antwoord samenvat.
       gpt-5.5 (standaard) geeft de beste antwoorden; mini/nano-modellen zijn
-      goedkoper maar missen meer. Kies "custom" om hieronder zelf te typen.
+      goedkoper maar missen meer. Voor een ander model: kies "custom" en zet
+      onderaan "Toon ongebruikte optionele configuratie-opties" aan.
   web_search_model_custom:
     name: "🌐 Websearch · Zoekmodel (custom)"
     description: >-
       Alleen gebruikt als Zoekmodel op "custom" staat. Elk model dat OpenAI's
-      web_search-tool ondersteunt.
+      web_search-tool ondersteunt. (Standaard verborgen.)
 
   # --- 🎚️ Audio ---
   playback_prebuffer_ms:
@@ -175,11 +185,13 @@ configuration:
       Alleen gebruikt als bij Basis een spreektaal is ingesteld. Dit model
       schrijft jouw spraak als tekst in het log — het beïnvloedt NIET hoe de
       assistent je verstaat (die hoort je echte stem). gpt-4o-transcribe
-      (standaard) is het nauwkeurigst.
+      (standaard) is het nauwkeurigst. Voor een ander model: kies "custom" en
+      zet onderaan "Toon ongebruikte optionele configuratie-opties" aan.
   transcription_model_custom:
     name: "⚙️ Geavanceerd · Transcriptmodel (custom)"
     description: >-
-      Alleen gebruikt als Transcriptmodel op "custom" staat.
+      Alleen gebruikt als Transcriptmodel op "custom" staat. (Standaard
+      verborgen.)
   turn_detection_type:
     name: "⚙️ Geavanceerd · Beurtdetectie (legacy)"
     description: >-

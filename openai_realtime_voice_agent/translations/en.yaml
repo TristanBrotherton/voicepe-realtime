@@ -18,7 +18,10 @@ configuration:
       language, and your house rules. Write it like you'd brief a person. Two
       tips that matter on a voice device: lock the language ("Speak and
       understand only Dutch. Never switch language.") and tell it to use its
-      tools silently instead of saying "one moment".
+      tools silently instead of saying "one moment". EDITING TIP: this field
+      is a single line here (a Home Assistant UI limitation) — for comfortable
+      editing use the ⋮ menu at the top of this tab → "Edit in YAML", which
+      gives you a full text editor.
   transcription_language:
     name: "🔑 Basics · Spoken language (e.g. nl, en, de)"
     description: >-
@@ -33,22 +36,26 @@ configuration:
     description: >-
       The OpenAI model that listens and talks. gpt-realtime-2 (default) is the
       newest and smartest. gpt-realtime-mini is noticeably cheaper but less
-      capable. Pick "custom" to type another model id below.
+      capable. Want a model that's not listed? Pick "custom", then enable
+      "Show unused optional configuration options" at the bottom of this page
+      to reveal the custom field.
   openai_model_custom:
     name: "🗣️ Model & voice · Model (custom)"
     description: >-
       Only used when Model is set to "custom". Any valid OpenAI Realtime
-      model id.
+      model id. (Hidden by default — this is an expert escape hatch.)
   openai_voice:
     name: "🗣️ Model & voice · Voice"
     description: >-
       The voice it speaks with. marin and cedar are the newest and sound the
       most natural. A running conversation keeps its voice — restart the
-      add-on after changing this.
+      add-on after changing this. For an unlisted voice pick "custom" and
+      enable "Show unused optional configuration options" at the bottom.
   openai_voice_custom:
     name: "🗣️ Model & voice · Voice (custom)"
     description: >-
       Only used when Voice is set to "custom". Any valid OpenAI voice name.
+      (Hidden by default.)
   openai_speed:
     name: "🗣️ Model & voice · Speaking speed"
     description: >-
@@ -103,12 +110,13 @@ configuration:
     description: >-
       The model that does the lookup and summarises the answer. gpt-5.5
       (default) gives the best answers; mini/nano models are cheaper but miss
-      more. Pick "custom" to type your own below.
+      more. For an unlisted model pick "custom" and enable "Show unused
+      optional configuration options" at the bottom.
   web_search_model_custom:
     name: "🌐 Web search · Search model (custom)"
     description: >-
       Only used when Search model is set to "custom". Any model that supports
-      OpenAI's web_search tool.
+      OpenAI's web_search tool. (Hidden by default.)
 
   # --- 🎚️ Audio ---
   playback_prebuffer_ms:
@@ -174,11 +182,13 @@ configuration:
       Only used when a spoken language is set (Basics). This model writes
       your speech into the log as text — it does NOT affect how the assistant
       understands you (it hears your actual voice). gpt-4o-transcribe
-      (default) is the most accurate.
+      (default) is the most accurate. For an unlisted model pick "custom" and
+      enable "Show unused optional configuration options" at the bottom.
   transcription_model_custom:
     name: "⚙️ Advanced · Transcript model (custom)"
     description: >-
-      Only used when Transcript model is set to "custom".
+      Only used when Transcript model is set to "custom". (Hidden by
+      default.)
   turn_detection_type:
     name: "⚙️ Advanced · Turn detection (legacy)"
     description: >-
