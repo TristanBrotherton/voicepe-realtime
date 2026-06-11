@@ -2,6 +2,11 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.4.32 (dev channel)
+
+- The add-on now has its own icon and logo (a stylised Voice PE), shown in
+  the add-on store and on the add-on page.
+
 ## 0.4.31 (dev channel)
 
 - **Fixed: an answer could cut off mid-sentence and the assistant then went
