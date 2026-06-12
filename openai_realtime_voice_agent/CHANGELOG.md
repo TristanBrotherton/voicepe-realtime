@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.5.6 (dev channel)
+
+- **The "Follow-up mic delay" default went from 200 to 700 ms.** At 200–300 ms
+  the reply's own speaker tail could leak into the freshly opened follow-up
+  microphone and be mistaken for a question — the assistant would then answer
+  "nobody" or repeat its previous answer (observed live). 700 ms covers the
+  tail safely; existing installs keep their saved value, so raise yours
+  manually if you see the same symptom.
+
 ## 0.5.5 (dev channel)
 
 - **The assistant no longer spontaneously answers an old, half-finished

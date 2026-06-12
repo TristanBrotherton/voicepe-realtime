@@ -80,9 +80,10 @@ configuration:
     name: "💬 Conversation · Follow-up mic delay (ms)"
     description: >-
       Short pause between the end of an answer and the microphone re-opening,
-      so the speaker's last echo can't trigger a ghost question. 200–300 is a
-      good range. Raise it if the assistant sometimes seems to answer nobody;
-      lower it for a snappier hand-over.
+      so the speaker's last echo can't trigger a ghost question. 700 (default)
+      covers the speaker tail safely. Lowering it (300–500) makes the
+      hand-over snappier, but risks the assistant answering its own echo —
+      raise it back if it sometimes seems to answer nobody or repeats itself.
   vad_eagerness:
     name: "💬 Conversation · Turn-taking speed"
     description: >-

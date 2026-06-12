@@ -82,8 +82,10 @@ configuration:
     description: >-
       Korte pauze tussen het einde van een antwoord en het heropenen van de
       microfoon, zodat de laatste echo uit de speaker geen spookvraag kan
-      veroorzaken. 200–300 is een goed bereik. Verhoog als de assistent soms
-      "tegen niemand" lijkt te antwoorden; verlaag voor vlotter doorpraten.
+      veroorzaken. 700 (standaard) dekt de speaker-naloop veilig af. Lager
+      (300–500) maakt doorpraten vlotter, maar dan kan de assistent zijn
+      eigen echo gaan beantwoorden — verhoog weer als hij soms "tegen
+      niemand" praat of zichzelf herhaalt.
   vad_eagerness:
     name: "💬 Gesprek · Beurtwissel-snelheid"
     description: >-
