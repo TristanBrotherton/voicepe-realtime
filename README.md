@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="openai_realtime_voice_agent/icon.png" alt="OpenAI Realtime 2 Voice Agent — a stylised Voice PE" width="160"/>
+</p>
+
 # OpenAI Realtime 2 Voice Agent (Home Assistant Voice PE)
 
 > [!IMPORTANT]
