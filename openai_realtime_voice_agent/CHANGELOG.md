@@ -142,15 +142,15 @@ device's YAML in ESPHome Builder (everything else — your name, secrets,
 ```yaml
 packages:
   realtime:
-    url: https://github.com/xandervanerven/home-assistant-voice-pe
+    url: https://github.com/TristanBrotherton/home-assistant-voice-pe
     ref: main
     files: [home-assistant-voice.realtime.yaml]
     refresh: 0s
 ```
 
 Current templates for reference:
-[esphome-builder.dhcp.yaml](https://github.com/xandervanerven/home-assistant-voice-pe/blob/main/esphome-builder.dhcp.yaml) ·
-[esphome-builder.static-ip.yaml](https://github.com/xandervanerven/home-assistant-voice-pe/blob/main/esphome-builder.static-ip.yaml)
+[esphome-builder.dhcp.yaml](https://github.com/TristanBrotherton/home-assistant-voice-pe/blob/main/esphome-builder.dhcp.yaml) ·
+[esphome-builder.static-ip.yaml](https://github.com/TristanBrotherton/home-assistant-voice-pe/blob/main/esphome-builder.static-ip.yaml)
 
 ## 0.4.26
 
