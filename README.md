@@ -4,7 +4,7 @@
 speech-to-speech with native HA control, speaker awareness (sir/ma'am, per-voice
 tool gating), and on-device guided voice enrollment for training custom wake
 words and (roadmap) per-person voice-print identity. Pairs with the
-[Voice PE Realtime firmware](https://github.com/TristanBrotherton/home-assistant-voice-pe).
+[Voice PE Realtime firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware).
 Originally derived from upstream work credited below; now developed independently here.
 
 
@@ -14,7 +14,7 @@ Originally derived from upstream work credited below; now developed independentl
 > Maintained fork (upstream credit: xandervanerven's ha-openai-realtime),
 > tracked so installs don't depend on upstream availability. Currently identical to
 > upstream v0.6.0. Pairs with the firmware fork
-> [TristanBrotherton/home-assistant-voice-pe](https://github.com/TristanBrotherton/home-assistant-voice-pe)
+> [TristanBrotherton/voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)
 > (custom wake word + volume fixes). Planned divergence: multi-device support —
 > upstream's backend accepts a single Voice PE per add-on instance (the pipecat
 > WebsocketServerTransport drops the previous client when a new one connects), so
@@ -49,9 +49,9 @@ which replaces the pitch heuristic and works for any household composition.
 > (the voice "brain"). It needs the custom Voice PE **firmware** to connect to it — the
 > stock Home Assistant voice pipeline won't talk to this add-on. You must set up both:
 > - 🧠 **Backend add-on** (this repo) — runs inside Home Assistant
-> - 🔌 **Device firmware** → **[TristanBrotherton/home-assistant-voice-pe](https://github.com/TristanBrotherton/home-assistant-voice-pe)** (flashed onto the Voice PE)
+> - 🔌 **Device firmware** → **[TristanBrotherton/voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)** (flashed onto the Voice PE)
 >
-> 📖 New here? The full **[INSTALL guide](https://github.com/TristanBrotherton/home-assistant-voice-pe/blob/main/INSTALL.md)** walks through both halves, step by step.
+> 📖 New here? The full **[INSTALL guide](https://github.com/TristanBrotherton/voicepe-realtime-firmware/blob/main/INSTALL.md)** walks through both halves, step by step.
 
 A Home Assistant **add-on** that turns a [Voice PE](https://www.home-assistant.io/voice-pe/)
 device into a low-latency voice assistant built on **OpenAI's Realtime API**
@@ -76,13 +76,13 @@ Home Assistant `voice_assistant` pipeline on the audio path.
   - [`CHANGELOG.md`](openai_realtime_voice_agent/CHANGELOG.md) — what changed per version.
 
 The **device firmware** lives in its own repository —
-**[TristanBrotherton/home-assistant-voice-pe](https://github.com/TristanBrotherton/home-assistant-voice-pe)**
+**[TristanBrotherton/voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)**
 (a custom `va_client` ESPHome component, specific to the Voice PE hardware).
 
 ## Install
 
 1. In Home Assistant, open **Settings → Add-ons → Add-on store → ⋮ → Repositories**
-   and add `https://github.com/TristanBrotherton/ha-openai-realtime`.
+   and add `https://github.com/TristanBrotherton/voicepe-realtime-backend`.
 2. Install **OpenAI Realtime 2 Voice Agent**. It ships with no prebuilt `image:`,
    so Home Assistant builds it locally on first install (a few minutes on a Pi).
 3. Configure the add-on and flash the companion firmware — see
