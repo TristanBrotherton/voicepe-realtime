@@ -18,6 +18,11 @@ from app.audio_recording_service import AudioRecordingService
 from app.session_manager import SessionManager
 from app.websocket_handler import WebSocketHandler
 from app.speaker_context import SpeakerProbe
+from app.enrollment import (
+    EnrollmentRecorder,
+    get_enrollment_tool_definition,
+    create_enrollment_tool_handler,
+)
 
 # Speaker context v1 (fork): set at startup when speaker names are configured.
 # Module-level so SafeRealtimeLLMService.register_function can gate tools
@@ -472,6 +477,10 @@ class Application:
         elif male_only_tools:
             logger.warning("⚠️ male_only_tools set but no speaker names configured — gate inactive")
 
+        # Voice enrollment (fork): guided on-device voice capture, always available.
+        self.enrollment_recorder = EnrollmentRecorder()
+        self.websocket_handler.enrollment_recorder = self.enrollment_recorder
+
         self.websocket_transport = self.websocket_handler.create_transport()
         
         # Store configuration for session creation
@@ -582,6 +591,9 @@ class Application:
             # a secondary OpenAI Responses web_search call in the handler.
             if self.enable_web_search:
                 all_tools.append(get_web_search_tool_definition())
+
+            # Voice enrollment tool (fork): guided voice-training capture.
+            all_tools.append(get_enrollment_tool_definition())
 
             # Get MCP tool definitions if available
             mcp_tools_schema = None
@@ -727,6 +739,13 @@ class Application:
                 )
                 logger.info(f"✅ Registered web_search tool handler (model={self.web_search_model})")
             
+            # Register voice enrollment tool handler (fork)
+            self.openai_service.register_function(
+                "voice_enrollment",
+                create_enrollment_tool_handler(self.enrollment_recorder),
+            )
+            logger.info("✅ Registered voice_enrollment tool handler")
+
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:
                 try:

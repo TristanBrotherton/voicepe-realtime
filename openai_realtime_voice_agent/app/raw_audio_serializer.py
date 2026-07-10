@@ -51,6 +51,7 @@ class RawAudioSerializer(FrameSerializer):
         # WebSocketHandler.build_pipeline.
         self._on_wake = None
         self._speaker_probe = None
+        self._enrollment_recorder = None
 
     def set_interrupt_handler(self, handler):
         """Register the async no-arg callback fired on a device 'interrupt'."""
@@ -72,6 +73,11 @@ class RawAudioSerializer(FrameSerializer):
         """Register a SpeakerProbe: gets start_capture() on wake and feed() for
         every inbound audio frame (cheap append; classification runs off-loop)."""
         self._speaker_probe = probe
+
+    def set_enrollment_recorder(self, recorder):
+        """Register an EnrollmentRecorder: fed every inbound audio frame while
+        an enrollment session is active (guided voice-training capture)."""
+        self._enrollment_recorder = recorder
 
     @property
     def type(self) -> FrameSerializerType:
@@ -157,6 +163,11 @@ class RawAudioSerializer(FrameSerializer):
         # wake armed it; classification runs in a thread, never blocks here).
         if self._speaker_probe is not None:
             self._speaker_probe.feed(message)
+
+        # Voice enrollment: while a session is active, every mic frame is
+        # appended to the enrollment WAV (no-op otherwise).
+        if self._enrollment_recorder is not None and self._enrollment_recorder.active:
+            self._enrollment_recorder.feed(message)
 
         # Create InputAudioRawFrame at the device's mic rate; the InputResampler
         # processor (right after transport.input()) upsamples it to 24 kHz.

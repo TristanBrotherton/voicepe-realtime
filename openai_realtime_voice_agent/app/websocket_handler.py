@@ -380,6 +380,9 @@ class WebSocketHandler:
         # Speaker context v1 (fork): set by main.py when speaker names are
         # configured; wired to the serializer + OpenAI service in build_pipeline.
         self.speaker_probe = None
+        # Voice enrollment recorder (fork): set by main.py; the serializer feeds
+        # it every inbound mic frame while an enrollment session is active.
+        self.enrollment_recorder = None
     
     def create_transport(self) -> WebsocketServerTransport:
         """
@@ -737,6 +740,9 @@ class WebSocketHandler:
 
                 self.speaker_probe.on_verdict = _on_speaker_verdict
                 self._serializer.set_speaker_probe(self.speaker_probe)
+
+            if self.enrollment_recorder is not None:
+                self._serializer.set_enrollment_recorder(self.enrollment_recorder)
 
         return pipeline, runner, task
     

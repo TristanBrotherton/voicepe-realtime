@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.8.0 (fork)
+
+- **Voice enrollment**: say "I want to teach you my voice" — the assistant runs
+  a guided recording session (varied wake-phrase repetitions + natural speech)
+  via the new `voice_enrollment` tool, capturing the raw device mic stream to
+  `/share/voice-enrollment/<person>_<timestamp>.wav` (16 kHz mono, 15-minute
+  safety cap, persists across rebuilds). One session yields wake-word training
+  positives AND voice-print enrollment audio. Recordings are personal data and
+  are not managed by the add-on beyond writing the file.
+
 ## 0.7.1 (fork)
 
 - Speaker probe tuned for real device audio (live test found 3-7 voiced frames

@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.7.1"
+version: "0.8.0"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/xandervanerven/ha-openai-realtime
@@ -13,6 +13,11 @@ host_network: true
 # Gives the add-on SUPERVISOR_TOKEN so it can reach Home Assistant (used as a
 # fallback auth token for the MCP server when longlived_token is left blank).
 homeassistant_api: true
+# /share access: voice-enrollment recordings are written to
+# /share/voice-enrollment/ so they persist across add-on rebuilds and can be
+# collected from the host. They contain PERSONAL voice data - handle with care.
+map:
+  - share:rw
 
 # ----------------------------------------------------------------------------
 # Options are ORDERED for the Configuration tab (HA renders them in this order)
