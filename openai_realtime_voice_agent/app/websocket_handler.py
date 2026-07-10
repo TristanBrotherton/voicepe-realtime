@@ -377,6 +377,9 @@ class WebSocketHandler:
         # Connected device websockets, used to push va_client control/phase
         # messages as TEXT frames (the audio path uses the binary serializer).
         self._websockets: set = set()
+        # Speaker context v1 (fork): set by main.py when speaker names are
+        # configured; wired to the serializer + OpenAI service in build_pipeline.
+        self.speaker_probe = None
     
     def create_transport(self) -> WebsocketServerTransport:
         """
@@ -705,6 +708,35 @@ class WebSocketHandler:
             self._serializer.set_session_start_handler(_on_device_session_start)
             self._serializer.set_mic_flush_handler(_on_device_mic_flush)
             self._serializer.set_wake_handler(_on_device_wake)
+
+            # Speaker context v1 (fork): per-wake voice-type verdict → injected
+            # as a system conversation item. Out-of-band w.r.t. the audio path;
+            # it lands ~2.5 s after the wake, so the FIRST reply of a turn may
+            # not have it yet — follow-ups and later turns do. Gating of
+            # speaker-restricted tools does NOT depend on this injection (see
+            # SafeRealtimeLLMService.register_function in main.py).
+            if self.speaker_probe is not None and self.speaker_probe.enabled:
+                from .speaker_context import verdict_text
+
+                async def _on_speaker_verdict(label, name, f0):
+                    try:
+                        await openai_service.send_client_event(
+                            openai_rt_events.ConversationItemCreateEvent(
+                                item=openai_rt_events.ConversationItem(
+                                    type="message",
+                                    role="system",
+                                    content=[openai_rt_events.ItemContent(
+                                        type="input_text",
+                                        text=verdict_text(self.speaker_probe, label, name, f0),
+                                    )],
+                                )
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ speaker verdict injection failed: {e!r}")
+
+                self.speaker_probe.on_verdict = _on_speaker_verdict
+                self._serializer.set_speaker_probe(self.speaker_probe)
 
         return pipeline, runner, task
     

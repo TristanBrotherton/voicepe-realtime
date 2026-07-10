@@ -50,6 +50,7 @@ class RawAudioSerializer(FrameSerializer):
         # Resets the dangling-VAD guard's "speech since wake" tracker. Set by
         # WebSocketHandler.build_pipeline.
         self._on_wake = None
+        self._speaker_probe = None
 
     def set_interrupt_handler(self, handler):
         """Register the async no-arg callback fired on a device 'interrupt'."""
@@ -66,6 +67,11 @@ class RawAudioSerializer(FrameSerializer):
     def set_wake_handler(self, handler):
         """Register the async no-arg callback fired on a device 'wake'."""
         self._on_wake = handler
+
+    def set_speaker_probe(self, probe):
+        """Register a SpeakerProbe: gets start_capture() on wake and feed() for
+        every inbound audio frame (cheap append; classification runs off-loop)."""
+        self._speaker_probe = probe
 
     @property
     def type(self) -> FrameSerializerType:
@@ -128,6 +134,8 @@ class RawAudioSerializer(FrameSerializer):
                 # actually speaks, any server-VAD end-of-turn is a stale segment
                 # from the previous turn closing late (→ garbage response).
                 logger.info("👋 device wake received")
+                if self._speaker_probe is not None:
+                    self._speaker_probe.start_capture()
                 if self._on_wake is not None:
                     try:
                         await self._on_wake()
@@ -144,6 +152,11 @@ class RawAudioSerializer(FrameSerializer):
         if len(message) % 2 != 0:
             logger.warning(f"⚠️ Received audio with odd byte count: {len(message)} bytes, skipping")
             return None
+
+        # Tee the post-wake capture window to the speaker probe (no-op unless a
+        # wake armed it; classification runs in a thread, never blocks here).
+        if self._speaker_probe is not None:
+            self._speaker_probe.feed(message)
 
         # Create InputAudioRawFrame at the device's mic rate; the InputResampler
         # processor (right after transport.input()) upsamples it to 24 kHz.

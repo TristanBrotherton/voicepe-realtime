@@ -3,6 +3,9 @@ set -e
 
 # --- 🔑 Basics ---
 OPENAI_API_KEY=$(bashio::config 'openai_api_key')
+SPEAKER_MALE_NAME=$(bashio::config 'speaker_male_name')
+SPEAKER_FEMALE_NAME=$(bashio::config 'speaker_female_name')
+MALE_ONLY_TOOLS=$(bashio::config 'male_only_tools')
 INSTRUCTIONS=$(bashio::config 'instructions')
 TRANSCRIPTION_LANGUAGE=$(bashio::config 'transcription_language')
 
@@ -49,6 +52,9 @@ fi
 
 # Export environment variables
 export OPENAI_API_KEY
+export SPEAKER_MALE_NAME
+export SPEAKER_FEMALE_NAME
+export MALE_ONLY_TOOLS
 export INSTRUCTIONS
 export TRANSCRIPTION_LANGUAGE
 export OPENAI_MODEL

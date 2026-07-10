@@ -17,6 +17,13 @@ from app.web_search_tool import get_web_search_tool_definition, create_web_searc
 from app.audio_recording_service import AudioRecordingService
 from app.session_manager import SessionManager
 from app.websocket_handler import WebSocketHandler
+from app.speaker_context import SpeakerProbe
+
+# Speaker context v1 (fork): set at startup when speaker names are configured.
+# Module-level so SafeRealtimeLLMService.register_function can gate tools
+# without threading state through pipecat.
+SPEAKER_PROBE = None
+MALE_ONLY_TOOLS: set = set()
 
 # Configure logging
 logging.basicConfig(
@@ -175,6 +182,24 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
         inspects the signature to pick the calling convention).
         """
         async def liveness_tracked(params):
+            # Speaker gate (fork): tools listed in male_only_tools only execute
+            # when the last voice-type verdict is "male". Enforced HERE — below
+            # the model — so prompt tricks can't bypass it. Fails closed on
+            # uncertain/stale/absent verdicts. This is convenience gating on a
+            # voice-type heuristic, not biometric auth.
+            if MALE_ONLY_TOOLS and function_name in MALE_ONLY_TOOLS:
+                speaker = SPEAKER_PROBE.gate_speaker() if SPEAKER_PROBE else "unknown"
+                if speaker != "male":
+                    owner = (SPEAKER_PROBE.male_name if SPEAKER_PROBE else "") or "the owner"
+                    logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
+                    await params.result_callback({
+                        "error": (
+                            f"Not available: this capability is reserved for {owner}, "
+                            f"and the current speaker's voice was not recognized as {owner}. "
+                            f"Relay this politely."
+                        )
+                    })
+                    return
             TURN_LIVENESS.tool_started()
             try:
                 return await handler(params)
@@ -273,6 +298,9 @@ class Application:
         # it was seen closing the socket DURING the first reply ("conversation_ended").
         # Only enable if your device relies on the backend to hang up.
         enable_disconnect_tool = os.environ.get("ENABLE_DISCONNECT_TOOL", "false").strip().lower() == "true"
+        speaker_male_name = os.environ.get("SPEAKER_MALE_NAME", "").strip()
+        speaker_female_name = os.environ.get("SPEAKER_FEMALE_NAME", "").strip()
+        male_only_tools = {t.strip() for t in os.environ.get("MALE_ONLY_TOOLS", "").split(",") if t.strip()}
         # Pin the input-transcription language (ISO code, e.g. "nl"). Empty = let
         # the model auto-detect. Helps stop the model drifting to another
         # language; pair it with an explicit language lock in `instructions`.
@@ -430,6 +458,20 @@ class Application:
             f"wake-open delay {wake_open_delay_ms}ms, "
             f"playback prebuffer {playback_prebuffer_ms}ms"
         )
+        # Speaker context v1 (fork): enabled when at least one name is set.
+        global SPEAKER_PROBE, MALE_ONLY_TOOLS
+        if speaker_male_name or speaker_female_name:
+            SPEAKER_PROBE = SpeakerProbe(speaker_male_name, speaker_female_name)
+            MALE_ONLY_TOOLS = male_only_tools
+            self.websocket_handler.speaker_probe = SPEAKER_PROBE
+            logger.info(
+                f"🗣️ Speaker context enabled: male={speaker_male_name or '-'} "
+                f"female={speaker_female_name or '-'}"
+                f"{f', male-only tools: {sorted(male_only_tools)}' if male_only_tools else ''}"
+            )
+        elif male_only_tools:
+            logger.warning("⚠️ male_only_tools set but no speaker names configured — gate inactive")
+
         self.websocket_transport = self.websocket_handler.create_transport()
         
         # Store configuration for session creation

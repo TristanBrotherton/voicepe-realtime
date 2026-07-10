@@ -144,6 +144,23 @@ configuration:
       mishears you in a noisy environment.
 
   # --- 🏠 Home Assistant ---
+  speaker_male_name:
+    name: "🗣️ Speakers · Male voice name"
+    description: >-
+      Name to use when a male voice is detected (e.g. "Tristan"). Leave both
+      name fields empty to disable speaker detection entirely. Detection is a
+      pitch heuristic for a one-male-one-female household — it cannot tell two
+      men apart, and same-voice-type guests are matched to that name.
+  speaker_female_name:
+    name: "🗣️ Speakers · Female voice name"
+    description: >-
+      Name to use when a female voice is detected (e.g. "Julie").
+  male_only_tools:
+    name: "🗣️ Speakers · Male-only tools"
+    description: >-
+      Comma-separated tool names that only execute when the detected speaker is
+      the male voice (e.g. "ask_openclaw"). Enforced below the model, so it
+      cannot be talked around. Convenience gating, not biometric security.
   ha_mcp_url:
     name: "🏠 Home Assistant · MCP server URL"
     description: >-

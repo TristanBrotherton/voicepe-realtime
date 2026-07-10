@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.7.0 (fork)
+
+- **Speaker context v1**: optional voice-type (male/female) detection for a
+  two-person household. On every wake the first ~2.5 s of command audio is
+  classified by median pitch (pure numpy YIN, in-process, off the event loop;
+  benched at 98.6% right / 0% wrong across 11 typical synthetic voices) and the
+  verdict is injected into the Realtime session as a system item, so the
+  assistant can address the speaker by name ("sir"/"ma'am") and hedge when
+  uncertain. New options: `speaker_male_name`, `speaker_female_name` (both
+  empty = feature off).
+- **Speaker-gated tools**: `male_only_tools` (comma-separated tool names) are
+  enforced below the model — gated tools return a polite refusal unless the
+  last voice verdict is the male speaker. Fails closed on uncertain/stale
+  verdicts. Convenience gating, not biometric auth.
+
 ## 0.6.0
 
 > ⚠️ **This update has two parts — please update both:**
