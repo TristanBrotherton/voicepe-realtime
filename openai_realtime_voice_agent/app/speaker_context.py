@@ -28,6 +28,11 @@ from .speaker_gender import classify_gender
 logger = logging.getLogger(__name__)
 
 CAPTURE_SECONDS = 3.0
+# Partial captures at least this long are still classified + dumped when a
+# session ends before the full window fills — short false wakes are exactly
+# the audio we want to harvest for retraining, and they were being lost.
+MIN_PARTIAL_SECONDS = 1.0
+PROBE_DUMP_DIR = "/share/voice-probes"  # persistent across add-on rebuilds
 SAMPLE_RATE = 16000
 CAPTURE_BYTES = int(CAPTURE_SECONDS * SAMPLE_RATE * 2)  # PCM16 mono
 # A verdict older than this is stale (device asleep between turns); the gate
@@ -73,6 +78,35 @@ class SpeakerProbe:
             return
         self._buf = bytearray()
         self._capturing = True
+        # Finalize a partial capture if the session ends before the window
+        # fills (observed: short false wakes left no capture at all).
+        try:
+            loop = asyncio.get_running_loop()
+            gen = self._capture_gen = getattr(self, "_capture_gen", 0) + 1
+            def _later():
+                if self._capturing and gen == self._capture_gen:
+                    self.finalize_partial()
+            loop.call_later(9.0, _later)
+        except RuntimeError:
+            pass
+
+    def finalize_partial(self) -> None:
+        """Classify+dump whatever audio exists if it's at least MIN_PARTIAL_SECONDS."""
+        if not self._capturing or self._classifying:
+            return
+        need = int(MIN_PARTIAL_SECONDS * SAMPLE_RATE * 2)
+        if len(self._buf) < need:
+            self._capturing = False
+            self._buf = bytearray()
+            return
+        self._capturing = False
+        self._classifying = True
+        data = bytes(self._buf)
+        self._buf = bytearray()
+        try:
+            asyncio.get_running_loop().create_task(self._classify(data))
+        except RuntimeError:
+            self._classifying = False
 
     def feed(self, pcm: bytes) -> None:
         """Called from the serializer for every inbound audio frame. O(1)-ish."""
@@ -96,8 +130,8 @@ class SpeakerProbe:
             # thresholds can be tuned offline against real device audio.
             if os.environ.get("ENABLE_RECORDING", "false").strip().lower() == "true":
                 try:
-                    os.makedirs("recordings", exist_ok=True)
-                    path = f"recordings/probe_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+                    os.makedirs(PROBE_DUMP_DIR, exist_ok=True)
+                    path = f"{PROBE_DUMP_DIR}/probe_{time.strftime('%Y%m%d_%H%M%S')}.wav"
                     with wave.open(path, "wb") as w:
                         w.setnchannels(1)
                         w.setsampwidth(2)
