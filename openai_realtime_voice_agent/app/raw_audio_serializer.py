@@ -60,6 +60,10 @@ class RawAudioSerializer(FrameSerializer):
         # press with no reply yet = silencing a false trigger; a press after a
         # reply = the user's normal "I'm done" gesture (must NOT be flagged).
         self._reply_audio_since_wake = False
+        # Out-of-band announcements (timer expiry): while playing, inbound mic
+        # audio is dropped so the assistant can't hear and answer itself.
+        self.suppress_inbound_until = 0.0
+        self._last_button_mono = 0.0
 
     def set_interrupt_handler(self, handler):
         """Register the async no-arg callback fired on a device 'interrupt'."""
@@ -164,6 +168,7 @@ class RawAudioSerializer(FrameSerializer):
             elif isinstance(data, dict) and data.get("type") == "button_cancel":
                 # Center button silenced an active session. Within a short
                 # window of the wake this is a human flagging a false trigger.
+                self._last_button_mono = time.monotonic()
                 dt = time.monotonic() - self._last_wake_mono
                 logger.info(
                     f"🔘 button cancel received ({dt:.1f}s after wake, "
@@ -176,6 +181,7 @@ class RawAudioSerializer(FrameSerializer):
                         logger.warning(f"⚠️ button-cancel handler failed: {e!r}")
             elif isinstance(data, dict) and data.get("type") == "false_flag":
                 # Double-press: explicit false-wake flag, no conditions.
+                self._last_button_mono = time.monotonic()
                 logger.info("🔘🔘 explicit false-wake flag (double-press)")
                 if self._on_button_cancel is not None:
                     try:
@@ -220,6 +226,12 @@ class RawAudioSerializer(FrameSerializer):
         # Validate audio format: 16-bit = 2 bytes per sample
         if len(message) % 2 != 0:
             logger.warning(f"⚠️ Received audio with odd byte count: {len(message)} bytes, skipping")
+            return None
+
+        # Announcement echo-guard: drop inbound audio while an out-of-band
+        # announcement is playing (observed: the mic heard "your timer is done",
+        # transcribed it, and the model replied to itself).
+        if time.monotonic() < self.suppress_inbound_until:
             return None
 
         # Tee the post-wake capture window to the speaker probe (no-op unless a
