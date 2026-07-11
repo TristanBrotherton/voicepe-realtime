@@ -19,6 +19,11 @@ from app.session_manager import SessionManager
 from app.websocket_handler import WebSocketHandler
 from app.speaker_context import SpeakerProbe
 from app.timers import TimerRegistry, get_timer_tool_definitions, register_timer_tools
+from app.openclaw_tool import (
+    get_openclaw_tool_definition,
+    openclaw_url,
+    register_openclaw_tool,
+)
 from app.voice_memory import (
     memory_instructions,
     get_memory_tool_definitions,
@@ -642,6 +647,11 @@ class Application:
             all_tools.append(get_false_alarm_tool_definition())
             all_tools.extend(get_timer_tool_definitions())
             all_tools.extend(get_memory_tool_definitions())
+            # Direct OpenClaw escalation (fork): with OPENCLAW_URL set the tool
+            # is native (no HA-MCP 60s cap); the same-named MCP tool is skipped
+            # below so the model sees exactly one ask_openclaw.
+            if openclaw_url():
+                all_tools.append(get_openclaw_tool_definition())
 
             # Get MCP tool definitions if available
             mcp_tools_schema = None
@@ -656,6 +666,8 @@ class Application:
                     exposed = 0
                     for function_schema in mcp_tools_schema.standard_tools:
                         if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
+                            continue
+                        if openclaw_url() and function_schema.name == "ask_openclaw":
                             continue
                         openai_tool = {
                             "type": "function",
@@ -806,6 +818,9 @@ class Application:
             )
             register_timer_tools(self.openai_service, self.timer_registry)
             register_memory_tools(self.openai_service, _current_speaker_name)
+            if openclaw_url():
+                register_openclaw_tool(self.openai_service)
+                logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
             logger.info("✅ Registered timer + memory tools")
 
             # Register MCP tool handlers if available

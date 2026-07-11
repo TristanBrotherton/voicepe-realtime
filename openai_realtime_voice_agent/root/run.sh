@@ -39,6 +39,7 @@ NOISE_REDUCTION=$(bashio::config 'noise_reduction')
 HA_MCP_URL=$(bashio::config 'ha_mcp_url')
 LONGLIVED_TOKEN=$(bashio::config 'longlived_token')
 MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
+OPENCLAW_URL=$(bashio::config 'openclaw_url')
 
 # --- ⚙️ Advanced ---
 WEBSOCKET_PORT=$(bashio::config 'websocket_port')
@@ -82,6 +83,7 @@ export PLAYBACK_PREBUFFER_MS
 export NOISE_REDUCTION
 export LONGLIVED_TOKEN
 export MCP_TOOL_ALLOWLIST
+export OPENCLAW_URL
 export WEBSOCKET_PORT
 export SESSION_REUSE_TIMEOUT_SECONDS
 export MAX_CONTEXT_MESSAGES

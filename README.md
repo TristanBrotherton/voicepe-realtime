@@ -196,6 +196,7 @@ supported path today.
 | `playback_prebuffer_ms` | Raise (~250) if you hear start-of-reply crackle |
 | `noise_reduction` | Usually `off` — the device's XMOS already filters |
 | `mcp_tool_allowlist` | Trim the toolset for speed/cost |
+| `openclaw_url` | Direct agent-escalation endpoint (dodges HA MCP's 60s cap) |
 
 Recordings in `/share/voice-enrollment` and `/share/voice-probes` are personal
 data: they stay on your machine and are never uploaded by this add-on.

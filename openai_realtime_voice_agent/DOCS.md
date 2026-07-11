@@ -58,6 +58,16 @@ You get a small fixed set of Assist tools (`HassTurnOn`, `HassTurnOff`,
 blank to expose all, or trim to just what you use, e.g.:
 `HassTurnOn,HassTurnOff,HassLightSet,GetLiveContext,GetDateTime`
 
+**`openclaw_url`** (optional): direct endpoint for an external agent escalation
+tool (`POST {"question": ...}` → `{"answer": ...}`). If you expose an
+"ask my agent" script through HA's MCP server, be aware Home Assistant core
+hard-caps every MCP request at **60 seconds** — long agent turns (deep memory
+recall, multi-step tasks) get killed mid-answer. Setting `openclaw_url` makes
+the add-on register the `ask_openclaw` tool natively and call the endpoint
+directly with a ~2.5-minute timeout; an MCP tool of the same name is skipped
+so the model sees exactly one. Leave blank to use whatever your MCP server
+exposes, unchanged.
+
 ## 4. Recommended starting settings
 
 **The defaults are the recommended settings** — for a first run you only need the

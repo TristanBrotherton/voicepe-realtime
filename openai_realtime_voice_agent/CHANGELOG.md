@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.15.1 (fork)
+
+- **Direct OpenClaw escalation** (`openclaw_url` option): `ask_openclaw` now
+  calls the bridge endpoint directly instead of going through HA's MCP server,
+  whose hardcoded 60-second request timeout killed longer agent turns (deep
+  memory recall, contact lookups). Direct calls get ~2.5 minutes. Unset, the
+  MCP-script path is used unchanged. The speaker gate applies either way.
+- (0.10–0.15.0 entries — speaker voice-prints, timers, enrollment v2, HA
+  sensors, false-wake flagging, voice-instructed memory — are in git history.)
+
 ## 0.9.0 (fork)
 
 - **Firmware-backed voice enrollment** (pairs with firmware commit 5095ed0+):
