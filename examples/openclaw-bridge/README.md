@@ -15,10 +15,14 @@ POSTs the answer to the asking room's announce endpoint itself.
 
 ## Setup
 
-Run this on the machine where OpenClaw's gateway runs.
+Run this on the machine where OpenClaw's gateway runs. Best practice: run it
+straight from a clone of this repo — updating the bridge is then just
+`git pull` + restart the service. The secret files below are `.gitignore`d, so
+they survive pulls and can never be committed.
 
 ```bash
-cd examples/openclaw-bridge
+git clone https://github.com/TristanBrotherton/voicepe-realtime.git
+cd voicepe-realtime/examples/openclaw-bridge
 
 # 1. Secrets — the URL path is the lock on the ask endpoint
 echo "/ask-$(openssl rand -hex 12)" > .ask-path
@@ -125,6 +129,19 @@ curl -s -X POST "http://127.0.0.1:3338$ASK" -H "Content-Type: application/json" 
 curl -s -X POST "http://127.0.0.1:3338$ASK" -H "Content-Type: application/json" \
   -d '{"question":"Reply with exactly: bridge OK","room":"kitchen"}'
 ```
+
+## Updating
+
+```bash
+cd voicepe-realtime && git pull
+# macOS
+launchctl kickstart -k gui/$(id -u)/openclaw.voicepe-bridge
+# Linux
+sudo systemctl restart voicepe-bridge
+```
+
+Secrets and logs are untouched by updates; check the repo changelog for
+contract changes when you also update the add-on.
 
 ## Security notes
 
