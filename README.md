@@ -59,6 +59,74 @@ and it stops.
 add-on instance per Voice PE, each on its own `websocket_port`, each device's
 `va_url` pointing at its port.
 
+## Getting started (comprehensive)
+
+**You need**: a Home Assistant OS install (add-on support), a Home Assistant
+Voice Preview Edition device, an OpenAI API key with billing enabled, and the
+**ESPHome Device Builder** add-on for flashing.
+
+### 1. Install this add-on
+Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
+`https://github.com/TristanBrotherton/voicepe-realtime-backend` → install
+**OpenAI Realtime Voice Agent**. In its Configuration tab set `openai_api_key`.
+Don't start it yet.
+
+### 2. Give it your home
+Install Home Assistant's **MCP Server** integration (Settings → Devices &
+services → Add integration → "Model Context Protocol Server") and expose the
+entities you want voice-controlled to Assist (Settings → Voice assistants →
+Expose). Leave the add-on's `ha_mcp_url` empty — it finds the built-in server
+automatically.
+
+### 3. Flash the firmware
+In ESPHome Device Builder create a new device; replace its yaml with
+[`esphome-builder.dhcp.yaml`](https://github.com/TristanBrotherton/voicepe-realtime-firmware/blob/main/esphome-builder.dhcp.yaml)
+from the firmware repo. Set the substitutions: your Wi-Fi credentials, an
+`api_key`/`ota_password` (generate fresh ones), and `va_url` =
+`ws://<your-HA-IP>:8080/`. A factory-fresh Voice PE accepts the first flash
+wirelessly; after that everything is OTA. Keep the device `name` stable if
+you're re-flashing an already-adopted device.
+
+### 4. First conversation
+Start the add-on and watch its log for `device (re)connected`. Say the wake
+word (stock builds ship a standard model; see the firmware README to train
+your own) and ask for a light. If tools are missing, re-check step 2; a
+401/403 in the log means set `longlived_token` (HA profile → Security).
+
+### 5. Make it yours
+- **Persona** — rewrite `instructions`. Accent included: the voice follows
+  instructions ("speak with a natural British accent").
+- **Speakers** — set `speaker_male_name` / `speaker_female_name` for a
+  one-male-one-female household: sir/ma'am, names, and `male_only_tools`
+  gating. For verified per-person identity, enroll voices (next step) and
+  build voice prints (`python3 -m app.build_voiceprint <name> <recording>`
+  inside the container → `/share/voice-prints/`).
+- **Enrollment** — say *"teach me my voice"*: a guided session records
+  wake-word repetitions + natural speech to `/share/voice-enrollment/`,
+  used for custom wake-word training (see the firmware README's flywheel
+  section) and voice prints.
+- **Timers** — set `timer_ring_entity` to your device's exposed
+  `switch.<device>_timer_ringing` entity.
+- **Sensors** — set `instance_name` (e.g. `kitchen`) to publish
+  `sensor.voicepe_kitchen_speaker`, `_active_timers`, `_wakes_today`,
+  `_false_wakes_today` for dashboards and automations.
+- **False-wake labeling** — say "that was a false alarm" or double-press the
+  device button; captures land in `/share/voice-probes/` for retraining.
+
+### 6. Multiple devices
+One add-on instance serves ONE device. For a second device, install a copy of
+this add-on as a [local add-on](https://developers.home-assistant.io/docs/add-ons/tutorial/)
+(copy `openai_realtime_voice_agent/` into `/addons`, change `slug` and `name`
+in its config.yaml), give it a different `websocket_port` (e.g. 8082 — avoid
+8081), and point the second device's `va_url` at that port.
+
+### Troubleshooting quick hits
+- Crackle at reply start → raise `playback_prebuffer_ms` to ~250
+- It answers itself / ghost turns → raise `wake_open_delay_ms` / `follow_up_open_delay_ms`
+- Mishears in noise → try `noise_reduction: far_field` (default off; the
+  device's XMOS already filters)
+- Wake word too eager/deaf → the device's "Wake word sensitivity" select in HA
+
 ## Notable options
 
 | Option | Purpose |
