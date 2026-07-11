@@ -1,6 +1,6 @@
 # Voice PE Realtime
 
-**Turn a Home Assistant Voice PE into the voice assistant you actually wanted** — natural speech-to-speech conversation powered by the OpenAI Realtime API, sub-second smart-home control, a wake word trained on *your* household's voices, an assistant that knows who's speaking, remembers what you tell it, and finds you when long-running work is done.
+**Turn a Home Assistant Voice PE into the voice assistant you actually wanted** — natural speech-to-speech conversation powered by the OpenAI Realtime API, sub-second smart-home control, a wake word trained on *your* household's voices, an assistant that knows who's speaking, remembers what you tell it, and finds you when long-running work is done. Built on **[Home Assistant](https://www.home-assistant.io) / [OpenClaw](https://openclaw.ai)**: Home Assistant runs your home, OpenClaw is its memory, its hands, and its phone.
 
 It runs on your Home Assistant box. Wake-word detection, speaker identity, voice recordings, and memory all stay local. The cloud only hears you after you wake it.
 
@@ -67,14 +67,14 @@ Home Assistant Voice PE           Home Assistant (your box)              Cloud
                                                │ tools
                                                ▼
                               HA MCP Server → controls your home
-                              your agent  ←→  recall / delegate / announce (optional)
+                              OpenClaw    ←→  recall / delegate / announce (optional)
 ```
 
 Three parts:
 
 1. **Firmware** ([voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)) — turns the Voice PE into a thin, low-latency audio client. Wake word runs on-device.
 2. **Backend add-on** (this repo) — owns the OpenAI Realtime session, Home Assistant tools, speaker identity, timers, and memory.
-3. **Agent integration** (optional) — connect any agent for deep recall and long-running task delegation. Everything else works without one.
+3. **[OpenClaw](https://openclaw.ai) integration** (optional) — deep recall, messaging, calls, and long-running task delegation ([agent-agnostic contracts](docs/agent-integration.md)). Everything else works without it.
 
 ## Quick start
 
