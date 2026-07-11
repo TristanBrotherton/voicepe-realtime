@@ -763,6 +763,10 @@ class WebSocketHandler:
                     logger.warning(f"⚠️ button false-wake flag failed: {e!r}")
             self._serializer.set_button_cancel_handler(_on_button_cancel)
 
+            async def _on_first_audio():
+                await self.broadcast_json({"type": "ack"})
+            self._serializer.set_first_audio_handler(_on_first_audio)
+
             if self.enrollment_conductor is not None:
                 async def _on_device_enroll_stopped():
                     await self.enrollment_conductor.stop()

@@ -64,6 +64,10 @@ class RawAudioSerializer(FrameSerializer):
         # audio is dropped so the assistant can't hear and answer itself.
         self.suppress_inbound_until = 0.0
         self._last_button_mono = 0.0
+        # Set on wake; cleared when we ack the first mic frame back to the
+        # device (cancels its no-speech watchdog — audio is flowing).
+        self._ack_pending = False
+        self._on_first_audio = None
 
     def set_interrupt_handler(self, handler):
         """Register the async no-arg callback fired on a device 'interrupt'."""
@@ -94,6 +98,10 @@ class RawAudioSerializer(FrameSerializer):
     def set_button_cancel_handler(self, handler):
         """Async no-arg callback for a button-cancel within 12s of a wake."""
         self._on_button_cancel = handler
+
+    def set_first_audio_handler(self, handler):
+        """Async no-arg callback fired on the first mic frame after a wake."""
+        self._on_first_audio = handler
 
     def set_enroll_stopped_handler(self, handler):
         """Register the async no-arg callback fired when the DEVICE ends
@@ -204,6 +212,7 @@ class RawAudioSerializer(FrameSerializer):
                 logger.info("👋 device wake received")
                 self._last_wake_mono = time.monotonic()
                 self._reply_audio_since_wake = False
+                self._ack_pending = True
                 try:
                     from .ha_sensors import PUBLISHER
                     await PUBLISHER.wake()
@@ -227,6 +236,16 @@ class RawAudioSerializer(FrameSerializer):
         if len(message) % 2 != 0:
             logger.warning(f"⚠️ Received audio with odd byte count: {len(message)} bytes, skipping")
             return None
+
+        # First mic frame after a wake: tell the device audio is flowing so
+        # it drops its no-speech watchdog (semantic VAD can be slow to commit).
+        if self._ack_pending:
+            self._ack_pending = False
+            if self._on_first_audio is not None:
+                try:
+                    await self._on_first_audio()
+                except Exception as e:
+                    logger.warning(f"⚠️ audio-ack failed: {e!r}")
 
         # Announcement echo-guard: drop inbound audio while an out-of-band
         # announcement is playing (observed: the mic heard "your timer is done",
