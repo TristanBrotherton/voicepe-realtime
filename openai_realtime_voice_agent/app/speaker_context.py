@@ -144,12 +144,16 @@ class SpeakerProbe:
             else:
                 label = "match"  # enrolled non-household print
             return label, name, score, "voiceprint"
-        if level == "unknown":
-            return "unknown", None, score, "voiceprint"
-        if level == "uncertain":
-            return "uncertain", name, score, "voiceprint"
-        # unavailable -> pitch heuristic
+        # Live wake audio still scores far below enrollment audio for the same
+        # speaker (observed 0.48 then 0.22 for a verified household member) —
+        # until thresholds are recalibrated on live captures, treat a non-match
+        # as "voiceprint can't tell" and fall back to the pitch heuristic
+        # rather than confidently reporting a stranger.
         label, f0, voiced = classify_gender(data)
+        if label in ("male", "female"):
+            return label, self.name_for(label), f0, f"pitch(vp={level}:{score:.2f})"
+        if level in ("unknown", "uncertain"):
+            return level, name if level == "uncertain" else None, score, "voiceprint"
         return label, self.name_for(label), f0, "pitch"
 
     async def _classify(self, data: bytes) -> None:

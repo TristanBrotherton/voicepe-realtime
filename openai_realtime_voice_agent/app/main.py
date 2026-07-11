@@ -498,13 +498,27 @@ class Application:
         self.websocket_handler.enrollment_conductor = self.enrollment_conductor
         # Timers: personalized spoken expiry via the conductor's TTS lane,
         # owner from the live speaker verdict, wake-ack from the serializer.
-        self.timer_registry.announcer = self.enrollment_conductor._say
+        async def _guarded_say(text):
+            # Suppress inbound mic audio while the announcement plays (+ tail)
+            # so the assistant can't hear itself and reply.
+            ser = self.websocket_handler._serializer
+            import time as _t
+            if ser is not None:
+                ser.suppress_inbound_until = _t.monotonic() + 3600
+            try:
+                await self.enrollment_conductor._say(text)
+            finally:
+                if ser is not None:
+                    ser.suppress_inbound_until = _t.monotonic() + 1.2
+        self.timer_registry.announcer = _guarded_say
         self.timer_registry.get_owner = (
             lambda: SPEAKER_PROBE.name_for(SPEAKER_PROBE.gate_speaker()) if SPEAKER_PROBE else None
         )
         self.timer_registry.last_wake = (
-            lambda: getattr(self.websocket_handler._serializer, "_last_wake_mono", 0.0)
-            if self.websocket_handler._serializer else 0.0
+            lambda: max(
+                getattr(self.websocket_handler._serializer, "_last_wake_mono", 0.0),
+                getattr(self.websocket_handler._serializer, "_last_button_mono", 0.0),
+            ) if self.websocket_handler._serializer else 0.0
         )
 
         self.websocket_transport = self.websocket_handler.create_transport()
