@@ -60,13 +60,18 @@ web knowledge, cross-app tasks".*
 > "Call the pharmacy and ask if my prescription is ready, then tell me what
 > they say."
 
-If your agent can place calls, the delegation loop closes this entirely by
-voice: the assistant acknowledges, the agent makes the call, and the answer is
-**announced in the room you asked from** when the call ends. If the device is
-offline at that moment, the agent gets a `503` from the announce endpoint and
-falls back to texting you.
+With [OpenClaw](https://openclaw.ai) and its
+[voice-call plugin](https://github.com/TristanBrotherton/openclaw-voice-call-realtime)
+— real outbound phone calls via Twilio + OpenAI Realtime, with in-call tools
+and transcripts — the delegation loop closes this entirely by voice: the
+assistant acknowledges, OpenClaw places the call and has the conversation, and
+the answer is **announced in the room you asked from** when the call ends. If
+the device is offline at that moment, OpenClaw gets a `503` from the announce
+endpoint and falls back to texting you.
 
-*Needs an agent (with calling) — [Long-running task delegation](features.md#long-running-task-delegation).*
+*Needs OpenClaw (or any agent that can place calls) with the
+[voice-call plugin](https://github.com/TristanBrotherton/openclaw-voice-call-realtime) —
+[Long-running task delegation](features.md#long-running-task-delegation).*
 
 ## Work that takes as long as it takes
 

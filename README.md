@@ -32,7 +32,7 @@ Marked **†** = needs the optional [agent integration](docs/agent-integration.m
 - **"When's Grandma's birthday?"** † — sub-second recall from your agent's long-term memory.
 - **"What did we decide about the fence contractor?"** † — decisions and history, not just facts.
 - **"Text Sam we're running ten minutes late."** † — hands covered in flour; your agent sends it through its channels.
-- **"Call the pharmacy and ask if my prescription is ready, then tell me what they say."** † — if your agent can place calls, it runs the errand and the answer is spoken back in the room you asked from.
+- **"Call the pharmacy and ask if my prescription is ready, then tell me what they say."** † — pair it with [OpenClaw](https://openclaw.ai) and the [voice-call plugin](https://github.com/TristanBrotherton/openclaw-voice-call-realtime): your assistant places a real phone call, runs the errand, and the answer is spoken back in the room you asked from.
 - **"Research flights to Tokyo in October and text me the three best options."** † — acknowledged now, browsed in the background for as long as it takes, delivered when done.
 - **"Add everything for lasagna to the shopping list."** — native Home Assistant list tools, instant. Then *"set a pasta timer"* — dismissed or delivered by name when it's done.
 - **A voice for your automations.** † — the announce endpoint accepts any authorized POST, so an agent's scheduled jobs (or any script on your LAN) can speak in the room: *"leave in fifteen minutes for the school run."*
