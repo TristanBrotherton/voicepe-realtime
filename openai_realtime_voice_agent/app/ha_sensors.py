@@ -1,7 +1,7 @@
 """Publish live Voice PE state to Home Assistant as sensors.
 
 Per-instance sensors (INSTANCE_NAME option, e.g. 'kitchen'):
-  sensor.voicepe_<inst>_speaker        tristan/julie/unknown/none (+score/method)
+  sensor.voicepe_<inst>_speaker        james/mary/unknown/none (+score/method)
   sensor.voicepe_<inst>_active_timers  count (+next-expiry attrs)
   binary_sensor.voicepe_<inst>_enrollment_active
   sensor.voicepe_<inst>_wakes_today / _false_wakes_today
