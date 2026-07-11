@@ -127,6 +127,11 @@ your own) and ask for a light. If tools are missing, re-check step 2; a
   `_false_wakes_today` for dashboards and automations.
 - **False-wake labeling** — say "that was a false alarm" or double-press the
   device button; captures land in `/share/voice-probes/` for retraining.
+- **Teach it by voice** — "remember that the bins go out Thursday", "from now
+  on use Celsius": standing notes stored in `/share/voice-memory/memory.md`,
+  speaker-attributed, folded into its instructions from the next session.
+  "Forget..." removes them; "what do you remember" lists them. Only identified
+  household voices can change memory.
 
 ### 6. Multiple devices
 One add-on instance serves ONE device. For a second device, install a copy of

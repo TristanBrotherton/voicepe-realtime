@@ -180,3 +180,14 @@ leaves your machine — OpenAI hears nothing during enrollment. Use the
 recordings to train a custom microWakeWord model on real household voices (see
 the firmware repo) and, in future, per-person voice-print identification.
 Options: `enrollment_phrase`, `enrollment_tts_voice` (any /v1/audio/speech voice).
+
+
+## Voice-instructed memory
+
+Say "remember that..." / "from now on..." and the note becomes a standing
+instruction in every future conversation (it takes effect at the next session —
+minutes, at most an hour). "Forget about..." removes matching notes; "what do
+you remember" reads them back. Notes are stored locally in
+`/share/voice-memory/memory.md` (plain markdown — you can edit it by hand),
+capped at 60 notes, each attributed to the household member whose voice gave
+it. Guests and unidentified voices cannot change memory.
