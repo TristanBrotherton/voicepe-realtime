@@ -757,6 +757,8 @@ class WebSocketHandler:
                         os.rename(os.path.join(d, latest),
                                   os.path.join(d, latest.replace("probe_", "falsewake_", 1)))
                         logger.info(f"🏷️ button-flagged false wake: {latest}")
+                        from .ha_sensors import PUBLISHER
+                        await PUBLISHER.false_wake()
                 except Exception as e:
                     logger.warning(f"⚠️ button false-wake flag failed: {e!r}")
             self._serializer.set_button_cancel_handler(_on_button_cancel)

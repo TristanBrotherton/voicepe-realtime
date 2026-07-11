@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.12.0"
+version: "0.13.0"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime-backend
@@ -108,6 +108,8 @@ options:
   # Voice timers: the device's exposed "Timer ringing" switch entity; empty =
   # timers unavailable (the assistant will say so).
   timer_ring_entity: ""
+  # Sensor entity prefix: sensor.voicepe_<instance_name>_* (empty = "device")
+  instance_name: ""
   # Enrollment (fork): the wake phrase the audio coach asks for, and the TTS
   # voice used for the coach prompts (any /v1/audio/speech voice).
   enrollment_phrase: "hey jarvis"
@@ -160,6 +162,7 @@ schema:
   speaker_male_name: str
   wake_sound_entity: str
   timer_ring_entity: str
+  instance_name: str
   enrollment_phrase: str
   enrollment_tts_voice: str
   speaker_female_name: str

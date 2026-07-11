@@ -198,6 +198,11 @@ class RawAudioSerializer(FrameSerializer):
                 logger.info("👋 device wake received")
                 self._last_wake_mono = time.monotonic()
                 self._reply_audio_since_wake = False
+                try:
+                    from .ha_sensors import PUBLISHER
+                    await PUBLISHER.wake()
+                except Exception:
+                    pass
                 if self._speaker_probe is not None:
                     self._speaker_probe.start_capture()
                 if self._on_wake is not None:

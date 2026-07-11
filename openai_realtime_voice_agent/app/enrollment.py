@@ -85,6 +85,12 @@ class EnrollmentRecorder:
         self.path = path
         self._started_at = time.monotonic()
         logger.info(f"🎓 voice enrollment started for '{safe}' → {path}")
+        try:
+            import asyncio as _a
+            from .ha_sensors import PUBLISHER
+            _a.get_running_loop().create_task(PUBLISHER.enrollment(True))
+        except Exception:
+            pass
         return path
 
     def feed(self, pcm: bytes) -> None:
@@ -117,6 +123,12 @@ class EnrollmentRecorder:
             )
         self.person = None
         self.path = None
+        try:
+            import asyncio as _a
+            from .ha_sensors import PUBLISHER
+            _a.get_running_loop().create_task(PUBLISHER.enrollment(False))
+        except Exception:
+            pass
         return info
 
 
@@ -151,6 +163,11 @@ def create_false_alarm_tool_handler() -> Callable[["FunctionCallParams"], Awaita
             marked = latest.replace("probe_", "falsewake_", 1)
             os.rename(os.path.join(probes_dir, latest), os.path.join(probes_dir, marked))
             logger.info(f"🏷️ marked false wake: {marked}")
+            try:
+                from .ha_sensors import PUBLISHER
+                await PUBLISHER.false_wake()
+            except Exception:
+                pass
             await params.result_callback(
                 {"status": "marked", "note": "Logged as a false trigger for retraining. Confirm briefly."}
             )

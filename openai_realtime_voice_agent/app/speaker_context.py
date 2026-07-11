@@ -179,8 +179,13 @@ class SpeakerProbe:
                 f"🗣️ speaker probe [{method}]: {label}"
                 f"{f' → {name}' if name else ''} (score={metric:.2f})"
             )
+            try:
+                from .ha_sensors import PUBLISHER
+                await PUBLISHER.speaker(label, name, metric, method)
+            except Exception:
+                pass
             if self.on_verdict is not None:
-                await self.on_verdict(label, name, f0)
+                await self.on_verdict(label, name, metric)
         except Exception as e:
             logger.warning(f"⚠️ speaker probe failed (turn continues without it): {e!r}")
         finally:
