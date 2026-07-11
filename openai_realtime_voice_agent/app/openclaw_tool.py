@@ -63,6 +63,32 @@ def get_openclaw_tool_definition() -> dict:
     }
 
 
+def get_recall_tool_definition() -> dict:
+    return {
+        "type": "function",
+        "name": "recall_memory",
+        "description": (
+            "INSTANT (under a second) search of the household's long-term memory: "
+            "people, contact phone numbers, birthdays, preferences, history, past "
+            "decisions. ALWAYS try this FIRST for any personal or household recall "
+            "question ('what is X's number', 'when is Y's birthday', 'what did we "
+            "decide about Z'). Answer from the returned memory lines. Only if "
+            "nothing relevant comes back, or the request needs action (messages, "
+            "calls, research), fall back to ask_openclaw."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Two to four key words, e.g. 'Buddy phone'",
+                }
+            },
+            "required": ["query"],
+        },
+    }
+
+
 def register_openclaw_tool(llm) -> None:
     async def _ask(params) -> None:
         question = ((params.arguments or {}).get("question") or "").strip()
@@ -82,4 +108,26 @@ def register_openclaw_tool(llm) -> None:
         logger.info(f"🦞 ask_openclaw answered ({len(answer)} chars)")
         await params.result_callback({"answer": answer or "(no answer)"})
 
+    async def _recall(params) -> None:
+        query = ((params.arguments or {}).get("query") or "").strip()
+        if not query:
+            await params.result_callback({"matches": [], "error": "empty query"})
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(openclaw_url(), json={"recall": query})
+                r.raise_for_status()
+                matches = (r.json() or {}).get("matches", [])
+        except Exception as e:
+            logger.warning(f"⚠️ recall_memory failed: {e!r}")
+            await params.result_callback({
+                "matches": [], "note": "recall unavailable — use ask_openclaw"})
+            return
+        logger.info(f"🔎 recall_memory '{query}' -> {len(matches)} lines")
+        await params.result_callback({
+            "matches": matches,
+            "note": "" if matches else "nothing found — ask_openclaw may know more",
+        })
+
     llm.register_function("ask_openclaw", _ask)
+    llm.register_function("recall_memory", _recall)

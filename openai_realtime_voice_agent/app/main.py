@@ -22,6 +22,7 @@ from app.timers import TimerRegistry, get_timer_tool_definitions, register_timer
 from app.announce_http import start_announce_server
 from app.openclaw_tool import (
     get_openclaw_tool_definition,
+    get_recall_tool_definition,
     openclaw_url,
     register_openclaw_tool,
 )
@@ -666,6 +667,7 @@ class Application:
             # below so the model sees exactly one ask_openclaw.
             if openclaw_url():
                 all_tools.append(get_openclaw_tool_definition())
+                all_tools.append(get_recall_tool_definition())
 
             # Get MCP tool definitions if available
             mcp_tools_schema = None

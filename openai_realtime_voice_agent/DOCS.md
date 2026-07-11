@@ -68,6 +68,11 @@ directly with a ~2.5-minute timeout; an MCP tool of the same name is skipped
 so the model sees exactly one. Leave blank to use whatever your MCP server
 exposes, unchanged.
 
+With `openclaw_url` set you also get **`recall_memory`**: the bridge answers
+`{"recall": "<query>"}` with matching lines from the agent's memory files —
+instant, deterministic recall (contacts, dates, preferences) with the full
+agent turn as fallback. See the bridge README for the endpoint contract.
+
 **`announce_port` + `announce_token`** (optional, set both): a LAN route *back to
 the device* for an external agent. `POST http://<ha-host>:<announce_port>/announce`
 with `Authorization: Bearer <announce_token>` and body `{"message": "..."}` speaks

@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.16.1 (fork)
+
+- **`recall_memory` tool** (with `openclaw_url`): instant deterministic search
+  of the agent's memory files via the bridge (`{"recall": query}` →
+  `{"matches": [...]}`). Registered as the FIRST stop for personal/household
+  recall; `ask_openclaw` becomes the deep fallback. Fixes recall being a
+  40-80s agent turn that found or missed facts depending on phrasing.
+
 ## 0.16.0 (fork)
 
 - **Announce endpoint** (`announce_port` + `announce_token` options): a LAN
