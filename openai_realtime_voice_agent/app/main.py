@@ -931,6 +931,15 @@ class Application:
                     logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
+            # MUST come AFTER register_tools_schema: pipecat registers a handler
+            # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+            # sent to the model, not handler registration), so a same-named
+            # ask_openclaw script silently rebinds the tool back onto the HA MCP
+            # path and its 60s cap. Observed live 2026-07-13: "It failed. I
+            # couldn't send the text" at exactly 60s — while the text sent fine.
+            if openclaw_url():
+                register_openclaw_tool(self.openai_service)
+                logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
             
             # Register service with session manager
             if client_id:

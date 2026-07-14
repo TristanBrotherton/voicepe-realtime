@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.16.6 (fork)
+
+- **Fixed: direct `ask_openclaw` silently rebinding to the HA MCP path.**
+  pipecat registers a handler for every MCP tool during session creation,
+  which overwrote the native direct-path handler — resurrecting the 60-second
+  MCP cap ("it failed" while the task actually succeeded). Native registration
+  now happens after MCP registration and wins.
+- **Announce endpoint repeat guard**: near-duplicate messages within 10
+  minutes are accepted but not spoken (`duplicate_suppressed`), so an agent
+  monitoring for a result can't re-announce the same news every poll cycle.
+
 ## 0.16.5 (fork)
 
 - **Voice prints now build automatically** when enrollment completes — the
