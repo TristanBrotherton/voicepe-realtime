@@ -117,6 +117,15 @@ Three things must line up — check `sensor.voicepe_<instance>_voice_prints`:
 Also: the check needs ~3 seconds of voiced speech, so ask "who am I?" as a
 follow-up rather than the very first words after the wake.
 
+### I exposed a new entity or script to Assist but the assistant can't use it
+
+The tool list is fetched from Home Assistant **when a session is created** —
+newly exposed scripts (which arrive as new *tools*) aren't picked up by
+already-running sessions. **Restart the add-on** after exposing new scripts
+and they'll appear. (State of newly exposed *entities* is read live via
+GetLiveContext, so those usually work without a restart — it's script tools
+that need one.)
+
 ### It replied to the TV / a conversation it overheard — how do I stop that?
 
 The mic stays open briefly after each reply (the follow-up window, so you can
