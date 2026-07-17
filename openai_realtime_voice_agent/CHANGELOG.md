@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.16.7 (fork)
+
+- **Wedge watchdog**: a half-open OpenAI socket (dies silently during an idle
+  gap — no close frame, no error) used to swallow the next request entirely:
+  audio streamed out, nothing came back, no reply. Now every wake arms a 12 s
+  liveness check; if the server VAD shows no activity, the session reconnects
+  in place (~3 s). A silent wake triggers a harmless idle-time reconnect.
+
 ## 0.16.6 (fork)
 
 - **Fixed: direct `ask_openclaw` silently rebinding to the HA MCP path.**

@@ -283,6 +283,8 @@ class PhaseEmitter(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, UserStartedSpeakingFrame):
+            # Liveness stamp for the wedge watchdog: the server VAD is alive.
+            self.last_vad_mono = time.monotonic()
             self._suppress_thinking = False
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.

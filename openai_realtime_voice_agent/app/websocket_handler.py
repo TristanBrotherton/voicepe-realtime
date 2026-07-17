@@ -244,6 +244,18 @@ class ConnectionRecovery(FrameProcessor):
                     asyncio.create_task(self._unstick_idle(msg))
         await self.push_frame(frame, direction)
 
+    async def force_reconnect(self, reason: str) -> None:
+        """Positive-liveness reconnect: for wedged (half-open) sockets that
+        produce NO ErrorFrames at all — audio streams out, nothing comes back
+        (observed live 2026-07-16: wake + speech after an idle gap → zero
+        server events, no error, request lost)."""
+        now = time.monotonic()
+        if self._reconnecting or now - self._last_attempt < self.RECONNECT_COOLDOWN_S:
+            return
+        self._reconnecting = True
+        self._last_attempt = now
+        await self._recover(reason)
+
     async def _recover(self, reason: str):
         t0 = time.monotonic()
         age_s = t0 - self._connected_at
@@ -473,8 +485,9 @@ class WebSocketHandler:
             # Watch for OpenAI connection-death ErrorFrames (they travel upstream
             # to the task source, so place this upstream of the service) and
             # reconnect in place. Without it a 1011/1001 drop bricks the session.
-            ConnectionRecovery(openai_service=openai_service, emit_idle=self.broadcast_phase,
-                               phase_emitter=phase_emitter),
+            (connection_recovery := ConnectionRecovery(
+                openai_service=openai_service, emit_idle=self.broadcast_phase,
+                phase_emitter=phase_emitter)),
             InputResampler(out_rate=PIPELINE_SAMPLE_RATE),
             input_activity_tracker,
         ]
@@ -679,7 +692,22 @@ class WebSocketHandler:
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input clear no-op ({e!r})")
 
+        WEDGE_TIMEOUT_S = 12.0
+
+        async def _wedge_check(wake_mono: float):
+            # If the server VAD shows no life this long after a wake, the
+            # OpenAI socket is presumed half-open (dead) → reconnect in place.
+            # False positive = a silent wake (user said nothing): the reconnect
+            # is 3s during idle, harmless. Cooldown lives in force_reconnect.
+            await asyncio.sleep(WEDGE_TIMEOUT_S)
+            if getattr(phase_emitter, "last_vad_mono", 0.0) < wake_mono:
+                logger.warning(
+                    "🧟 no server VAD activity %.0fs after wake — presuming a "
+                    "half-open OpenAI socket, reconnecting", WEDGE_TIMEOUT_S)
+                await connection_recovery.force_reconnect("wedge: silent after wake")
+
         async def _on_device_wake():
+            asyncio.create_task(_wedge_check(time.monotonic()))
             # va_client sends {"type":"wake"} on every wake (start_session). Mark
             # the turn boundary for the dangling-VAD guard (A): until the user
             # actually speaks, a server-VAD end-of-turn is a stale pre-wake
