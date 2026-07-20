@@ -96,6 +96,10 @@ options:
   # 150 (not 0): cushions WS jitter so the speaker doesn't run dry mid-word
   # (the start-of-reply crackle); costs 150 ms of reply latency.
   playback_prebuffer_ms: 150
+  # 400: relay-side lead buffer against the device resampler cold-start. Holds the
+  # first N ms of each reply (after an idle gap) and bursts it so the device's ring
+  # buffer gets a lead even on a cold turn, then passes through. 0 disables.
+  output_lead_buffer_ms: 400
   noise_reduction: "off"
 
   # --- 🏠 Home Assistant ---
@@ -165,6 +169,7 @@ schema:
   web_search_model_custom: str?
   # --- 🎚️ Audio ---
   playback_prebuffer_ms: int(0,2000)
+  output_lead_buffer_ms: int(0,2000)
   noise_reduction: "list(off|near_field|far_field)"
   # --- 🏠 Home Assistant ---
   # --- 🗣️ Speakers (fork) ---
