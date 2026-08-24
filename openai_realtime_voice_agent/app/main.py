@@ -461,6 +461,15 @@ class Application:
         except (TypeError, ValueError):
             playback_prebuffer_ms = 150
         playback_prebuffer_ms = max(0, min(2000, playback_prebuffer_ms))
+        # Relay-side output lead buffer (ms): hold the first LEAD_MS of each
+        # reply and burst it to prime the device against the resampler
+        # cold-start (app/output_lead_buffer.py). 0 = disabled — the default,
+        # opt-in until runtime-validated per install.
+        try:
+            output_lead_buffer_ms = int(os.environ.get("OUTPUT_LEAD_BUFFER_MS", "0"))
+        except (TypeError, ValueError):
+            output_lead_buffer_ms = 0
+        output_lead_buffer_ms = max(0, min(2000, output_lead_buffer_ms))
 
         # Get session reuse timeout and initialize session manager
         session_reuse_timeout = float(os.environ.get("SESSION_REUSE_TIMEOUT_SECONDS", "300"))
@@ -510,13 +519,15 @@ class Application:
             follow_up_open_delay_ms=follow_up_open_delay_ms,
             wake_open_delay_ms=wake_open_delay_ms,
             playback_prebuffer_ms=playback_prebuffer_ms,
+            output_lead_buffer_ms=output_lead_buffer_ms,
         )
         logger.info(
             f"🔁 Follow-up window: {follow_up_listen_seconds}s "
             f"({'enabled' if follow_up_ms > 0 else 'disabled — turn-based'}), "
             f"mic-open delay {follow_up_open_delay_ms}ms, "
             f"wake-open delay {wake_open_delay_ms}ms, "
-            f"playback prebuffer {playback_prebuffer_ms}ms"
+            f"playback prebuffer {playback_prebuffer_ms}ms, "
+            f"output lead buffer {output_lead_buffer_ms}ms"
         )
         # Speaker context v1 (fork): enabled when at least one name is set.
         global SPEAKER_PROBE, MALE_ONLY_TOOLS
