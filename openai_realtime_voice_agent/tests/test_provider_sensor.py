@@ -244,8 +244,10 @@ async def test_a_slow_publish_does_not_delay_the_connection(monkeypatch):
     # blocked on release.wait() and the wait_for below would time out.
     await asyncio.wait_for(handler.serve_connection(_FakeWebSocket()), timeout=1.0)
 
-    # And the publish really was dispatched, not silently skipped.
-    assert started.is_set()
+    # And the publish really was dispatched, not silently skipped. It is a
+    # background task: serve_connection's fake setup path never suspends, so
+    # the task has not had a turn yet when it returns -- give it one.
+    await asyncio.wait_for(started.wait(), timeout=1.0)
     release.set()  # let the background task finish so nothing lingers
 
 
