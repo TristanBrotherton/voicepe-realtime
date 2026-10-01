@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.2 (fork)
+
+- **En enhet som återansluter mitt i en nedstängning blir inte längre döv**
+  (D-80). Ljudinspelningens två processorer delades av alla pipelines, så
+  när kontoret återanslöt medan den gamla sessionen avbröts gick den gamla
+  pipelinens CancelFrame in i den nya och satte inspelaren i ett
+  avbrytläge som pipecat aldrig återställer. Därefter släpptes allt ljud
+  från enheten innan det nådde OpenAI, tills tillägget startades om. Nu
+  får varje pipeline egna inspelare.
+
 ## 0.22.1 (fork)
 
 - **Bana 0 hör bara användarens yttrande** (US-016, granskningsfynd F2).
