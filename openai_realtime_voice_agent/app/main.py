@@ -676,55 +676,15 @@ class Application:
             if self.mcp_client:
                 try:
                     logger.info("🔧 Fetching MCP tool definitions...")
-                    # Bounded: this runs under the pipeline lock, and pipecat's
-                    # MCP client lets one read hang for up to 300 s. A Home
-                    # Assistant mid-restart held the lock and kept every new
-                    # session out for 35 min (2026-09-30). On timeout the
-                    # session is built without HA tools, like any other failure.
-                    try:
-                        mcp_timeout = float(os.environ.get("MCP_TOOLS_TIMEOUT_SECONDS", "5"))
-                    except ValueError:
-                        mcp_timeout = 5.0
-                    try:
-                        mcp_tools_schema = await asyncio.wait_for(
-                            self.mcp_client.get_tools_schema(), timeout=mcp_timeout
-                        )
-                    except asyncio.TimeoutError:
-                        raise TimeoutError(f"no answer from Home Assistant in {mcp_timeout:g} s")
-
-                    # Convert MCP tool schemas to OpenAI format, applying the
-                    # optional allow-list so the realtime session isn't flooded
-                    # with ha-mcp's 80+ tools.
-                    exposed = 0
-                    for function_schema in mcp_tools_schema.standard_tools:
-                        if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
-                            continue
-                        if openclaw_url() and function_schema.name == "ask_openclaw":
-                            continue
-                        # Our play_media does the same job and can be told what
-                        # kind of thing to look for. Leaving both in place means
-                        # the model sometimes picks the one that answers "play
-                        # P3" with a Spotify track. See play_media_tool.
-                        if function_schema.name == "HassMediaSearchAndPlay":
-                            continue
-                        openai_tool = {
-                            "type": "function",
-                            "name": function_schema.name,
-                            "description": function_schema.description,
-                            "parameters": {
-                                "type": "object",
-                                "properties": function_schema.properties,
-                                "required": function_schema.required
-                            }
-                        }
-                        all_tools.append(openai_tool)
-                        exposed += 1
-
+                    mcp_tools_schema = await self._fetch_ha_tools_schema()
+                    ha_tools = self._ha_tool_definitions(mcp_tools_schema)
+                    all_tools.extend(ha_tools)
                     if self.mcp_tool_allowlist:
-                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {exposed} per allow-list")
+                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {len(ha_tools)} per allow-list")
                     else:
                         logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools")
                 except Exception as e:
+                    mcp_tools_schema = None
                     logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
             
             from app.providers import build_service
@@ -813,20 +773,15 @@ class Application:
 
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:
-                try:
-                    await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
-                    logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
-            # MUST come AFTER register_tools_schema: pipecat registers a handler
-            # for EVERY MCP tool (our allow-list/dedup only trims the definitions
-            # sent to the model, not handler registration), so a same-named
-            # ask_openclaw script silently rebinds the tool back onto the HA MCP
-            # path and its 60s cap. Observed live 2026-07-13: "It failed. I
-            # couldn't send the text" at exactly 60s — while the text sent fine.
-            if openclaw_url():
-                register_openclaw_tool(service)
-                logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+                await self._register_ha_handlers(service, mcp_tools_schema)
+            elif self.mcp_client:
+                # HA was down (restart) while this session was built. The
+                # connection can live for hours, so fetch again in the
+                # background rather than waiting for the device to reconnect
+                # (raawr D-70).
+                connection.ha_tools_task = asyncio.create_task(
+                    self._recover_ha_tools(connection, service)
+                )
             
             # Register service with session manager
             if client_id:
@@ -836,6 +791,126 @@ class Application:
 
             logger.info("✅ New session created")
             return service
+
+    async def _fetch_ha_tools_schema(self):
+        """Fetch HA's MCP tool schema, bounded.
+
+        pipecat's MCP client lets one read hang for up to 300 s. A Home
+        Assistant mid-restart held the pipeline lock and kept every new
+        session out for 35 min (2026-09-30), so give up after
+        MCP_TOOLS_TIMEOUT_SECONDS and let the caller go on without HA tools.
+
+        Returns:
+            The ToolsSchema. Raises on any failure, TimeoutError included.
+        """
+        try:
+            mcp_timeout = float(os.environ.get("MCP_TOOLS_TIMEOUT_SECONDS", "5"))
+        except ValueError:
+            mcp_timeout = 5.0
+        try:
+            return await asyncio.wait_for(
+                self.mcp_client.get_tools_schema(), timeout=mcp_timeout
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"no answer from Home Assistant in {mcp_timeout:g} s")
+
+    def _ha_tool_definitions(self, mcp_tools_schema) -> list:
+        """The HA tools the model gets to see, in OpenAI Realtime shape.
+
+        Applies the optional allow-list so the realtime session isn't flooded
+        with ha-mcp's 80+ tools, and drops HA tools our own tools replace.
+        """
+        tools = []
+        for function_schema in mcp_tools_schema.standard_tools:
+            if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
+                continue
+            if openclaw_url() and function_schema.name == "ask_openclaw":
+                continue
+            # Our play_media does the same job and can be told what kind of
+            # thing to look for. Leaving both in place means the model
+            # sometimes picks the one that answers "play P3" with a Spotify
+            # track. See play_media_tool.
+            if function_schema.name == "HassMediaSearchAndPlay":
+                continue
+            tools.append({
+                "type": "function",
+                "name": function_schema.name,
+                "description": function_schema.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": function_schema.properties,
+                    "required": function_schema.required
+                }
+            })
+        return tools
+
+    async def _register_ha_handlers(self, service, mcp_tools_schema) -> None:
+        """Bind HA's MCP tools to `service`, then put the direct ask_openclaw back.
+
+        register_function keys by name, so running this twice replaces the
+        handlers rather than adding a second set.
+        """
+        try:
+            await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
+            logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
+        # MUST come AFTER register_tools_schema: pipecat registers a handler
+        # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+        # sent to the model, not handler registration), so a same-named
+        # ask_openclaw script silently rebinds the tool back onto the HA MCP
+        # path and its 60s cap. Observed live 2026-07-13: "It failed. I
+        # couldn't send the text" at exactly 60s — while the text sent fine.
+        if openclaw_url():
+            register_openclaw_tool(service)
+            logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+
+    async def _apply_ha_tools(self, service, mcp_tools_schema) -> int:
+        """Give a LIVE session the HA tools it was built without.
+
+        Returns:
+            How many HA tools the model now sees.
+        """
+        from app.providers import add_tools
+
+        ha_tools = self._ha_tool_definitions(mcp_tools_schema)
+        await self._register_ha_handlers(service, mcp_tools_schema)
+        await add_tools(service, ha_tools)
+        return len(ha_tools)
+
+    async def _recover_ha_tools(self, connection, service) -> None:
+        """Retry the HA tool fetch until it works or the session is gone.
+
+        Runs outside the pipeline lock, and each attempt keeps the fetch
+        timeout, so a turn never waits on HA. Cancelled by
+        WebSocketHandler._teardown when the device disconnects.
+        """
+        try:
+            interval = float(os.environ.get("MCP_TOOLS_RETRY_SECONDS", "15"))
+        except ValueError:
+            interval = 15.0
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if connection.openai_service is not service:
+                    return
+                try:
+                    schema = await self._fetch_ha_tools_schema()
+                except Exception as e:
+                    logger.debug(f"HA tools still unavailable for {connection.device_id}: {e}")
+                    continue
+                if connection.openai_service is not service:
+                    return
+                try:
+                    exposed = await self._apply_ha_tools(service, schema)
+                except Exception as e:
+                    logger.warning(f"⚠️ HA tools fetched but could not be applied: {e!r}")
+                    return
+                logger.info(f"✅ HA tools recovered: {exposed}")
+                return
+        finally:
+            if connection.ha_tools_task is asyncio.current_task():
+                connection.ha_tools_task = None
 
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.

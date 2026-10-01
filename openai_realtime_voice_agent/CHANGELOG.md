@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.21.1 (fork)
+
+- **HA-verktygen kommer tillbaka av sig själva** (raawr D-70). Var HA nere
+  (omstart) när en högtalare anslöt byggdes sessionen utan HA-verktyg (14
+  i stället för 59), och de kom inte tillbaka förrän högtalaren anslöt på
+  nytt — vilket kan dröja timmar. Nu försöker agenten igen i bakgrunden var
+  `MCP_TOOLS_RETRY_SECONDS` (förval 15) och lägger in verktygen i den
+  levande sessionen (`session.update` för OpenAI; Gemini får dem vid nästa
+  återanslutning) när HA svarar: `✅ HA tools recovered: N`. Försöket
+  stoppas när enheten kopplar ner.
+
 ## 0.21.0 (fork)
 
 - **En Home Assistant som startar om tystar inte längre högtalaren** (raawr

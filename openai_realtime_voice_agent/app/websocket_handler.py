@@ -1828,6 +1828,9 @@ class WebSocketHandler:
                 await connection.task.cancel()
             except Exception as e:
                 logger.debug(f"task cancel for {connection.device_id}: {e!r}")
+        if connection.ha_tools_task is not None:
+            connection.ha_tools_task.cancel()
+            connection.ha_tools_task = None
         recovery = connection.recovery
         if recovery is not None:
             await recovery.close()
