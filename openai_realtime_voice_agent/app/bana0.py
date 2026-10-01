@@ -27,6 +27,21 @@ CHUNK_BYTES = 3200  # 100 ms of 16 kHz PCM16 mono
 AUDIO = {"rate": RATE, "width": WIDTH, "channels": CHANNELS}
 
 
+def stt_adress(value: str) -> Optional[tuple[str, int]]:
+    """The `bana0_stt` option, "host" or "host:port" (Wyoming default 10300). Empty or bad = off."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    host, sep, port = value.rpartition(":")
+    if not sep:
+        return value, 10300
+    try:
+        return (host, int(port)) if host else None
+    except ValueError:
+        logger.warning(f"bana0: bad bana0_stt {value!r}, bana 0 off")
+        return None
+
+
 def _event(typ: str, data: Optional[dict] = None, payload: bytes = b"") -> bytes:
     header = {"type": typ, "data": data or {}}
     if payload:

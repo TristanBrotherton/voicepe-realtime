@@ -9,6 +9,9 @@ from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializer
 logger = logging.getLogger(__name__)
 
 
+TURN_PCM_CAP = 16000 * 2 * 30  # 30 s of 16 kHz PCM16 mono
+
+
 class RawAudioSerializer(FrameSerializer):
     """Serializer that treats all binary messages as raw PCM audio.
 
@@ -64,6 +67,10 @@ class RawAudioSerializer(FrameSerializer):
         # Out-of-band announcements (timer expiry): while playing, inbound mic
         # audio is dropped so the assistant can't hear and answer itself.
         self.suppress_inbound_until = 0.0
+        # Bana 0 (raawr US-016): this turn's mic audio as the device sent it
+        # (16 kHz PCM16 mono), for the local STT. Reset on wake, taken at end
+        # of turn.
+        self.turn_pcm = bytearray()
         self._last_button_mono = 0.0
         # Set on wake; cleared when we ack the first mic frame back to the
         # device (cancels its no-speech watchdog — audio is flowing).
@@ -255,6 +262,7 @@ class RawAudioSerializer(FrameSerializer):
                     pass
                 if self._speaker_probe is not None:
                     self._speaker_probe.start_capture()
+                self.turn_pcm.clear()
                 if self._on_wake is not None:
                     try:
                         await self._on_wake()
@@ -292,6 +300,9 @@ class RawAudioSerializer(FrameSerializer):
         # wake armed it; classification runs in a thread, never blocks here).
         if self._speaker_probe is not None:
             self._speaker_probe.feed(message)
+        self.turn_pcm += message
+        if len(self.turn_pcm) > TURN_PCM_CAP:
+            del self.turn_pcm[:-TURN_PCM_CAP]  # keep the latest 30 s
 
         # Voice enrollment: while a session is active, mic audio goes ONLY to
         # the recorder — OpenAI must not hear it (no VAD commits, no forced
@@ -315,6 +326,12 @@ class RawAudioSerializer(FrameSerializer):
 
         return frame
     
+    def take_turn_audio(self) -> bytes:
+        """The turn's mic audio so far, and start a new one."""
+        pcm = bytes(self.turn_pcm)
+        self.turn_pcm.clear()
+        return pcm
+
     async def serialize(self, frame: Frame) -> bytes:
         if isinstance(frame, OutputAudioRawFrame):
             self._reply_audio_since_wake = True

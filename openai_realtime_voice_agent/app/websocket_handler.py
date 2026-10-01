@@ -27,6 +27,7 @@ from app.providers import (
     input_sample_rate,
     supports_client_events,
 )
+from app import bana0
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
@@ -979,6 +980,12 @@ class WebSocketHandler:
         # the connection that starts it.
         self.enrollment_recorder = None
         self.enrollment_conductor = None
+        # Bana 0 (raawr US-016), set by main.py: the local STT's (host, port),
+        # None = off; its timeouts in seconds (stt, comms); and the guarded
+        # announcer `say(text, device_id)` that speaks HA's confirmation.
+        self.bana0_stt: Optional[tuple[str, int]] = None
+        self.bana0_timeouts: tuple[float, float] = (0.6, 4.0)
+        self.say = None
     
     def create_transport(
         self, websocket, serializer: RawAudioSerializer, provider: str = OPENAI
@@ -1392,6 +1399,38 @@ class WebSocketHandler:
         # and PhaseEmitter.set_turn_success_handler for why this has to be a
         # callback rather than a frame ConnectionRecovery sees directly.
         phase_emitter.set_turn_success_handler(connection.recovery.note_turn_success)
+
+        # Bana 0 (raawr US-016), OpenAI only: at the end of every user turn,
+        # try HA's own agent first; the model answers only on a miss (main.py
+        # turned the server's create_response off for exactly this case).
+        if (
+            self.bana0_stt is not None
+            and serializer is not None
+            and (connection.provider or OPENAI) == OPENAI
+            and hasattr(openai_service, "on_user_turn_end")
+        ):
+            host, port = self.bana0_stt
+            timeout_stt, timeout_comms = self.bana0_timeouts
+
+            async def _say(text):
+                if self.say is None:
+                    raise RuntimeError("no announcer wired")
+                await self.say(text, client_id)
+
+            async def _on_user_turn_end():
+                bana = await bana0.tur(
+                    serializer.take_turn_audio(),
+                    stt=lambda pcm, t: bana0.transkribera(pcm, host, port, t),
+                    timeout_stt=timeout_stt,
+                    timeout_comms=timeout_comms,
+                    say=_say,
+                    skicka_svar_till_modellen=lambda text: bana0.lagg_till_svar(openai_service, text),
+                    skapa_svar=lambda: bana0.be_om_svar(openai_service),
+                )
+                if bana == "bana0":
+                    await phase_emitter.force_idle("bana0")
+
+            openai_service.on_user_turn_end = _on_user_turn_end
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)

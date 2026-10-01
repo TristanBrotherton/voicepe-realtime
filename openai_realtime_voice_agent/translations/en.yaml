@@ -173,6 +173,12 @@ configuration:
     description: >-
       The key raawr-comms handed this add-on (COMMS_KONTORET_NYCKEL in comms'
       environment). Not a Home Assistant token.
+  bana0_stt:
+    name: "🏠 Home Assistant · Fast path STT (bana 0)"
+    description: >-
+      host:port of a local Wyoming speech-to-text. When set, plain home
+      commands go to Home Assistant's own agent first and the model answers
+      only what HA did not handle. Empty = off.
   mcp_tool_allowlist:
     name: "🏠 Home Assistant · Tool allow-list"
     description: >-

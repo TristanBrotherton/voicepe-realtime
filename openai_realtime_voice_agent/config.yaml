@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (Raawr)
-version: "0.21.2"
+version: "0.22.0"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -155,6 +155,10 @@ options:
 
   ha_api_url: ""
   comms_nyckel: ""
+  # Bana 0 (raawr US-016): the local Wyoming STT as host:port. When set, a
+  # plain home command goes to HA's own agent (via raawr-comms) first and the
+  # model answers only if HA did not handle it. Empty = off.
+  bana0_stt: ""
   mcp_tool_allowlist: ""
   # Direct OpenClaw/agent escalation endpoint: POST {"question"} -> {"answer"}.
   # When set, ask_openclaw is called directly (up to ~2.5 min) instead of via
@@ -229,6 +233,7 @@ schema:
   male_only_tools: str
   ha_api_url: str
   comms_nyckel: password
+  bana0_stt: str
   mcp_tool_allowlist: str
   openclaw_url: str
   announce_port: int(0,65535)

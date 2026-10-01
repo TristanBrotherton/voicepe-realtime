@@ -53,6 +53,7 @@ NOISE_REDUCTION=$(bashio::config 'noise_reduction')
 # --- 🏠 Home Assistant ---
 HA_API_URL=$(bashio::config 'ha_api_url')
 COMMS_NYCKEL=$(bashio::config 'comms_nyckel')
+BANA0_STT=$(bashio::config 'bana0_stt')
 MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
 OPENCLAW_URL=$(bashio::config 'openclaw_url')
 ANNOUNCE_PORT=$(bashio::config 'announce_port')
@@ -114,6 +115,7 @@ export OUTPUT_LEAD_BUFFER_MS
 export NOISE_REDUCTION
 export HA_API_URL
 export COMMS_NYCKEL
+export BANA0_STT
 export MCP_TOOL_ALLOWLIST
 export OPENCLAW_URL
 export ANNOUNCE_PORT

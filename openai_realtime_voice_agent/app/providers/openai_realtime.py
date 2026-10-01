@@ -62,9 +62,19 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         # reconnect cycle can set, read, and clear, not incidental scratch
         # space. See _reseed_context_after_reset / _handle_evt_session_updated.
         self._pending_reseed_messages = None
+        # Bana 0 (raawr US-016): called on every end of a user turn when the
+        # fast path is configured. None = today's behaviour, nothing extra.
+        self.on_user_turn_end = None
+        self._turn_end_task = None
 
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
+
+    async def _handle_evt_speech_stopped(self, evt):  # type: ignore[override]
+        await super()._handle_evt_speech_stopped(evt)
+        if self.on_user_turn_end is not None:
+            # A task: the receive loop must keep reading while bana 0 runs.
+            self._turn_end_task = asyncio.get_running_loop().create_task(self.on_user_turn_end())
 
     async def send_client_event(self, event):  # type: ignore[override]
         """Serialize GPT transcription models with their required `languages` field.

@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.0 (fork)
+
+- **Bana 0: enkla hemkommandon går till HA:s egen agent först** (raawr
+  US-016). Nytt tillval `bana0_stt` (`host:port` till en lokal Wyoming-STT,
+  tomt = av, som i dag). När det är satt skickas turens ljud vid turens slut
+  (`input_audio_buffer.speech_stopped`) till STT:n, texten till HA:s
+  konversationsagent genom raawr-comms, och HA:s bekräftelse talas upp i
+  rummet. Modellen får då bara veta vad som sades och ombeds aldrig svara.
+  Hanterade HA inte ordern (204, fel, tidsgräns) får modellen svara som
+  vanligt. Med bana 0 på skapar servern inte längre svar själv
+  (`create_response` av); agenten skickar `response.create` vid en miss.
+  Tidsgränser: `BANA0_STT_TIMEOUT_MS` (förval 600) och
+  `BANA0_COMMS_TIMEOUT_MS` (förval 4000). Bara OpenAI och `semantic_vad`.
+
 ## 0.21.2 (fork)
 
 - **0.21.1:s återhämtning gjorde sessionen döv — nu återansluts enheten i

@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from app import bana0
+import app.main  # noqa: F401 -- before the comms fixture patches httpx.AsyncClient
 
 COMMS = "http://comms.test:3500/kanal/rost/kontoret/api"
 NYCKEL = "kontorets-comms-nyckel"
@@ -223,3 +224,151 @@ async def test_traff_dar_talet_kraschar_ber_aldrig_modellen_svara(comms):
             skapa_svar=lambda: bana0.be_om_svar(service),
         ) == "bana0"
     assert service.typer() == ["conversation.item.create"]
+
+
+# --- T3: the wiring (main.py, websocket_handler.py, the service, the serializer) ---
+
+def _app(create_response=True, bana0_stt=None):
+    from app.main import Application
+
+    app = Application()
+    app.instructions = "Base."
+    app.max_output_tokens = None
+    app.openai_api_key, app.model, app.voice, app.openai_speed = "sk-key", "gpt-realtime-2", "marin", 1.0
+    app.noise_reduction = ""
+    app.turn_detection_type = "semantic_vad"
+    app.vad_eagerness = "low"
+    app.vad_threshold, app.vad_prefix_padding_ms, app.vad_silence_duration_ms = 0.5, 300, 800
+    app.semantic_vad_create_response = create_response
+    app.interrupt_response = False
+    app.transcription_model, app.transcription_language = "gpt-4o-transcribe", ""
+    app.bana0_stt = bana0_stt
+    return app
+
+
+def _create_response(app):
+    from app.providers import OPENAI
+    from app.providers.openai_realtime import build
+
+    options = app.provider_options(OPENAI)
+    service = build(options, tools=[])
+    assert service._session_properties.audio.input.turn_detection.create_response is options.semantic_vad_create_response
+    return options.semantic_vad_create_response, service
+
+
+def test_create_response_av_bara_nar_bana0_pa():
+    # Off: exactly as before -- the server creates, the context is pre-seeded.
+    off, service = _create_response(_app())
+    assert off is True
+    _app()._preseed_context(service)
+    assert service._context is not None
+
+    # On: the server no longer creates; the agent does, on a miss. The
+    # pre-seed must still run, or the first context greets the room.
+    on, service = _create_response(_app(bana0_stt=("127.0.0.1", 10300)))
+    assert on is False
+    _app(bana0_stt=("127.0.0.1", 10300))._preseed_context(service)
+    assert service._context is not None
+
+    # Off with create_response already false: no pre-seed, as before.
+    _, service = _create_response(_app(create_response=False))
+    _app(create_response=False)._preseed_context(service)
+    assert service._context is None
+
+
+def test_stt_adress():
+    assert bana0.stt_adress("") is None
+    assert bana0.stt_adress("10.10.0.5:10300") == ("10.10.0.5", 10300)
+    assert bana0.stt_adress("stt.lan") == ("stt.lan", 10300)
+    assert bana0.stt_adress("stt.lan:x") is None
+
+
+def _koppling(stt):
+    """A built pipeline for one OpenAI device with a real SafeRealtimeLLMService."""
+    from app.device_registry import DeviceConnection
+    from app.providers import OPENAI
+    from app.raw_audio_serializer import RawAudioSerializer
+    from app.websocket_handler import WebSocketHandler
+
+    _, service = _create_response(_app(bana0_stt=stt))
+    sent = []
+
+    async def send(event):
+        sent.append(event)
+
+    async def noop(*a, **k):
+        return None
+
+    service.send_client_event = send
+    service.start_ttfb_metrics = service.start_processing_metrics = service.push_frame = noop
+
+    handler = WebSocketHandler()
+    handler.bana0_stt = stt
+    serializer = RawAudioSerializer("kontoret", input_sample_rate=16000)
+    connection = DeviceConnection(device_id="kontoret", websocket=object(), serializer=serializer)
+    connection.provider = OPENAI
+    connection.transport = handler.create_transport(object(), serializer, OPENAI)
+    connection.openai_service = service
+    handler.build_pipeline(connection)
+    return handler, connection, service, sent
+
+
+@pytest.mark.asyncio
+async def test_turn_pcm_nollstalls_vid_vakning_och_kapas():
+    from app.raw_audio_serializer import TURN_PCM_CAP, RawAudioSerializer
+
+    ser = RawAudioSerializer("kontoret", input_sample_rate=16000)
+    await ser.deserialize(b"\x01\x00" * 100)
+    await ser.deserialize(json.dumps({"type": "wake"}))
+    await ser.deserialize(PCM)
+    assert ser.take_turn_audio() == PCM
+    assert ser.take_turn_audio() == b""
+    await ser.deserialize(b"\x00\x00" * (TURN_PCM_CAP // 2 + 10))
+    assert len(ser.take_turn_audio()) == TURN_PCM_CAP
+
+
+@pytest.mark.asyncio
+async def test_speech_stopped_med_traff_ger_inget_response_create_och_ett_say(comms):
+    comms.svar = _ha("Tände lampan i kontoret")
+    server, port, seen = await _wyoming(_transcript("tänd lampan i kontoret"))
+    handler, connection, service, sent = _koppling(("127.0.0.1", port))
+    said, idle = [], []
+
+    async def say(text, device_id=None):
+        said.append((text, device_id))
+
+    async def force_idle(reason=""):
+        idle.append(reason)
+
+    handler.say = say
+    connection.phase_emitter.force_idle = force_idle
+    await connection.serializer.deserialize(PCM)
+    async with server:
+        await service._handle_evt_speech_stopped(None)
+        await service._turn_end_task
+
+    assert b"".join(p for t, _, p in seen if t == "audio-chunk") == PCM
+    assert [e.type for e in sent] == ["conversation.item.create"]
+    assert said == [("Tände lampan i kontoret", "kontoret")]
+    assert idle == ["bana0"]
+
+
+@pytest.mark.asyncio
+async def test_speech_stopped_med_miss_ber_modellen_svara(comms):
+    comms.svar = httpx.Response(204)
+    server, port, _ = await _wyoming(_transcript("vad är klockan"))
+    handler, connection, service, sent = _koppling(("127.0.0.1", port))
+    await connection.serializer.deserialize(PCM)
+    async with server:
+        await service._handle_evt_speech_stopped(None)
+        await service._turn_end_task
+    assert [e.type for e in sent] == ["response.create"]
+
+
+@pytest.mark.asyncio
+async def test_bana0_av_ingen_krok_och_inga_egna_handelser():
+    handler, connection, service, sent = _koppling(None)
+    assert service.on_user_turn_end is None
+    await service._handle_evt_speech_stopped(None)
+    assert service._turn_end_task is None
+    assert sent == []

@@ -153,6 +153,8 @@ class Application:
         self.speaker_male_name = ""
         self.speaker_female_name = ""
         self.male_only_tools: set[str] = set()
+        # Bana 0 (raawr US-016): the local Wyoming STT, None = off.
+        self.bana0_stt: Optional[tuple[str, int]] = None
         
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -194,6 +196,19 @@ class Application:
         # server makes it. FALSE reproduces the old single-turn-only behaviour
         # (turn 1 answers, turn 2 hangs in "thinking"). See create_service.
         semantic_vad_create_response = os.environ.get("SEMANTIC_VAD_CREATE_RESPONSE", "true").strip().lower() == "true"
+        # Bana 0 (raawr US-016): plain home commands go to HA's own agent
+        # first; the model is asked only on a miss, so with bana 0 on the
+        # server must NOT create a response per turn (see provider_options).
+        # semantic_vad only: the hook ends a turn the way semantic_vad does.
+        from app.bana0 import stt_adress
+        self.bana0_stt = stt_adress(os.environ.get("BANA0_STT", ""))
+        if self.bana0_stt and turn_detection_type != "semantic_vad":
+            logger.warning("⚠️ bana0_stt needs turn_detection_type semantic_vad — bana 0 off")
+            self.bana0_stt = None
+        bana0_timeouts = (
+            int(os.environ.get("BANA0_STT_TIMEOUT_MS", "600") or 600) / 1000,
+            int(os.environ.get("BANA0_COMMS_TIMEOUT_MS", "4000") or 4000) / 1000,
+        )
         # Expose the `disconnect_client` tool to the model. DEFAULT FALSE: on the
         # Voice PE the device owns its own session lifecycle (wake word starts a
         # turn, the no-speech watchdog / idle phase ends it), so a model-driven
@@ -414,6 +429,10 @@ class Application:
             tts_voice=os.environ.get("ENROLLMENT_TTS_VOICE", "fable").strip() or "fable",
         )
         self.websocket_handler.enrollment_conductor = self.enrollment_conductor
+        self.websocket_handler.bana0_stt = self.bana0_stt
+        self.websocket_handler.bana0_timeouts = bana0_timeouts
+        if self.bana0_stt:
+            logger.info(f"⚡ bana 0 on: STT {self.bana0_stt[0]}:{self.bana0_stt[1]}, timeouts {bana0_timeouts}")
 
         # Auto-build the voice print when enrollment finishes (fork, 0.16.5):
         # recording alone used to require a manual `python3 -m app.build_voiceprint`
@@ -470,6 +489,8 @@ class Application:
             finally:
                 if ser is not None:
                     ser.suppress_inbound_until = _t.monotonic() + 1.2
+        # Bana 0 speaks HA's confirmation through the same guarded lane.
+        self.websocket_handler.say = _guarded_say
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
             and self.websocket_handler.resolve_device(device_id) is not None
@@ -601,7 +622,8 @@ class Application:
             vad_threshold=self.vad_threshold,
             vad_prefix_padding_ms=self.vad_prefix_padding_ms,
             vad_silence_duration_ms=self.vad_silence_duration_ms,
-            semantic_vad_create_response=self.semantic_vad_create_response,
+            # Bana 0 on: the agent sends response.create itself, on a miss.
+            semantic_vad_create_response=self.semantic_vad_create_response and not self.bana0_stt,
             interrupt_response=self.interrupt_response,
             transcription_model=self.transcription_model,
             transcription_language=self.transcription_language,
@@ -952,7 +974,10 @@ class Application:
         Args:
             service: The freshly created service.
         """
-        if not (self.turn_detection_type == "semantic_vad" and self.semantic_vad_create_response):
+        # Bana 0 turns create_response off but still needs the pre-seed, or
+        # the first context makes pipecat greet the room.
+        if not (self.turn_detection_type == "semantic_vad"
+                and (self.semantic_vad_create_response or self.bana0_stt)):
             return
         try:
             from pipecat.processors.aggregators.llm_context import LLMContext
