@@ -173,12 +173,32 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
         ourselves on reconnect. The live context is untouched (it's restored by the
         SessionManager on the next real turn).
         """
+        # A replacement Realtime conversation does not contain the function
+        # calls from the old socket. Pipecat keeps their results in the shared
+        # LLM context, though, and clears its own sent-result bookkeeping on
+        # reconnect. Without preserving those IDs, the next tool completion
+        # replays an old function_call_output into the new conversation. OpenAI
+        # rejects it with invalid_tool_call_id after the requested action has
+        # already succeeded, leaving the user with no spoken acknowledgement.
+        old_tool_call_ids = set()
+        context = getattr(self, "_context", None)
+        if context is not None:
+            try:
+                old_tool_call_ids = {
+                    message.get("tool_call_id")
+                    for message in context.get_messages()
+                    if isinstance(message, dict) and message.get("tool_call_id")
+                }
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"⚠️ could not snapshot tool-call history before reconnect: {e!r}")
+
         self._resetting_conversation = True
         try:
             await super().reset_conversation()
             try:
                 self._run_llm_when_api_session_ready = False
                 self._llm_needs_conversation_setup = False
+                self._completed_tool_calls.update(old_tool_call_ids)
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning(f"⚠️ could not clear post-reconnect response flags: {e!r}")
         finally:

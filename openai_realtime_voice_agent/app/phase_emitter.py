@@ -184,9 +184,14 @@ class PhaseEmitter(FrameProcessor):
         self._suppress_thinking = True
         if reason:
             logger.warning(f"📞 forcing phase idle ({reason[:90]})")
-        await self._emit("idle")
+        # A wake changes the device's ring locally before server VAD produces a
+        # phase frame. If that socket is half-open, our cached phase can still
+        # be ``idle`` even though the physical device is visibly listening.
+        # Recovery must therefore re-send idle even when it looks redundant;
+        # deduping here leaves the ring spinning forever after the reconnect.
+        await self._emit("idle", force=True)
 
-    async def _emit(self, value: str) -> None:
+    async def _emit(self, value: str, force: bool = False) -> None:
         # "listening" is NEVER deduped. The device lifts its post-stop incoming-
         # audio suppression ONLY on receiving a "listening" phase (firmware
         # 14bff74). A stop can RE-SET that suppression after our last "listening"
@@ -198,7 +203,7 @@ class PhaseEmitter(FrameProcessor):
         # device (re-lifts suppress, re-opens the mic gate; the barge-in cut-over
         # is a no-op because the mic is gated during a reply so a real
         # UserStartedSpeaking never coincides with queued TTS).
-        if value == self._current and value != "listening":
+        if value == self._current and value != "listening" and not force:
             return
         self._current = value
         logger.info(f"📞 phase -> {value}")  # TEMP instrumentation

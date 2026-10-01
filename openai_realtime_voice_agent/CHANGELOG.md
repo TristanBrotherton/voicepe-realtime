@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.16.12 (fork)
+
+- Fixed missing spoken acknowledgements after a proactive Realtime reconnect.
+  Historical tool-result IDs are now preserved as already delivered, preventing
+  Pipecat from replaying an old result into the replacement conversation and
+  triggering OpenAI's `invalid_tool_call_id` after the new action succeeded.
+- Fixed a half-open Realtime recovery edge case where the device could remain
+  in its local listening state after the backend reconnected. Forced recovery
+  now retransmits `idle` even when the backend already cached that phase.
+
 ## 0.16.11 (fork)
 
 - Fixed announcements immediately after a single Voice PE reconnect. The sole

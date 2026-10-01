@@ -2,7 +2,7 @@
 import asyncio
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -14,6 +14,20 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 
 async def main():
+    # force_idle is a physical-device recovery command, not merely a logical
+    # phase transition. A wake can make the ring spin locally while the
+    # emitter's cached phase remains idle (half-open OpenAI socket), so a
+    # repeated idle must still be sent to release the device.
+    forced_phases = []
+
+    async def capture_phase(value):
+        forced_phases.append(value)
+
+    forced_emitter = PhaseEmitter(capture_phase)
+    await forced_emitter._emit("idle")
+    await forced_emitter.force_idle("test half-open wake")
+    assert forced_phases == ["idle", "idle"]
+
     recovery = ConnectionRecovery(object())
     refresh_task = asyncio.create_task(asyncio.Event().wait())
     recover_task = asyncio.create_task(asyncio.Event().wait())
@@ -87,6 +101,30 @@ async def main():
     with patch.object(OpenAIRealtimeLLMService, "_receive_task_handler", receive_ended):
         await service._receive_task_handler()
     assert errors == []
+
+    # A reconnect creates a fresh OpenAI conversation, so historical tool
+    # results in Pipecat's retained context must be marked as already sent.
+    # Replaying one causes invalid_tool_call_id and suppresses the next spoken
+    # acknowledgement even though the Home Assistant action succeeded.
+    class FakeContext:
+        def get_messages(self):
+            return [
+                {"role": "tool", "tool_call_id": "call_old", "content": "done"},
+                {"role": "assistant", "content": "acknowledged"},
+            ]
+
+    reconnecting = object.__new__(SafeRealtimeLLMService)
+    reconnecting._context = FakeContext()
+    reconnecting._completed_tool_calls = set()
+    reconnecting._run_llm_when_api_session_ready = True
+    reconnecting._llm_needs_conversation_setup = True
+    with patch.object(
+        OpenAIRealtimeLLMService, "reset_conversation", new=AsyncMock()
+    ):
+        await reconnecting.reset_conversation()
+    assert reconnecting._completed_tool_calls == {"call_old"}
+    assert reconnecting._run_llm_when_api_session_ready is False
+    assert reconnecting._llm_needs_conversation_setup is False
     print("ALL ASSERTIONS PASSED")
 
 
