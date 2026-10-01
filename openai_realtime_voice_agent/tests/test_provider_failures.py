@@ -64,7 +64,7 @@ def test_our_own_faults_never_switch_engine():
     # A tool that threw is not the engine's fault. Switching would hide our bug
     # behind a provider change and cost money on the other account.
     assert classify("play_media failed: 500 Internal Server Error") is Failure.APP
-    assert classify("search_home: SUPERVISOR_TOKEN missing") is Failure.APP
+    assert classify("search_home: HA_API_URL or COMMS_NYCKEL missing") is Failure.APP
     assert classify("") is Failure.APP
 
 

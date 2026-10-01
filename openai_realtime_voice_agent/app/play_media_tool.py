@@ -17,7 +17,7 @@ model names the kind of thing it wants and gets that kind. Verified live:
 
 Then `music_assistant.play_media` plays the winning uri on a chosen player.
 
-Everything here is a local REST call through the supervisor proxy, the same way
+Everything here is a REST call through raawr-comms (app/ha_api.py), the same way
 search_home_tool reads states.
 """
 import logging
@@ -27,13 +27,13 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 
+from app import ha_api
+
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
 logger = logging.getLogger(__name__)
 
-_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
-_API = "http://supervisor/core/api"
 
 # The kinds Music Assistant can search for. Order matters when the model does
 # not name one: a bare "put on P3" is a radio station long before it is a
@@ -220,8 +220,8 @@ def _pick(buckets: Dict[str, Any], query: str, media_type: str) -> Optional[Dict
 
 async def _get(client: httpx.AsyncClient, path: str, **params) -> Any:
     response = await client.get(
-        f"{_API}{path}",
-        headers={"Authorization": f"Bearer {_TOKEN}"},
+        ha_api.url(path),
+        headers=ha_api.headers(),
         params=params or None,
     )
     response.raise_for_status()
@@ -230,8 +230,8 @@ async def _get(client: httpx.AsyncClient, path: str, **params) -> Any:
 
 async def _post(client: httpx.AsyncClient, path: str, body: Dict[str, Any], **params) -> Any:
     response = await client.post(
-        f"{_API}{path}",
-        headers={"Authorization": f"Bearer {_TOKEN}"},
+        ha_api.url(path),
+        headers=ha_api.headers(),
         params=params or None,
         json=body,
     )
@@ -293,8 +293,8 @@ def create_play_media_tool_handler() -> Callable[["FunctionCallParams"], Awaitab
         if not query:
             await params.result_callback("The user did not say what to play.")
             return
-        if not _TOKEN:
-            logger.error("❌ play_media: SUPERVISOR_TOKEN missing")
+        if not ha_api.configured():
+            logger.error("❌ play_media: HA_API_URL or COMMS_NYCKEL missing")
             await params.result_callback("I cannot reach the music system right now.")
             return
 

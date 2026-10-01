@@ -161,19 +161,18 @@ configuration:
       Comma-separated tool names that only execute when the detected speaker is
       the male voice (e.g. "ask_openclaw"). Enforced below the model, so it
       cannot be talked around. Convenience gating, not biometric security.
-  ha_mcp_url:
-    name: "🏠 Home Assistant · MCP server URL"
+  ha_api_url:
+    name: "🏠 Home Assistant · raawr-comms address"
     description: >-
-      How the assistant controls your home. Leave EMPTY (recommended): it
-      then uses Home Assistant's built-in "MCP Server" integration — install
-      that integration and expose your entities to Assist. Only fill in a URL
-      if you run the separate ha-mcp add-on instead.
-  longlived_token:
-    name: "🏠 Home Assistant · Access token"
+      Where every Home Assistant call goes. The add-on holds no Home Assistant
+      key: raawr-comms does, and forwards only the calls it has handed out.
+      The room's address ending in /api, e.g.
+      http://10.10.0.118:3500/kanal/rost/kontoret/api. Empty = no house control.
+  comms_nyckel:
+    name: "🏠 Home Assistant · raawr-comms key"
     description: >-
-      Leave empty (recommended): the add-on uses its own built-in permission.
-      Only create and paste a long-lived token (your HA profile → Security)
-      if the log shows a 401/403 error at startup.
+      The key raawr-comms handed this add-on (COMMS_KONTORET_NYCKEL in comms'
+      environment). Not a Home Assistant token.
   mcp_tool_allowlist:
     name: "🏠 Home Assistant · Tool allow-list"
     description: >-

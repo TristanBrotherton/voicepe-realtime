@@ -7,7 +7,7 @@ Per-instance sensors (INSTANCE_NAME option, e.g. 'kitchen'):
   sensor.voicepe_<inst>_wakes_today / _false_wakes_today
   sensor.voicepe_<inst>_motor            which engine is answering + why
 
-States are POSTed via the supervisor core API — ad-hoc entities, ideal for
+States are POSTed to Home Assistant's REST API through raawr-comms (app/ha_api.py) — ad-hoc entities, ideal for
 dashboards and automations (e.g. per-person scenes on speaker change).
 """
 import logging
@@ -17,10 +17,11 @@ from datetime import date
 
 import httpx
 
+from app import ha_api
+
 logger = logging.getLogger(__name__)
 
 _INST = os.environ.get("INSTANCE_NAME", "").strip().lower() or "device"
-_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 
 async def _post(entity: str, state, attrs: dict) -> bool:
@@ -30,16 +31,16 @@ async def _post(entity: str, state, attrs: dict) -> bool:
     failure is still swallowed at debug level exactly as before -- but it is
     now also REPORTED, because `SensorPublisher.provider` de-duplicates its
     writes and must not remember a state it never actually managed to
-    publish. No token means there is no supervisor to write to (running
-    outside Home Assistant): nothing was written, so that is False too.
+    publish. No comms address or key configured means there is nowhere to
+    write to: nothing was written, so that is False too.
     """
-    if not _TOKEN:
+    if not ha_api.configured():
         return False
     try:
         async with httpx.AsyncClient(timeout=8) as c:
             r = await c.post(
-                f"http://supervisor/core/api/states/{entity}",
-                headers={"Authorization": f"Bearer {_TOKEN}"},
+                ha_api.url(f"/states/{entity}"),
+                headers=ha_api.headers(),
                 json={"state": str(state), "attributes": attrs},
             )
             r.raise_for_status()

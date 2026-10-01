@@ -23,6 +23,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TYPE_CHECKING
 
 import httpx
 
+from app import ha_api
+
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
@@ -39,14 +41,13 @@ async def _set_wake_sound(on: bool) -> None:
     inaudible). Entity id comes from the WAKE_SOUND_ENTITY option; empty = skip.
     """
     entity = os.environ.get("WAKE_SOUND_ENTITY", "").strip()
-    token = os.environ.get("SUPERVISOR_TOKEN", "")
-    if not entity or not token:
+    if not entity or not ha_api.configured():
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(
-                f"http://supervisor/core/api/services/switch/turn_{'on' if on else 'off'}",
-                headers={"Authorization": f"Bearer {token}"},
+                ha_api.url(f"/services/switch/turn_{'on' if on else 'off'}"),
+                headers=ha_api.headers(),
                 json={"entity_id": entity},
             )
             r.raise_for_status()

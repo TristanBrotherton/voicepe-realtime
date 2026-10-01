@@ -57,10 +57,13 @@ The assistant controls your home through Home Assistant's **official MCP Server*
 2. **Expose the entities** you want voice control over to **Assist**
    (Settings → Voice assistants → *Exposed entities*). The MCP server only offers
    what's exposed.
-3. In the add-on, leave **`ha_mcp_url`** **blank** — it then uses the built-in
-   endpoint (`http://supervisor/core/api/mcp`) with the add-on's own token. Leave
-   **`longlived_token`** blank too, unless startup logs a 401/403 on
-   `/core/api/mcp` (then paste a HA long-lived token there).
+3. The add-on holds **no Home Assistant key** (`homeassistant_api: false`).
+   Every HA call — MCP, states, Music Assistant, its own sensors, the timer
+   ring switch — goes to **`ha_api_url`** (raawr-comms, e.g.
+   `http://10.10.0.118:3500/kanal/rost/kontoret/api`) with **`comms_nyckel`**.
+   Comms holds HA's token and forwards only the calls it has handed out
+   (`Backend/Comms/src/kontoret.ts` in the raawr repo); anything else is
+   refused there and never reaches HA. Both empty = no house control.
 
 You get a small fixed set of Assist tools (`HassTurnOn`, `HassTurnOff`,
 `HassLightSet`, `GetLiveContext`, `GetDateTime`, …). **`GetLiveContext`** is the

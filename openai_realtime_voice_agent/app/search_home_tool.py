@@ -14,8 +14,8 @@ but uselessly, that it cannot find the car.
 Writing every entity name into the system prompt fixes one case and grows the
 prompt forever. This tool fixes the class: give the model a way to *look*.
 
-The add-on runs inside Home Assistant and already holds `homeassistant_api`, so
-this is a single local call -- no round trip through an external agent.
+One REST read of every state, through raawr-comms (app/ha_api.py), which holds
+the Home Assistant key -- no round trip through an external agent.
 
 Read-only by design. Control still goes through the Hass* tools, which have the
 safety and confirmation behaviour.
@@ -27,13 +27,13 @@ from typing import Any, Awaitable, Callable, Dict, List, Tuple, TYPE_CHECKING
 
 import httpx
 
+from app import ha_api
+
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
 logger = logging.getLogger(__name__)
 
-_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
-_STATES_URL = "http://supervisor/core/api/states"
 
 # Enough for "every value the car has" without burying the model in a whole
 # floor of lights.
@@ -160,8 +160,8 @@ def create_search_home_tool_handler() -> Callable[["FunctionCallParams"], Awaita
         if not query:
             await params.result_callback("No search words given.")
             return
-        if not _TOKEN:
-            logger.error("❌ search_home: SUPERVISOR_TOKEN missing")
+        if not ha_api.configured():
+            logger.error("❌ search_home: HA_API_URL or COMMS_NYCKEL missing")
             await params.result_callback("I cannot reach the house right now.")
             return
 
@@ -169,8 +169,8 @@ def create_search_home_tool_handler() -> Callable[["FunctionCallParams"], Awaita
         try:
             async with httpx.AsyncClient(timeout=8) as client:
                 response = await client.get(
-                    _STATES_URL,
-                    headers={"Authorization": f"Bearer {_TOKEN}"},
+                    ha_api.url("/states"),
+                    headers=ha_api.headers(),
                 )
                 response.raise_for_status()
                 states = response.json()

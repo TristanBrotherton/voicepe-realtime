@@ -8,6 +8,7 @@ import dotenv
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
+from app import ha_api
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
@@ -317,15 +318,13 @@ class Application:
         # Initialize Home Assistant MCP Service
         mcp_client = None
         try:
-            supervisor_token = os.environ.get("LONGLIVED_TOKEN") or os.environ.get("SUPERVISOR_TOKEN")
-            ha_mcp_url = os.environ.get("HA_MCP_URL", "http://supervisor/core/api/mcp")
-            if supervisor_token:
+            if ha_api.configured():
                 logger.info("Loading Home Assistant MCP tools...")
-                self.mcp_service = HomeAssistantMCPService(url=ha_mcp_url, access_token=supervisor_token)
+                self.mcp_service = HomeAssistantMCPService()
                 mcp_client = await self.mcp_service.initialize()
                 logger.info("✅ Home Assistant MCP Client initialized")
             else:
-                logger.warning("⚠️ SUPERVISOR_TOKEN not set, skipping Home Assistant MCP integration")
+                logger.warning("⚠️ HA_API_URL or COMMS_NYCKEL not set, skipping Home Assistant MCP integration")
         except Exception as e:
             logger.warning(f"⚠️ Failed to initialize Home Assistant MCP Client: {e}")
         

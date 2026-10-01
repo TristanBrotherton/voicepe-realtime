@@ -148,19 +148,17 @@ configuration:
       in een rumoerige omgeving slecht verstaat.
 
   # --- 🏠 Home Assistant ---
-  ha_mcp_url:
-    name: "🏠 Home Assistant · MCP-server-URL"
+  ha_api_url:
+    name: "🏠 Home Assistant · raawr-comms-adres"
     description: >-
-      Hoe de assistent je huis bestuurt. LEEG laten (aanbevolen): dan gebruikt
-      hij Home Assistants ingebouwde "MCP Server"-integratie — installeer die
-      integratie en stel je entiteiten beschikbaar aan Assist. Vul alleen een
-      URL in als je de losse ha-mcp-add-on gebruikt.
-  longlived_token:
-    name: "🏠 Home Assistant · Toegangstoken"
+      Waar elke Home Assistant-aanroep heen gaat. De add-on heeft geen Home
+      Assistant-sleutel: raawr-comms wel, en die laat alleen de uitgedeelde
+      aanroepen door. Het adres van de kamer eindigend op /api, bv.
+      http://10.10.0.118:3500/kanal/rost/kontoret/api. Leeg = geen huisbediening.
+  comms_nyckel:
+    name: "🏠 Home Assistant · raawr-comms-sleutel"
     description: >-
-      Leeg laten (aanbevolen): de add-on gebruikt zijn eigen ingebouwde
-      toestemming. Maak alleen een long-lived token aan (je HA-profiel →
-      Beveiliging) als het log bij het opstarten een 401/403-fout toont.
+      De sleutel die raawr-comms aan deze add-on gaf. Geen Home Assistant-token.
   mcp_tool_allowlist:
     name: "🏠 Home Assistant · Tool-allowlist"
     description: >-

@@ -21,6 +21,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TYPE_CHECKING
 
 import httpx
 
+from app import ha_api
+
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
@@ -42,14 +44,13 @@ def _ring_entity(device_id: str, allow_legacy: bool = True) -> str:
 
 async def _set_ring(on: bool, device_id: str = "", allow_legacy: bool = True) -> bool:
     entity = _ring_entity(device_id, allow_legacy)
-    token = os.environ.get("SUPERVISOR_TOKEN", "")
-    if not entity or not token:
+    if not entity or not ha_api.configured():
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(
-                f"http://supervisor/core/api/services/switch/turn_{'on' if on else 'off'}",
-                headers={"Authorization": f"Bearer {token}"},
+                ha_api.url(f"/services/switch/turn_{'on' if on else 'off'}"),
+                headers=ha_api.headers(),
                 json={"entity_id": entity},
             )
             r.raise_for_status()

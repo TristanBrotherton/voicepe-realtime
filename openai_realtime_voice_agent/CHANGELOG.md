@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.0 (fork)
+
+- **Tillägget håller ingen Home Assistant-nyckel längre** (raawr US-011,
+  beslut 56). `homeassistant_api` är av, `longlived_token` och `ha_mcp_url`
+  är borta. Varje HA-anrop — MCP-verktygen, `search_home`, `play_media`,
+  sensorerna, timerns ringbrytare och inspelningens väckljud — går till
+  `ha_api_url` (raawr-comms) med `comms_nyckel`, i `app/ha_api.py`. Comms
+  håller HA:s token och släpper bara de former tillägget faktiskt använder.
+  Återvägen: `homeassistant_api: true` och 0.19.5.
+
 ## 0.19.5 (fork)
 
 - **Timern ringer, och gör inget annat.** En 30-sekunderstimer var en röst vid

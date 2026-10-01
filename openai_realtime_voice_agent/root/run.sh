@@ -51,8 +51,8 @@ OUTPUT_LEAD_BUFFER_MS=$(bashio::config 'output_lead_buffer_ms')
 NOISE_REDUCTION=$(bashio::config 'noise_reduction')
 
 # --- 🏠 Home Assistant ---
-HA_MCP_URL=$(bashio::config 'ha_mcp_url')
-LONGLIVED_TOKEN=$(bashio::config 'longlived_token')
+HA_API_URL=$(bashio::config 'ha_api_url')
+COMMS_NYCKEL=$(bashio::config 'comms_nyckel')
 MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
 OPENCLAW_URL=$(bashio::config 'openclaw_url')
 ANNOUNCE_PORT=$(bashio::config 'announce_port')
@@ -112,7 +112,8 @@ export WEB_SEARCH_MODEL
 export PLAYBACK_PREBUFFER_MS
 export OUTPUT_LEAD_BUFFER_MS
 export NOISE_REDUCTION
-export LONGLIVED_TOKEN
+export HA_API_URL
+export COMMS_NYCKEL
 export MCP_TOOL_ALLOWLIST
 export OPENCLAW_URL
 export ANNOUNCE_PORT
@@ -170,12 +171,9 @@ fi
 # over: SEMANTIC_VAD_CREATE_RESPONSE=true, ENABLE_DISCONNECT_TOOL=false,
 # INTERRUPT_RESPONSE=false, DEVICE_INPUT_SAMPLE_RATE=16000.
 
-# Export HA_MCP_URL if set (empty string means use default in main.py)
-if [ -n "$HA_MCP_URL" ]; then
-    export HA_MCP_URL
-fi
-
-# SUPERVISOR_TOKEN is automatically provided by Home Assistant when homeassistant_api: true
+# No Home Assistant key here: homeassistant_api is off, so there is no
+# SUPERVISOR_TOKEN, and every HA call goes to HA_API_URL (raawr-comms) with
+# COMMS_NYCKEL. See app/ha_api.py.
 
 # Start the application
 export PYTHONUNBUFFERED=1
