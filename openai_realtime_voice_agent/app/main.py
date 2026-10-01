@@ -123,16 +123,27 @@ def _env_seconds(name: str, default: float) -> float:
 
 
 def _device_idle(connection, quiet_s: float) -> bool:
-    """No turn in progress on this device, and no wake for `quiet_s` seconds.
+    """Nothing is happening on this device, and nothing has for `quiet_s` s.
 
-    The phase stays "idle" between a wake and the first speech, so a recent
-    wake (connection.last_active) counts as busy too.
+    Busy: a turn in progress (phase), an announcement playing (it has no
+    phase), or less than `quiet_s` since the last wake, turn end or
+    announcement end. The phase stays "idle" between a wake and the first
+    speech, and the device holds its follow-up mic open after a turn or an
+    announcement with no wake at all, so the caller folds the follow-up
+    window into `quiet_s` (raawr D-72).
     """
+    if connection.says_playing:
+        return False
     emitter = connection.phase_emitter
     phase = getattr(emitter, "phase", None) if emitter is not None else None
     if phase not in (None, "idle"):
         return False
-    return time.monotonic() - connection.last_active >= quiet_s
+    last = max(
+        connection.last_active,
+        connection.last_busy,
+        getattr(emitter, "idle_since", 0.0),
+    )
+    return time.monotonic() - last >= quiet_s
 
 
 class Application:
@@ -155,6 +166,9 @@ class Application:
         self.male_only_tools: set[str] = set()
         # Bana 0 (raawr US-016): the local Wyoming STT, None = off.
         self.bana0_stt: Optional[tuple[str, int]] = None
+        # device_id -> monotonic time of the last HA-recovery recycle, so a
+        # flapping HA cannot bounce a device again and again (raawr D-72).
+        self._last_recycle: dict[str, float] = {}
         
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -472,25 +486,8 @@ class Application:
                     "to the speaker settings in the add-on configuration, then restart it.")
             await PUBLISHER.voice_prints()
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
-        # The conductor's TTS lane, guarded so the device cannot hear itself
-        # speak. Used by the announce endpoint below. NOT by timers: a timer
-        # expiry is the bell alone, on the second (see app/timers.py).
-        async def _guarded_say(text, device_id=None):
-            # Speak on ONE device. With several connected, "the device" is
-            # whichever was named, else the one most recently spoken to.
-            # Suppress that device's inbound mic while the announcement plays
-            # (+ tail) so the assistant can't hear itself and reply.
-            ser = self.websocket_handler.serializer_for(device_id)
-            import time as _t
-            if ser is not None:
-                ser.suppress_inbound_until = _t.monotonic() + 3600
-            try:
-                return await self.enrollment_conductor._say(text, device_id=device_id)
-            finally:
-                if ser is not None:
-                    ser.suppress_inbound_until = _t.monotonic() + 1.2
         # Bana 0 speaks HA's confirmation through the same guarded lane.
-        self.websocket_handler.say = _guarded_say
+        self.websocket_handler.say = self._guarded_say
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
             and self.websocket_handler.resolve_device(device_id) is not None
@@ -505,7 +502,7 @@ class Application:
         announce_host = os.environ.get("ANNOUNCE_HOST", "0.0.0.0")
         if announce_port and announce_token:
             await start_announce_server(
-                announce_port, announce_token, _guarded_say,
+                announce_port, announce_token, self._guarded_say,
                 lambda device_id: self.websocket_handler.resolve_device(device_id) is not None,
                 host=announce_host,
             )
@@ -909,6 +906,33 @@ class Application:
             register_openclaw_tool(service)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
+    async def _guarded_say(self, text, device_id=None):
+        """The conductor's TTS lane, guarded so the device cannot hear itself.
+
+        Used by the announce endpoint and bana 0. NOT by timers: a timer
+        expiry is the bell alone, on the second (see app/timers.py).
+
+        Speaks on ONE device: the one named, else the one most recently
+        spoken to. Suppresses that device's inbound mic while the
+        announcement plays (+ tail) so the assistant can't hear itself and
+        reply, and marks the connection busy so the HA-recovery recycle
+        cannot cut it (raawr D-72).
+        """
+        connection = self.websocket_handler.resolve_device(device_id)
+        ser = self.websocket_handler.serializer_for(device_id)
+        if ser is not None:
+            ser.suppress_inbound_until = time.monotonic() + 3600
+        if connection is not None:
+            connection.says_playing += 1
+        try:
+            return await self.enrollment_conductor._say(text, device_id=device_id)
+        finally:
+            if ser is not None:
+                ser.suppress_inbound_until = time.monotonic() + 1.2
+            if connection is not None:
+                connection.says_playing -= 1
+                connection.last_busy = time.monotonic()
+
     async def _recover_ha_tools(self, connection, service) -> None:
         """Retry the HA tool fetch; once HA answers, recycle the connection.
 
@@ -920,11 +944,20 @@ class Application:
         into the live OpenAI session instead (session.update), and live
         2026-10-01 that left the session deaf until the device reconnected.
 
+        At most one recycle per device per MCP_RECYCLE_MIN_INTERVAL_SECONDS
+        (600): if HA flaps, keep fetching and recycle once the interval is
+        over. "Idle" includes announcements and the follow-up window
+        (_device_idle).
+
         Cancelled by WebSocketHandler._teardown when the device disconnects.
         """
         retry_s = _env_seconds("MCP_TOOLS_RETRY_SECONDS", 15.0)
         poll_s = _env_seconds("MCP_RECYCLE_POLL_SECONDS", 3.0)
-        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0)
+        follow_up_s = getattr(self.websocket_handler, "follow_up_ms", 0) / 1000.0
+        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0) + follow_up_s
+        min_interval_s = _env_seconds("MCP_RECYCLE_MIN_INTERVAL_SECONDS", 600.0)
+        device_id = connection.device_id
+        held_back = False
         try:
             while True:
                 await asyncio.sleep(retry_s)
@@ -933,7 +966,17 @@ class Application:
                 try:
                     schema = await self._fetch_ha_tools_schema()
                 except Exception as e:
-                    logger.debug(f"HA tools still unavailable for {connection.device_id}: {e}")
+                    logger.debug(f"HA tools still unavailable for {device_id}: {e}")
+                    continue
+                since = time.monotonic() - self._last_recycle.get(device_id, float("-inf"))
+                if since < min_interval_s:
+                    # HA is flapping: keep fetching, recycle once the interval is over.
+                    if not held_back:
+                        logger.warning(
+                            f"⚠️ HA back, but {device_id} was recycled {since:.0f} s ago — "
+                            f"holding off until {min_interval_s:.0f} s have passed"
+                        )
+                        held_back = True
                     continue
                 break
             exposed = len(self._ha_tool_definitions(schema))
@@ -948,6 +991,7 @@ class Application:
             # Off the connection before closing: the close leads to
             # _teardown, which would otherwise cancel this very task.
             connection.ha_tools_task = None
+            self._last_recycle[device_id] = time.monotonic()
             try:
                 await connection.websocket.close(code=1000)
             except Exception as e:

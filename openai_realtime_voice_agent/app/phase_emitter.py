@@ -165,6 +165,9 @@ class PhaseEmitter(FrameProcessor):
         self._idle_task = None
         self._watchdog_task = None
         self._current = None  # last phase actually sent, to dedupe redundant emits
+        # When the phase last turned "idle": the device opens its follow-up
+        # mic then, with no wake (raawr D-72, see main._device_idle).
+        self.idle_since = 0.0
         # Set by force_idle(): the turn was declared dead, so a VAD stop event
         # that is still in flight must NOT re-emit `thinking` and re-stick the
         # device. Cleared on the next real activity (user/bot speech start).
@@ -298,6 +301,8 @@ class PhaseEmitter(FrameProcessor):
         # UserStartedSpeaking never coincides with queued TTS).
         if value == self._current and value != "listening":
             return
+        if value == "idle":
+            self.idle_since = time.monotonic()
         self._current = value
         logger.info(f"📞 phase -> {value}")  # TEMP instrumentation
         if self._send_phase is not None:

@@ -2,6 +2,19 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.3 (fork)
+
+- **Omkopplingen efter en HA-omstart klipper inte längre utrop eller
+  följdfönster, och studsar inte enheten om HA fladdrar** (D-72). När
+  HA:s verktyg kommer tillbaka stänger agenten enhetens anslutning först
+  när enheten är ledig. "Ledig" räknade bara fas och senaste väckning, så
+  ett utrop (som saknar fas) eller följdfönstret efter en lång tur kunde
+  klippas. Nu räknas ett pågående utrop som upptaget, och tystnaden mäts
+  också från turens och utropets slut, förlängd med följdfönstret
+  (`follow_up_listen_seconds`). Högst en omkoppling per enhet var tionde
+  minut (`MCP_RECYCLE_MIN_INTERVAL_SECONDS`); däremellan fortsätter
+  hämtningen.
+
 ## 0.22.2 (fork)
 
 - **En enhet som återansluter mitt i en nedstängning blir inte längre döv**

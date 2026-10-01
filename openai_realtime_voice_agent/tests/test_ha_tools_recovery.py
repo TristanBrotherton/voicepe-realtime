@@ -173,3 +173,135 @@ async def test_no_recycle_when_the_first_fetch_worked(fast):
     assert "HassMediaSearchAndPlay" not in _tool_names(service)
     await asyncio.sleep(0.2)
     assert connection.websocket.closes == []
+
+
+# --- D-72 -----------------------------------------------------------------
+
+
+class _Speaker:
+    """An enrollment conductor whose _say plays until released."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def _say(self, text, device_id=None):
+        self.started.set()
+        await self.release.wait()
+
+
+class _Handler:
+    """The two lookups _guarded_say makes, against one connection."""
+
+    def __init__(self, connection, follow_up_ms=0):
+        self.connection = connection
+        self.follow_up_ms = follow_up_ms
+
+    def resolve_device(self, device_id=None):
+        return self.connection
+
+    def serializer_for(self, device_id=None):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_no_recycle_while_an_announcement_plays(fast):
+    """(1) An announcement has no phase and no wake; it must still count as busy."""
+    from app.providers import OPENAI
+
+    app = _bare_app(OPENAI)
+    app.mcp_client = _FlakyMcpClient(failures=10**6)
+    connection, service = await _connect(app, phase="idle")
+    app.websocket_handler = _Handler(connection)
+    app.enrollment_conductor = _Speaker()
+
+    say = asyncio.create_task(app._guarded_say("Tvätten är klar"))
+    await app.enrollment_conductor.started.wait()
+    app.mcp_client.failures = 0  # HA comes back mid-announcement
+
+    await asyncio.sleep(0.4)
+    assert connection.websocket.closes == []
+
+    app.enrollment_conductor.release.set()
+    await say
+    assert await _wait_for(lambda: connection.websocket.closes)
+
+
+@pytest.mark.asyncio
+async def test_no_recycle_inside_the_follow_up_window_after_a_long_turn(fast, monkeypatch):
+    """(2) The wake was long ago, the turn just ended: the follow-up window is open."""
+    from app.providers import OPENAI
+
+    monkeypatch.setenv("MCP_RECYCLE_QUIET_SECONDS", "0.2")
+    app = _bare_app(OPENAI)
+    app.mcp_client = _FlakyMcpClient(failures=10**6)
+    connection, service = await _connect(app, phase="replying")
+    app.websocket_handler = _Handler(connection, follow_up_ms=400)
+    connection.last_active = time.monotonic() - 40  # the wake, 40 s ago
+    app.mcp_client.failures = 0
+    await asyncio.sleep(0.2)
+
+    connection.phase_emitter.phase = "idle"  # the turn ends now
+    connection.phase_emitter.idle_since = time.monotonic()
+    await asyncio.sleep(0.4)
+    assert connection.websocket.closes == []
+    assert await _wait_for(lambda: connection.websocket.closes)
+
+
+@pytest.mark.asyncio
+async def test_phase_emitter_records_when_the_turn_went_idle():
+    from app.phase_emitter import PhaseEmitter
+
+    emitter = PhaseEmitter(None)
+    await emitter._emit("replying")
+    before = time.monotonic()
+    await emitter._emit("idle")
+    assert emitter.idle_since >= before
+
+
+@pytest.mark.asyncio
+async def test_at_most_one_recycle_per_interval_when_ha_flaps(fast, monkeypatch):
+    """(3) HA flapping must not bounce the device again and again."""
+    from app.providers import OPENAI
+
+    monkeypatch.setenv("MCP_RECYCLE_MIN_INTERVAL_SECONDS", "0.6")
+    app = _bare_app(OPENAI)
+    app.mcp_client = _FlakyMcpClient(failures=1)
+    first, _ = await _connect(app, phase="idle")
+    assert await _wait_for(lambda: first.websocket.closes)
+
+    # The device reconnects while HA is down again, then HA comes back.
+    app.mcp_client.failures = 1
+    second, _ = await _connect(app, phase="idle")
+    await asyncio.sleep(0.3)
+    assert second.websocket.closes == [], "recycled twice inside the interval"
+    # Still retrying: once the interval is over, the tools do get loaded.
+    assert await _wait_for(lambda: second.websocket.closes)
+
+
+@pytest.mark.asyncio
+async def test_recycle_close_is_not_cancelled_by_its_own_teardown(fast):
+    """(4) The close leads to _teardown, which cancels connection.ha_tools_task.
+
+    The task drops itself off the connection first, so the close completes.
+    """
+    from app.providers import OPENAI
+    from app.websocket_handler import WebSocketHandler
+
+    handler = WebSocketHandler(host="127.0.0.1", port=0)
+
+    class _TearingSocket(_Socket):
+        async def close(self, code=1000, reason=None):
+            await handler._teardown(connection)
+            await asyncio.sleep(0)  # the closing handshake
+            self.closes.append(code)
+
+    app = _bare_app(OPENAI)
+    app.mcp_client = _FlakyMcpClient(failures=1)
+    connection, service = await _connect(app, phase="idle")
+    connection.websocket = _TearingSocket()
+    task = connection.ha_tools_task
+
+    assert await _wait_for(task.done)
+    assert not task.cancelled()
+    assert connection.websocket.closes == [1000]
