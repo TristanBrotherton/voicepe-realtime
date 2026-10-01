@@ -65,10 +65,16 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         # Bana 0 (raawr US-016): called on every end of a user turn when the
         # fast path is configured. None = today's behaviour, nothing extra.
         self.on_user_turn_end = None
+        self.on_user_turn_start = None  # plain callable, run before pipecat's handling
         self._turn_end_task = None
 
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
+
+    async def _handle_evt_speech_started(self, evt):  # type: ignore[override]
+        if self.on_user_turn_start is not None:
+            self.on_user_turn_start()
+        await super()._handle_evt_speech_started(evt)
 
     async def _handle_evt_speech_stopped(self, evt):  # type: ignore[override]
         await super()._handle_evt_speech_stopped(evt)

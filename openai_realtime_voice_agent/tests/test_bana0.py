@@ -301,6 +301,7 @@ def _koppling(stt):
 
     service.send_client_event = send
     service.start_ttfb_metrics = service.start_processing_metrics = service.push_frame = noop
+    service.push_interruption_task_frame_and_wait = noop
 
     handler = WebSocketHandler()
     handler.bana0_stt = stt
@@ -368,7 +369,36 @@ async def test_speech_stopped_med_miss_ber_modellen_svara(comms):
 @pytest.mark.asyncio
 async def test_bana0_av_ingen_krok_och_inga_egna_handelser():
     handler, connection, service, sent = _koppling(None)
-    assert service.on_user_turn_end is None
+    assert service.on_user_turn_end is None and service.on_user_turn_start is None
     await service._handle_evt_speech_stopped(None)
     assert service._turn_end_task is None
     assert sent == []
+
+
+# --- F2: a follow-up turn has no wake, so the buffer must start at the user's speech ---
+
+@pytest.mark.asyncio
+async def test_folj_upp_tur_innehaller_bara_anvandarens_yttrande():
+    # The pre-roll kept from before speech_started: 0.8 s, because the event
+    # arrives after the speech began and the first syllable must survive.
+    preroll = 16000 * 2 * 8 // 10
+    handler, connection, service, sent = _koppling(("127.0.0.1", 10300))
+    ser = connection.serializer
+    tidigare = b"\x07\x00" * 16000 * 3  # 3 s of silence/echo after the last turn
+    yttrande = PCM
+    await ser.deserialize(tidigare)
+    await service._handle_evt_speech_started(None)
+    await ser.deserialize(yttrande)
+    pcm = ser.take_turn_audio()
+    assert pcm == tidigare[-preroll:] + yttrande
+
+
+@pytest.mark.asyncio
+async def test_bufferten_ar_tom_medan_modellen_svarar():
+    handler, connection, service, sent = _koppling(("127.0.0.1", 10300))
+    connection.phase_emitter._current = "replying"
+    await connection.serializer.deserialize(PCM)
+    assert connection.serializer.take_turn_audio() == b""
+    connection.phase_emitter._current = "listening"
+    await connection.serializer.deserialize(PCM)
+    assert connection.serializer.take_turn_audio() == PCM

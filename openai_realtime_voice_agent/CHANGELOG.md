@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.1 (fork)
+
+- **Bana 0 hör bara användarens yttrande** (US-016, granskningsfynd F2).
+  En följdtur har ingen väckning, så turens ljud nollställdes aldrig och
+  STT:n fick allt sedan förra turen: tystnad och ekot av modellens eget
+  svar, upp till 30 s. Det kunde spräcka tidsgränsen på 600 ms och, värre,
+  få Whisper att skriva ut modellens egna ord som en order som HA sedan
+  utför. Nu börjar turens ljud om när användaren börjar tala
+  (`input_audio_buffer.speech_started`), med 0,8 s förrulle så att första
+  stavelsen följer med, och inget ljud sparas medan modellen svarar.
+
 ## 0.22.0 (fork)
 
 - **Bana 0: enkla hemkommandon går till HA:s egen agent först** (raawr

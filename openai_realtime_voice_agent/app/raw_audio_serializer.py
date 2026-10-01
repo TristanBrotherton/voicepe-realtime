@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 TURN_PCM_CAP = 16000 * 2 * 30  # 30 s of 16 kHz PCM16 mono
+# ponytail: fixed 0.8 s kept from before speech_started (the event arrives
+# after the speech began). Tune here if first syllables go missing or old
+# audio leaks into the transcript.
+TURN_PCM_PREROLL = 16000 * 2 * 8 // 10
 
 
 class RawAudioSerializer(FrameSerializer):
@@ -71,6 +75,9 @@ class RawAudioSerializer(FrameSerializer):
         # (16 kHz PCM16 mono), for the local STT. Reset on wake, taken at end
         # of turn.
         self.turn_pcm = bytearray()
+        # True while the assistant is speaking (set by build_pipeline from the
+        # phase): its own voice must never become a turn's audio.
+        self.is_replying = lambda: False
         self._last_button_mono = 0.0
         # Set on wake; cleared when we ack the first mic frame back to the
         # device (cancels its no-speech watchdog — audio is flowing).
@@ -300,7 +307,8 @@ class RawAudioSerializer(FrameSerializer):
         # wake armed it; classification runs in a thread, never blocks here).
         if self._speaker_probe is not None:
             self._speaker_probe.feed(message)
-        self.turn_pcm += message
+        if not self.is_replying():
+            self.turn_pcm += message
         if len(self.turn_pcm) > TURN_PCM_CAP:
             del self.turn_pcm[:-TURN_PCM_CAP]  # keep the latest 30 s
 
@@ -326,6 +334,14 @@ class RawAudioSerializer(FrameSerializer):
 
         return frame
     
+    def start_turn_audio(self) -> None:
+        """The user started speaking: drop all but the pre-roll.
+
+        A follow-up turn has no wake, so without this the turn would carry
+        everything since the last one -- silence and the reply's echo.
+        """
+        del self.turn_pcm[:-TURN_PCM_PREROLL]
+
     def take_turn_audio(self) -> bytes:
         """The turn's mic audio so far, and start a new one."""
         pcm = bytes(self.turn_pcm)

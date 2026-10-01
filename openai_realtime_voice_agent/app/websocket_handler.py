@@ -1431,6 +1431,8 @@ class WebSocketHandler:
                     await phase_emitter.force_idle("bana0")
 
             openai_service.on_user_turn_end = _on_user_turn_end
+            openai_service.on_user_turn_start = serializer.start_turn_audio
+            serializer.is_replying = lambda: phase_emitter.phase == "replying"
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
