@@ -458,10 +458,13 @@ class Application:
         # guarded announcer above; off unless both port and token are set.
         announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
         announce_token = os.environ.get("ANNOUNCE_TOKEN", "").strip()
+        # 127.0.0.1 when a reverse proxy in front is the only way in (US-014).
+        announce_host = os.environ.get("ANNOUNCE_HOST", "0.0.0.0")
         if announce_port and announce_token:
             await start_announce_server(
                 announce_port, announce_token, _guarded_say,
                 lambda device_id: self.websocket_handler.resolve_device(device_id) is not None,
+                host=announce_host,
             )
         elif announce_port or announce_token:
             logger.warning("⚠️ announce endpoint needs BOTH announce_port and announce_token — disabled")
@@ -673,8 +676,22 @@ class Application:
             if self.mcp_client:
                 try:
                     logger.info("🔧 Fetching MCP tool definitions...")
-                    mcp_tools_schema = await self.mcp_client.get_tools_schema()
-                    
+                    # Bounded: this runs under the pipeline lock, and pipecat's
+                    # MCP client lets one read hang for up to 300 s. A Home
+                    # Assistant mid-restart held the lock and kept every new
+                    # session out for 35 min (2026-09-30). On timeout the
+                    # session is built without HA tools, like any other failure.
+                    try:
+                        mcp_timeout = float(os.environ.get("MCP_TOOLS_TIMEOUT_SECONDS", "5"))
+                    except ValueError:
+                        mcp_timeout = 5.0
+                    try:
+                        mcp_tools_schema = await asyncio.wait_for(
+                            self.mcp_client.get_tools_schema(), timeout=mcp_timeout
+                        )
+                    except asyncio.TimeoutError:
+                        raise TimeoutError(f"no answer from Home Assistant in {mcp_timeout:g} s")
+
                     # Convert MCP tool schemas to OpenAI format, applying the
                     # optional allow-list so the realtime session isn't flooded
                     # with ha-mcp's 80+ tools.

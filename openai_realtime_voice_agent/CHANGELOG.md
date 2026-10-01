@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.21.0 (fork)
+
+- **En Home Assistant som startar om tystar inte längre högtalaren** (raawr
+  US-014). 2026-09-30 startades HA om; agenten tog emot ljud men öppnade
+  ingen modellsession förrän den själv startades om 35 minuter senare.
+  Hämtningen av HA:s MCP-verktyg sker under pipeline-låset, och pipecats
+  MCP-klient låter en läsning hänga i upp till 300 s per försök — varje ny
+  anslutning ställde sig i kö bakom den. Nu ger hämtningen upp efter
+  `MCP_TOOLS_TIMEOUT_SECONDS` (förval 5) och sessionen byggs utan HA-verktyg,
+  precis som vid andra fel. Nästa anslutning försöker igen.
+- **Announce-endpointen kan binda till loopback.** `ANNOUNCE_HOST` (förval
+  `0.0.0.0`, så tillägget är oförändrat) — `127.0.0.1` när agenten kör som
+  systemd-tjänst bakom en omvänd proxy.
+
 ## 0.20.0 (fork)
 
 - **Tillägget håller ingen Home Assistant-nyckel längre** (raawr US-011,
