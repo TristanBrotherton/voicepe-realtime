@@ -31,6 +31,7 @@ from app.voice_memory import (
     register_memory_tools,
 )
 from app.realtime_payload import transform_gpt_transcription_language
+from app.turn_admission import turn_admission_instructions
 from app.enrollment import (
     EnrollmentRecorder,
     EnrollmentConductor,
@@ -899,7 +900,11 @@ class Application:
             session_properties = SessionProperties(
                 # Voice-instructed memory: standing household notes are folded
                 # into the instructions at every session creation.
-                instructions=self.instructions + memory_instructions(),
+                instructions=(
+                    self.instructions
+                    + memory_instructions()
+                    + turn_admission_instructions()
+                ),
                 # Cap the reply length: bounds runaway monologues + per-response
                 # output-token cost. None = unlimited (the API default "inf").
                 max_output_tokens=self.max_output_tokens,
