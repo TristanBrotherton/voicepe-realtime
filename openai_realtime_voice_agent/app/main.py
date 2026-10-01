@@ -3,6 +3,7 @@ import os
 import sys
 import asyncio
 import logging
+import time
 from typing import Optional
 import dotenv
 from pipecat.pipeline.pipeline import Pipeline
@@ -111,6 +112,27 @@ def build_router():
 
 
 dotenv.load_dotenv()
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """A float env knob in seconds, falling back to `default` when unparsable."""
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _device_idle(connection, quiet_s: float) -> bool:
+    """No turn in progress on this device, and no wake for `quiet_s` seconds.
+
+    The phase stays "idle" between a wake and the first speech, so a recent
+    wake (connection.last_active) counts as busy too.
+    """
+    emitter = connection.phase_emitter
+    phase = getattr(emitter, "phase", None) if emitter is not None else None
+    if phase not in (None, "idle"):
+        return False
+    return time.monotonic() - connection.last_active >= quiet_s
 
 
 class Application:
@@ -865,33 +887,25 @@ class Application:
             register_openclaw_tool(service)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
-    async def _apply_ha_tools(self, service, mcp_tools_schema) -> int:
-        """Give a LIVE session the HA tools it was built without.
-
-        Returns:
-            How many HA tools the model now sees.
-        """
-        from app.providers import add_tools
-
-        ha_tools = self._ha_tool_definitions(mcp_tools_schema)
-        await self._register_ha_handlers(service, mcp_tools_schema)
-        await add_tools(service, ha_tools)
-        return len(ha_tools)
-
     async def _recover_ha_tools(self, connection, service) -> None:
-        """Retry the HA tool fetch until it works or the session is gone.
+        """Retry the HA tool fetch; once HA answers, recycle the connection.
 
         Runs outside the pipeline lock, and each attempt keeps the fetch
-        timeout, so a turn never waits on HA. Cancelled by
-        WebSocketHandler._teardown when the device disconnects.
+        timeout, so a turn never waits on HA. When HA is back the device's
+        socket is closed (normal close) as soon as the device is idle; the
+        firmware reconnects and create_service builds a fresh session with
+        the full tool list through the normal path. 0.21.1 pushed the tools
+        into the live OpenAI session instead (session.update), and live
+        2026-10-01 that left the session deaf until the device reconnected.
+
+        Cancelled by WebSocketHandler._teardown when the device disconnects.
         """
-        try:
-            interval = float(os.environ.get("MCP_TOOLS_RETRY_SECONDS", "15"))
-        except ValueError:
-            interval = 15.0
+        retry_s = _env_seconds("MCP_TOOLS_RETRY_SECONDS", 15.0)
+        poll_s = _env_seconds("MCP_RECYCLE_POLL_SECONDS", 3.0)
+        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0)
         try:
             while True:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(retry_s)
                 if connection.openai_service is not service:
                     return
                 try:
@@ -899,15 +913,23 @@ class Application:
                 except Exception as e:
                     logger.debug(f"HA tools still unavailable for {connection.device_id}: {e}")
                     continue
+                break
+            exposed = len(self._ha_tool_definitions(schema))
+            while not _device_idle(connection, quiet_s):
+                await asyncio.sleep(poll_s)
                 if connection.openai_service is not service:
                     return
-                try:
-                    exposed = await self._apply_ha_tools(service, schema)
-                except Exception as e:
-                    logger.warning(f"⚠️ HA tools fetched but could not be applied: {e!r}")
-                    return
-                logger.info(f"✅ HA tools recovered: {exposed}")
-                return
+            logger.info(
+                f"✅ HA back — recycling connection for {connection.device_id} "
+                f"to load {exposed} tools"
+            )
+            # Off the connection before closing: the close leads to
+            # _teardown, which would otherwise cancel this very task.
+            connection.ha_tools_task = None
+            try:
+                await connection.websocket.close(code=1000)
+            except Exception as e:
+                logger.warning(f"⚠️ could not recycle {connection.device_id}'s connection: {e!r}")
         finally:
             if connection.ha_tools_task is asyncio.current_task():
                 connection.ha_tools_task = None

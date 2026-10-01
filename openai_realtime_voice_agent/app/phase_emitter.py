@@ -252,6 +252,11 @@ class PhaseEmitter(FrameProcessor):
         _emit_idle_after_debounce."""
         self._on_turn_success = callback
 
+    @property
+    def phase(self):
+        """The last phase sent to the device (None before the first)."""
+        return self._current
+
     def note_wake(self) -> None:
         """Device woke (or a follow-up window closed without speech). Until the
         next real UserStartedSpeaking, any UserStoppedSpeaking is a dangling

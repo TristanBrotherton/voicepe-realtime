@@ -4,8 +4,15 @@ Live 2026-09-30: HA was restarting when the office speaker connected; the MCP
 POST answered 404 in 0.2 s and the session was built with 14 tools instead of
 59. The connection then lived for hours and the HA tools never came back until
 the speaker reconnected.
+
+0.21.1 pushed the recovered tools into the live OpenAI session
+(session.update); live 2026-10-01 that left the session deaf ("no server VAD
+activity 12s after wake") until the device reconnected. So recovery now closes
+the device's socket once it is idle, and the firmware's reconnect builds a
+fresh session through the normal path.
 """
 import asyncio
+import time
 
 import pytest
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -26,7 +33,6 @@ class _FlakyMcpClient:
 
     def __init__(self, failures=1):
         self.failures = failures
-        self.registrations = 0
 
     async def get_tools_schema(self):
         if self.failures:
@@ -35,20 +41,37 @@ class _FlakyMcpClient:
         return _schema()
 
     async def register_tools_schema(self, schema, service):
-        self.registrations += 1
         for f in schema.standard_tools:
             service.register_function(f.name, lambda params: None)
+
+
+class _Socket:
+    def __init__(self):
+        self.closes = []
+
+    async def close(self, code=1000, reason=None):
+        self.closes.append(code)
+
+
+class _Phase:
+    def __init__(self, phase=None):
+        self.phase = phase
+
+    async def close(self):
+        pass
 
 
 def _tool_names(service):
     return [t["name"] for t in service._session_properties.tools]
 
 
-async def _connect(app, provider="openai"):
+async def _connect(app, phase=None):
     from app.device_registry import DeviceConnection
+    from app.providers import OPENAI
 
-    connection = DeviceConnection(device_id="office", websocket=object())
-    connection.provider = provider
+    connection = DeviceConnection(device_id="office", websocket=_Socket())
+    connection.provider = OPENAI
+    connection.phase_emitter = _Phase(phase)
     service = await app.create_service(connection)
     connection.openai_service = service  # what serve_connection does next
     return connection, service
@@ -63,50 +86,70 @@ async def _wait_for(predicate, timeout=2.0):
     return True
 
 
+@pytest.fixture
+def fast(monkeypatch):
+    monkeypatch.setenv("MCP_TOOLS_RETRY_SECONDS", "0.05")
+    monkeypatch.setenv("MCP_RECYCLE_POLL_SECONDS", "0.05")
+    monkeypatch.setenv("MCP_RECYCLE_QUIET_SECONDS", "0")
+
+
 @pytest.mark.asyncio
-async def test_ha_tools_are_recovered_into_the_live_session_without_a_new_connection(monkeypatch):
+async def test_ha_back_while_idle_recycles_the_connection_once(fast):
     from app.providers import OPENAI
 
-    monkeypatch.setenv("MCP_TOOLS_RETRY_SECONDS", "0.05")
     app = _bare_app(OPENAI)
     app.mcp_client = _FlakyMcpClient(failures=2)
+    connection, service = await _connect(app, phase="idle")
+    tools_before = _tool_names(service)
 
-    connection, service = await _connect(app)
-    assert "HassTurnOn" not in _tool_names(service)  # first fetch failed
-
-    assert await _wait_for(lambda: "HassTurnOn" in _tool_names(service)), _tool_names(service)
-    assert "HassTurnOn" in service._functions
-    # The same filtering as the normal path.
-    assert "HassMediaSearchAndPlay" not in _tool_names(service)
-    assert _tool_names(service).count("play_media") == 1
+    assert await _wait_for(lambda: connection.websocket.closes), "connection never recycled"
+    await asyncio.sleep(0.2)
+    assert connection.websocket.closes == [1000]
+    # The live session is left alone: the fresh one gets the tools.
+    assert _tool_names(service) == tools_before
+    assert "HassTurnOn" not in _tool_names(service)
 
 
 @pytest.mark.asyncio
-async def test_recovery_running_twice_does_not_duplicate_tools(monkeypatch):
+async def test_no_recycle_during_a_turn_until_the_device_is_idle(fast):
     from app.providers import OPENAI
 
-    monkeypatch.setenv("MCP_TOOLS_RETRY_SECONDS", "0.05")
     app = _bare_app(OPENAI)
     app.mcp_client = _FlakyMcpClient(failures=1)
+    connection, service = await _connect(app, phase="replying")
 
-    connection, service = await _connect(app)
-    assert await _wait_for(lambda: "HassTurnOn" in _tool_names(service))
-    await app._apply_ha_tools(service, _schema())
+    await asyncio.sleep(0.4)
+    assert connection.websocket.closes == []
 
-    assert _tool_names(service).count("HassTurnOn") == 1
-    assert len(_tool_names(service)) == len(set(_tool_names(service)))
+    connection.phase_emitter.phase = "idle"
+    assert await _wait_for(lambda: connection.websocket.closes)
+    assert connection.websocket.closes == [1000]
 
 
 @pytest.mark.asyncio
-async def test_recovery_stops_when_the_device_disconnects(monkeypatch):
+async def test_no_recycle_right_after_a_wake(fast, monkeypatch):
+    """Phase stays idle between wake and the first speech; a recent wake counts."""
+    from app.providers import OPENAI
+
+    monkeypatch.setenv("MCP_RECYCLE_QUIET_SECONDS", "0.4")
+    app = _bare_app(OPENAI)
+    app.mcp_client = _FlakyMcpClient(failures=1)
+    connection, service = await _connect(app, phase="idle")
+    connection.touch()  # a wake just now
+
+    await asyncio.sleep(0.2)
+    assert connection.websocket.closes == []
+    assert await _wait_for(lambda: connection.websocket.closes)
+
+
+@pytest.mark.asyncio
+async def test_recovery_stops_when_the_device_disconnects(fast):
     from app.providers import OPENAI
     from app.websocket_handler import WebSocketHandler
 
-    monkeypatch.setenv("MCP_TOOLS_RETRY_SECONDS", "0.05")
     app = _bare_app(OPENAI)
     app.mcp_client = _FlakyMcpClient(failures=10**6)
-
-    connection, service = await _connect(app)
+    connection, service = await _connect(app, phase="idle")
     task = connection.ha_tools_task
     assert task is not None and not task.done()
 
@@ -114,54 +157,19 @@ async def test_recovery_stops_when_the_device_disconnects(monkeypatch):
     await handler._teardown(connection)
     await asyncio.sleep(0.1)
     assert task.done()
+    assert connection.websocket.closes == []
 
 
 @pytest.mark.asyncio
-async def test_no_recovery_task_when_the_first_fetch_worked(monkeypatch):
+async def test_no_recycle_when_the_first_fetch_worked(fast):
     from app.providers import OPENAI
 
     app = _bare_app(OPENAI)
     app.mcp_client = _FlakyMcpClient(failures=0)
+    connection, service = await _connect(app, phase="idle")
 
-    connection, service = await _connect(app)
     assert connection.ha_tools_task is None
     assert _tool_names(service).count("HassTurnOn") == 1
-
-
-@pytest.mark.asyncio
-async def test_a_connected_openai_session_is_sent_the_new_tool_list():
-    from app.providers import OPENAI
-
-    app = _bare_app(OPENAI)
-    app.mcp_client = _FlakyMcpClient(failures=1)
-    connection, service = await _connect(app)
-
-    sent = []
-
-    async def _update_settings():
-        sent.append(_tool_names(service))
-
-    service._websocket = object()  # connected
-    service._update_settings = _update_settings
-    await app._apply_ha_tools(service, _schema())
-
-    assert sent and "HassTurnOn" in sent[0]
-    connection.ha_tools_task.cancel()
-
-
-@pytest.mark.asyncio
-async def test_gemini_gets_the_tools_for_its_next_connect(monkeypatch):
-    from app.providers import GEMINI
-
-    monkeypatch.setenv("MCP_TOOLS_RETRY_SECONDS", "0.05")
-    app = _bare_app(GEMINI)
-    app.mcp_client = _FlakyMcpClient(failures=1)
-    connection, service = await _connect(app, GEMINI)
-
-    def names():
-        return [d["name"] for g in service._tools_from_init for d in g["function_declarations"]]
-
-    assert "HassTurnOn" not in names()
-    assert await _wait_for(lambda: "HassTurnOn" in names()), names()
-    assert names().count("play_media") == 1
-    assert "HassTurnOn" in service._functions
+    assert "HassMediaSearchAndPlay" not in _tool_names(service)
+    await asyncio.sleep(0.2)
+    assert connection.websocket.closes == []

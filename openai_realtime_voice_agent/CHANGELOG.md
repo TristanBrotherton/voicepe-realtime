@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.21.2 (fork)
+
+- **0.21.1:s återhämtning gjorde sessionen döv — nu återansluts enheten i
+  stället** (raawr D-70). 0.21.1 lade in de återhämtade HA-verktygen i den
+  levande OpenAI-sessionen med `session.update`. Live 2026-10-01 blev
+  sessionen efter det döv: två väckningar i rad fick "no server VAD activity
+  12s after wake", och inte ens en återanslutning mot OpenAI hjälpte, först
+  när högtalaren själv anslöt på nytt fungerade det. Nu rör agenten inte den
+  levande sessionen alls. När HA svarar igen väntar den tills enheten är
+  ledig (ingen tur pågår och ingen väckning på `MCP_RECYCLE_QUIET_SECONDS`,
+  förval 30) och stänger sedan enhetens anslutning normalt. Firmwaren
+  ansluter igen och får en ny session med alla verktyg den vanliga vägen:
+  `✅ HA back — recycling connection for <enhet> to load N tools`.
+
 ## 0.21.1 (fork)
 
 - **HA-verktygen kommer tillbaka av sig själva** (raawr D-70). Var HA nere

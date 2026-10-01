@@ -151,35 +151,3 @@ def build_service(provider: str, options: ProviderOptions, tools: List[Dict[str,
         return openai_realtime.build(options, tools)
     from app.providers import gemini_live
     return gemini_live.build(options, tools)
-
-
-async def add_tools(service, tools: List[Dict[str, Any]]) -> None:
-    """Add tool definitions to a session that is already built (raawr D-70).
-
-    A tool already present under the same name is replaced, so running this
-    twice never shows the model a duplicate.
-
-    OpenAI takes the new list mid-session through `session.update`, and every
-    later reconnect re-sends it from the session properties. Gemini Live only
-    reads tools in its setup message, so there the list takes effect at the
-    session's next (re)connect.
-
-    Args:
-        service: A service from build_service.
-        tools: Tool definitions in OpenAI Realtime shape.
-    """
-    names = {tool["name"] for tool in tools}
-    if hasattr(service, "_tools_from_init"):  # Gemini Live
-        from app.providers.gemini_live import to_gemini_tools
-
-        declarations = [
-            d for group in (service._tools_from_init or [])
-            for d in group.get("function_declarations", [])
-            if d.get("name") not in names
-        ]
-        service._tools_from_init = [{"function_declarations": declarations + to_gemini_tools(tools)}]
-        return
-    props = service._session_properties
-    props.tools = [t for t in (props.tools or []) if t.get("name") not in names] + list(tools)
-    if getattr(service, "_websocket", None):
-        await service._update_settings()
