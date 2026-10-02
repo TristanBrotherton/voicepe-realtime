@@ -30,6 +30,7 @@ SafeRealtimeLLMService runs it -- with these differences, all handled here
    ... due to inactivity", server_error/timeout). That is an idle hang-up,
    like Gemini's: the socket is closed and reconnected, no strike.
 """
+import os
 import asyncio
 import json
 import logging
@@ -254,6 +255,24 @@ class XaiRealtimeLLMService(LocalTurnsMixin, SafeRealtimeLLMService):
         await OpenAIRealtimeLLMService._handle_evt_response_done(self, evt)
 
 
+# Grok Voice renders a few inline sound tags in its own voice (owner,
+# 2026-10-02). Only on xai: the other engines would read "[chuckle]" aloud.
+# XAI_EXPRESSIVE_TAGS=false turns it off.
+EXPRESSIVE_TAGS_NOTE = (
+    "\n\nLJUD: du kan lägga in ljud i talet med taggar, sparsamt och bara där "
+    "det sitter naturligt: [chuckle] eller [laugh] när något är roligt, [sigh] "
+    "vid trista besked, [breath] före ett längre svar, [hum-tune] när du väntar "
+    "på något, [tsk] när något krånglar. Högst en tagg per svar, aldrig i en "
+    "ren kvittens som 'tänt'."
+)
+
+
+def with_expressive_tags(instructions):
+    if os.environ.get("XAI_EXPRESSIVE_TAGS", "true").strip().lower() in ("0", "false", "no", "av"):
+        return instructions
+    return (instructions or "") + EXPRESSIVE_TAGS_NOTE
+
+
 def build(options, tools):
     """Build a configured xAI Grok Voice session for one device."""
     from pipecat.services.openai.realtime.events import (
@@ -269,7 +288,7 @@ def build(options, tools):
         # The input reaches the service at 24 kHz; Silero runs at 16.
         turns = LocalTurns.create(int(options.xai_turn_silence_ms))
     session_properties = SessionProperties(
-        instructions=options.instructions,
+        instructions=with_expressive_tags(options.instructions),
         max_output_tokens=options.max_output_tokens,
         audio=AudioConfiguration(
             # xAI has server_vad or nothing; semantic_vad does not exist there.
