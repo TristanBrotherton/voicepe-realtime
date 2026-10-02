@@ -9,6 +9,7 @@ refuses with `1008 ... not supported for bidiGenerateContent`. Every live model
 is a preview name and will be retired in turn, so the model is a setting and
 this default is only the one that worked on the day it was written.
 """
+import asyncio
 import logging
 import os
 import time
@@ -21,9 +22,12 @@ from google.genai.types import (
     HttpOptions,
     ProactivityConfig,
     StartSensitivity,
+    ThinkingConfig,
 )
+from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.services.google.gemini_live.llm import (
     GeminiLiveLLMService,
+    GeminiModalities,
     GeminiVADParams,
     InputParams,
 )
@@ -92,6 +96,28 @@ NATIVE_AUDIO_MODEL_MARKER = "native-audio"
 # steered by the prompt rather than pinned by a setting. That is a real
 # difference worth knowing about, so it is logged, not hidden.
 NATIVE_AUDIO_PINS_LANGUAGE = False
+
+# The native-audio models THINK by default (dynamic budget), and pipecat sends
+# no thinking_config unless told to. Live 2026-10-02 14:35:46 on
+# models/gemini-2.5-flash-native-audio-latest, "släck kontoret": the thought
+# text names the exact tool ("intent__HassTurnOff is more aligned with the
+# direct 'släck' command") -- so the declarations arrived -- and the model
+# then SAYS "Släckt i kontoret" without ever sending a toolCall. Same 59 tools
+# on gemini-3.1-flash-live-preview were called (12:53 kalender_sok, 14:30
+# web_search). The model reasons its way to the action and narrates it
+# instead of doing it. Budget 0 turns thinking off, which Google documents
+# for the native-audio models; include_thoughts=False keeps the summaries
+# off the wire as well.
+NATIVE_AUDIO_THINKING = ThinkingConfig(thinking_budget=0, include_thoughts=False)
+
+# Spoken through the add-on's own TTS lane when Google drops the socket while
+# a turn is in flight (1011 "Internal error encountered", 2026-10-02 14:30:47:
+# the wake got nothing back, ever). Short, honest, and it tells him what to do.
+TURN_LOST_LINE = "Tappade tråden mot Google mitt i. Säg det igen."
+# How long after activityEnd a dropped socket still counts as a lost turn. A
+# reply with a slow tool (web search) can take 20 s; past this the drop is the
+# idle hang-up this class already forgives quietly.
+TURN_LOST_WINDOW_S = 45.0
 
 
 def to_gemini_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -314,6 +340,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
 
     async def _handle_msg_turn_complete(self, message) -> None:
         """Pass the engine's own end-of-turn on, then behave as before."""
+        self._reply_awaited_at = None
         await super()._handle_msg_turn_complete(message)
         handler = getattr(self, "_on_turn_complete", None)
         if handler is None:
@@ -346,6 +373,19 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
     # sure, and the first syllable must still reach the model.
     PREROLL_S = 0.5
 
+    # Bana 0 (raawr US-016), same hooks as the OpenAI service. With
+    # on_user_turn_end set, a turn's audio is HELD here instead of streamed:
+    # the hook decides, and calls answer_turn() (a miss: Google gets
+    # activityStart, the held audio, activityEnd) or drop_turn() (Home
+    # Assistant already did it: Google never hears the order, so it can
+    # neither answer it nor carry it into the next turn and do it twice).
+    on_user_turn_start = None  # plain callable
+    on_user_turn_end = None  # async callable
+    _turn_end_task = None
+    # Told (async, no args) when the socket dies with a turn in flight.
+    on_turn_lost = None
+    _reply_awaited_at: Optional[float] = None
+
     async def _send_activity(self, **kw) -> None:
         if self._disconnecting or not self._session:
             return
@@ -354,12 +394,28 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         except Exception as e:
             await self._handle_send_error(e)
 
+    async def _send_pcm(self, frame, audio: bytes) -> None:
+        if audio:
+            await super()._send_user_audio(
+                type(frame)(audio=audio, sample_rate=frame.sample_rate,
+                            num_channels=frame.num_channels)
+            )
+
     async def _send_user_audio(self, frame):
         """With local turns: send audio only inside an activity we opened."""
         turns = self._turns
         if turns is None:
             return await super()._send_user_audio(frame)
         event = turns.feed(frame.audio)
+        held = getattr(self, "_held", None)
+        if held is not None:
+            # Bana 0 holds this turn; keep collecting until it decides. Speech
+            # that resumes during the decision belongs to the same turn.
+            held.append(frame)
+            if event == "end":
+                await self.push_frame(UserStoppedSpeakingFrame())
+                self._decide_turn()
+            return
         if not self._activity_open:
             if event != "start":
                 preroll = getattr(self, "_preroll", bytearray())
@@ -367,21 +423,95 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
                 keep = int(self.PREROLL_S * frame.sample_rate) * 2
                 self._preroll = preroll[-keep:]
                 return
+            preroll = bytes(getattr(self, "_preroll", b""))
+            self._preroll = bytearray()
+            # Phase "listening" now, from our own VAD. The device closes its
+            # follow-up window unless it hears "listening" in time, and on
+            # Gemini that used to come only from the input transcript --
+            # which can arrive after the window has already cut him off.
+            await self.push_frame(UserStartedSpeakingFrame())
+            if self.on_user_turn_start is not None:
+                self.on_user_turn_start()
+            if self.on_user_turn_end is not None:
+                self._held = [type(frame)(audio=preroll, sample_rate=frame.sample_rate,
+                                          num_channels=frame.num_channels), frame]
+                return
             self._activity_open = True
             logger.debug("🎙️ local VAD: speech → activityStart")
             await self._send_activity(activity_start=ActivityStart())
-            preroll = bytes(getattr(self, "_preroll", b""))
-            self._preroll = bytearray()
-            if preroll:
-                await super()._send_user_audio(
-                    type(frame)(audio=preroll, sample_rate=frame.sample_rate,
-                                num_channels=frame.num_channels)
-                )
+            await self._send_pcm(frame, preroll)
         await super()._send_user_audio(frame)
         if event == "end":
-            self._activity_open = False
-            logger.debug("🎙️ local VAD: silence → activityEnd")
-            await self._send_activity(activity_end=ActivityEnd())
+            await self.push_frame(UserStoppedSpeakingFrame())
+            await self._end_activity()
+
+    async def _end_activity(self) -> None:
+        self._activity_open = False
+        self._reply_awaited_at = time.monotonic()
+        logger.debug("🎙️ local VAD: silence → activityEnd")
+        await self._send_activity(activity_end=ActivityEnd())
+
+    def _decide_turn(self) -> None:
+        """Run bana 0's decision once per held turn, off the audio path."""
+        if self._turn_end_task is None or self._turn_end_task.done():
+            self._turn_end_task = asyncio.get_running_loop().create_task(self._run_turn_end())
+
+    async def _run_turn_end(self) -> None:
+        try:
+            await self.on_user_turn_end()
+        finally:
+            # A hook that died without deciding must not strand the turn.
+            if getattr(self, "_held", None):
+                await self.answer_turn()
+
+    async def answer_turn(self) -> None:
+        """Bana 0 missed: give Google the held turn and let the model answer."""
+        held, self._held = getattr(self, "_held", None), None
+        if not held:
+            return
+        await self._send_activity(activity_start=ActivityStart())
+        for frame in held:
+            await self._send_pcm(frame, frame.audio)
+        await self._end_activity()
+
+    async def drop_turn(self) -> None:
+        """Forget the current turn: held audio, or an activity already open.
+
+        An open activity is abandoned without an activityEnd, so the model is
+        never asked to answer it.
+        """
+        # ponytail: whether Google accepts the next activityStart without an
+        # activityEnd for the abandoned one is unmeasured; a refusal surfaces
+        # as a reconnect in the journal. Bana 0 holds instead of streaming so
+        # its hits never take this path.
+        if self._activity_open:
+            logger.info("🧽 open Gemini activity abandoned (device dropped the input)")
+        self._held = None
+        self._activity_open = False
+        self._preroll = bytearray()
+        if self._turns is not None:
+            self._turns.reset()
+
+    async def _handle_msg_model_turn(self, msg) -> None:
+        """Speak audio only; never let a text part pose as the answer.
+
+        In an AUDIO session the answer is the audio, and its words come back
+        as output transcription. Text parts there are the model's thinking:
+        live 2026-10-02 the assistant transcript read "**Analyzing Command
+        Execution** I've determined the user intends to turn off..." in front
+        of the spoken reply, and that text went into the conversation context
+        as if it had been said. pipecat also reads only parts[0], so an audio
+        part behind a thought part was lost. Each part is handled on its own.
+        """
+        parts = list(msg.server_content.model_turn.parts or [])
+        if self._settings.get("modalities") != GeminiModalities.AUDIO:
+            return await super()._handle_msg_model_turn(msg)
+        for part in parts:
+            if part.text:
+                logger.debug(f"💭 Gemini text part dropped (not the answer): {part.text[:80]!r}")
+                continue
+            msg.server_content.model_turn.parts = [part]
+            await super()._handle_msg_model_turn(msg)
 
     async def _handle_session_ready(self, session):
         """A new socket knows nothing of an activity the old one had open."""
@@ -391,7 +521,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
             self._turns.reset()
         await super()._handle_session_ready(session)
 
-    async def end_audio_stream(self) -> None:
+    async def end_audio_stream(self, keep_speech: bool = False) -> None:
         """Tell Google the microphone just stopped, and drop what it holds.
 
         This is Gemini Live's answer to OpenAI Realtime's
@@ -412,21 +542,29 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
 
         Silent when there is no live session: the caller is a device event,
         and a device event arriving between sessions must never raise.
+
+        Args:
+            keep_speech: The follow-up window closed, it was not a stop word.
+                With local turns, speech our VAD is sure of is then ended and
+                answered (through bana 0 when it holds the turn) instead of
+                dropped: the device shut the mic on him, he did not take the
+                question back. Nothing is cached to go stale, because the
+                answer comes now.
         """
         if self._turns is not None:
             # Manual activity mode: audioStreamEnd belongs to Google's
-            # automatic detection and is not sent. What the device wants
-            # dropped (a stop word, a cut-off follow-up) is dropped here: the
-            # open activity is abandoned without an activityEnd, so the model
-            # is never asked to answer it.
-            # ponytail: whether Google accepts the next activityStart without
-            # an activityEnd for the abandoned one is unmeasured; a refusal
-            # surfaces as a reconnect in the journal.
-            if self._activity_open:
-                logger.info("🧽 open Gemini activity abandoned (device dropped the input)")
-            self._activity_open = False
-            self._preroll = bytearray()
-            self._turns.reset()
+            # automatic detection and is not sent.
+            if keep_speech and getattr(self, "_held", None):
+                logger.info("🧽 follow-up closed mid-utterance — answering it, not dropping it")
+                self._decide_turn()
+                self._turns.reset()  # the mic is shut; the next wake starts clean
+                return
+            if keep_speech and self._activity_open:
+                logger.info("🧽 follow-up closed mid-utterance — answering it, not dropping it")
+                await self._end_activity()
+                self._turns.reset()
+                return
+            await self.drop_turn()
             return
         session = self._session
         if session is None or self._disconnecting:
@@ -438,6 +576,18 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         lifetime = None
         if self._connection_start_time:
             lifetime = time.time() - self._connection_start_time
+        # A turn was in flight: he is speaking (activity open) or waiting for
+        # the answer to one. Google takes it down with the socket -- the new
+        # session never saw it -- so say so instead of leaving him in silence.
+        awaited = self._reply_awaited_at
+        lost = self._activity_open or (
+            awaited is not None and time.monotonic() - awaited < TURN_LOST_WINDOW_S
+        )
+        self._reply_awaited_at = None
+        if lost:
+            logger.warning(f"💔 Gemini dropped the socket mid-turn ({error}) — telling him")
+            if self.on_turn_lost is not None:
+                asyncio.get_running_loop().create_task(self.on_turn_lost())
         # Runs pipecat's own stable-connection rule, which the receive loop
         # can only reach while the server is talking to us.
         self._check_and_reset_failure_counter()
@@ -508,11 +658,15 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     model = options.model or DEFAULT_MODEL
     voice = options.voice or DEFAULT_VOICE
     language = _resolve_language(options.language or "sv-SE")
-    turns = LocalTurns.create(int(options.gemini_vad_silence_duration_ms))
+    turns = LocalTurns.create(int(options.gemini_turn_silence_ms))
     vad = GeminiVADParams(disabled=True) if turns else _build_vad_params(options)
     proactivity, affective, http_options = _native_audio_features(options, model)
-    drop_language = NATIVE_AUDIO_MODEL_MARKER in model and not NATIVE_AUDIO_PINS_LANGUAGE
+    native = NATIVE_AUDIO_MODEL_MARKER in model
+    drop_language = native and not NATIVE_AUDIO_PINS_LANGUAGE
     params = InputParams(
+        # Only the native-audio models: gemini-3.1-flash-live-preview calls its
+        # tools as it is, and its thinking knob is a level, not a budget.
+        thinking=NATIVE_AUDIO_THINKING if native else None,
         max_tokens=options.max_output_tokens or 4096,
         language=language,
         vad=vad,
@@ -522,11 +676,12 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     logger.info(
         f"🔧 Gemini Live session: model={model} voice={voice} "
         f"lang={'(from prompt)' if drop_language else language} tools={len(tools)}"
+        f"{' thinking=off' if native else ''}"
     )
     if turns:
         logger.info(
             f"🎚️ Gemini turn detection: LOCAL (Silero, end after "
-            f"{options.gemini_vad_silence_duration_ms}ms silence) → activityStart/activityEnd"
+            f"{options.gemini_turn_silence_ms}ms silence) → activityStart/activityEnd"
         )
     else:
         logger.info(

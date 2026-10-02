@@ -402,3 +402,128 @@ async def test_bufferten_ar_tom_medan_modellen_svarar():
     connection.phase_emitter._current = "listening"
     await connection.serializer.deserialize(PCM)
     assert connection.serializer.take_turn_audio() == PCM
+
+
+# --- Bana 0 on Gemini (up to 0.22.5 it was wired for OpenAI only) ----------
+
+@pytest.fixture
+def ha_svarar(monkeypatch):
+    """HA's answer via comms, faked at bana0.prova: the comms fixture swaps
+    httpx.AsyncClient for a function, which google-genai cannot subclass."""
+    svar = []
+
+    async def prova(text, timeout):
+        return svar[0]
+
+    monkeypatch.setattr(bana0, "prova", prova)
+    return svar
+
+
+def _gemini_koppling(stt, events):
+    """A built pipeline for one Gemini device; Google is a recorder."""
+    from app.device_registry import DeviceConnection
+    from app.providers import GEMINI, build_service
+    from app.raw_audio_serializer import RawAudioSerializer
+    from app.websocket_handler import WebSocketHandler
+    from test_gemini_provider import OPENAI_SHAPE, _ScriptedTurns, _options, _wire
+
+    service = build_service(GEMINI, _options(), OPENAI_SHAPE)
+    google = _wire(service, _ScriptedTurns(events))
+
+    async def noop(*a, **k):
+        return None
+
+    service.push_frame = noop
+    handler = WebSocketHandler()
+    handler.bana0_stt = stt
+    serializer = RawAudioSerializer("kontoret", input_sample_rate=16000)
+    connection = DeviceConnection(device_id="kontoret", websocket=object(), serializer=serializer)
+    connection.provider = GEMINI
+    connection.transport = handler.create_transport(object(), serializer, GEMINI)
+    connection.openai_service = service
+    handler.build_pipeline(connection)
+    said, idle = [], []
+
+    async def say(text, device_id=None):
+        said.append((text, device_id))
+
+    async def force_idle(reason=""):
+        idle.append(reason)
+
+    handler.say = say
+    connection.phase_emitter.force_idle = force_idle
+    return connection, service, google, said, idle
+
+
+async def _speak(connection, service, n):
+    from test_gemini_provider import _frame
+
+    for b in range(n):
+        await connection.serializer.deserialize(PCM)
+        await service._send_user_audio(_frame(b))
+
+
+@pytest.mark.asyncio
+async def test_gemini_traff_google_hor_aldrig_ordern(ha_svarar):
+    """"släck kontoret" on Gemini: HA does it and says so; Google hears
+    nothing, so the model can neither answer it nor redo it next turn."""
+    from test_gemini_provider import _kinds
+
+    ha_svarar.append("Släckte i kontoret")
+    server, port, seen = await _wyoming(_transcript("släck kontoret"))
+    connection, service, google, said, idle = _gemini_koppling(
+        ("127.0.0.1", port), [None, "start", None, "end"])
+    async with server:
+        await _speak(connection, service, 4)
+        await service._turn_end_task
+    assert said == [("Släckte i kontoret", "kontoret")]
+    assert idle == ["bana0"]
+    assert _kinds(google) == []
+    assert [t for t, _, _ in seen if t == "transcribe"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_miss_ger_modellen_hela_turen(ha_svarar):
+    from test_gemini_provider import _frame, _kinds
+
+    ha_svarar.append(None)
+    server, port, _ = await _wyoming(_transcript("vad är klockan"))
+    connection, service, google, said, idle = _gemini_koppling(
+        ("127.0.0.1", port), [None, "start", None, "end"])
+    async with server:
+        await _speak(connection, service, 4)
+        await service._turn_end_task
+    assert said == []
+    # start, pre-roll (frame 0), the three speech frames, end
+    assert _kinds(google) == ["start", "audio", "audio", "audio", "audio", "end"]
+    assert google[1]["audio"].data == _frame(0).audio
+
+
+@pytest.mark.asyncio
+async def test_gemini_utan_bana0_strommar_som_forut():
+    from test_gemini_provider import _kinds
+
+    connection, service, google, said, idle = _gemini_koppling(None, ["start", "end"])
+    assert service.on_user_turn_end is None
+    await _speak(connection, service, 2)
+    assert _kinds(google) == ["start", "audio", "audio", "end"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_tappad_tur_sags_hogt():
+    """1011 mid-turn (2026-10-02 14:30:47): he gets a line, not silence."""
+    from app.providers.gemini_live import TURN_LOST_LINE
+
+    connection, service, google, said, idle = _gemini_koppling(None, ["start"])
+    await _speak(connection, service, 1)
+
+    async def no_push(*a, **k):
+        return None
+
+    service.push_error = no_push
+    service._connection_start_time = time.time() - 5
+    await service._handle_connection_error(Exception("1011 Internal error encountered."))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert said == [(TURN_LOST_LINE, "kontoret")]
+    assert idle == ["turn-lost"]

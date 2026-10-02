@@ -66,6 +66,9 @@ options:
   gemini_vad_end_sensitivity: "low"
   gemini_vad_prefix_padding_ms: 300
   gemini_vad_silence_duration_ms: 800
+  # The add-on's own turn detection (default since 0.22.5): silence that ends
+  # your turn. 800 cut questions off at every pause (2026-10-02).
+  gemini_turn_silence_ms: 1200
   # Google's own "was that meant for me?" judgement. Needs a native-audio
   # model (models/gemini-2.5-flash-native-audio-latest) — gemini-3.1-flash-live
   # does not support it, and the add-on refuses the combination rather than
@@ -194,6 +197,7 @@ schema:
   gemini_vad_end_sensitivity: "list(low|high)"
   gemini_vad_prefix_padding_ms: int(0,2000)
   gemini_vad_silence_duration_ms: int(0,5000)
+  gemini_turn_silence_ms: int(300,5000)
   gemini_proactive_audio: bool
   gemini_affective_dialog: bool
   provider_cooldown_minutes: int(1,1440)

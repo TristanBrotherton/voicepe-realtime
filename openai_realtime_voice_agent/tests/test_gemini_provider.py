@@ -301,11 +301,12 @@ async def test_each_engine_drops_pending_input_in_its_own_dialect():
     gemini_calls = []
 
     class FakeGemini:
-        async def end_audio_stream(self):
-            gemini_calls.append(True)
+        async def end_audio_stream(self, keep_speech=False):
+            gemini_calls.append(keep_speech)
 
     assert await drop_pending_input_audio("gemini", FakeGemini()) == "audioStreamEnd"
-    assert gemini_calls == [True]
+    assert await drop_pending_input_audio("gemini", FakeGemini(), keep_speech=True) == "audioStreamEnd"
+    assert gemini_calls == [False, True]
 
     openai_events = []
 
