@@ -351,13 +351,22 @@ class EnrollmentConductor:
             f.write(pcm)
         return pcm
 
-    async def _say(self, text, device_id=None):
+    async def _say(self, text, device_id=None, pace=True):
+        """Speak `text` on one device.
+
+        pace=False sends the whole clip at once: the device queues it, and a
+        reply that starts while it plays is queued after it instead of
+        interleaving with it chunk by chunk (the early acknowledgement).
+        `last_say_s` is how long the clip plays.
+        """
         target = self.device_id if device_id is None else device_id
         pcm = await self._tts(text)
+        self.last_say_s = len(pcm) / 48000.0
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False
-            await asyncio.sleep(0.095)
+            if pace:
+                await asyncio.sleep(0.095)
         return True
 
     def start(self, person, device_id: str):

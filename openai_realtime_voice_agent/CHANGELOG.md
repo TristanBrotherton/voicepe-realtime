@@ -2,6 +2,24 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.23.1 (fork)
+
+- **Ett tidigt "jag kollar" när ett verktyg dröjer.** Ägaren 2026-10-02:
+  när agenten måste kolla i backend blir det tyst. Ett verktyg som inte
+  är klart efter `EARLY_ACK_MS` (700) ger en kort replik i Björns röst
+  ("Vänta, jag kollar.", varierad, aldrig frågetecken) genom samma
+  skyddade TTS-fil som bana 0, utanför modellens historik, högst en gång
+  per tur och aldrig om modellens eget ljud redan har börjat. Klippet
+  skickas i ett svep så ett svar som börjar under det köas efter.
+  Personan ber också modellen säga det själv före en långsam uppslagning.
+  `EARLY_ACK_MS=0` stänger av.
+- **Varje verktygsanrop loggar `⏱ tool <namn> <ms> ok|fel`.** Journalen
+  1-2 okt: HA-verktygen 0,07-0,9 s; `web_search` 4,7-4,9 s, `play_media`
+  2,7-4,8 s, `ask_openclaw` 8,9 s.
+- **web_search med låg resonemangsinsats.** `WEB_SEARCH_REASONING_EFFORT`
+  (förval `low`, tom = modellens eget). Mätt från core: gpt-5.5 10,6/7,2 s
+  på förval, 5,5/6,3 s på low; gpt-5.4-mini på low 4,5/4,6 s.
+
 ## 0.22.5 (fork)
 
 - **Tillägget bestämmer själv var en tur börjar och slutar på Gemini.**

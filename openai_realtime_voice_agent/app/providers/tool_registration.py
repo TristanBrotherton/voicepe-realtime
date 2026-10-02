@@ -9,9 +9,11 @@ Same for `GetLiveContext` and `vaderprognos`, all evening.
 Keeping it in one mixin is the point. A rule that has to be remembered twice
 is a rule that protects one engine.
 """
+import asyncio
 import json
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,17 @@ def cap_tool_result(result, max_chars: int):
             "Ask again with a narrower filter (name, area or domain).]")
 
 
+def _early_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_MS", "700")))
+    except ValueError:
+        return 700
+
+
+def _is_error(result) -> bool:
+    return isinstance(result, dict) and "error" in result
+
+
 class ToolRegistrationMixin:
     """Registers every tool the same way, whichever engine is running.
 
@@ -56,6 +69,9 @@ class ToolRegistrationMixin:
     speaker_probe = None
     male_only_tools: set = set()
     turn_liveness = None
+    # async () -> None: speaks a short "jag kollar" on this connection's
+    # device. Set by main.py; None (tests, no device) means stay silent.
+    early_ack = None
 
     def register_function(self, function_name, handler, start_callback=None, *,
                           cancel_on_interruption: bool = True):  # type: ignore[override]
@@ -88,37 +104,83 @@ class ToolRegistrationMixin:
         inspects the signature to pick the calling convention).
         """
         async def liveness_tracked(params):
-            # Speaker gate (fork): tools listed in male_only_tools only execute
-            # when the last voice-type verdict is "male". Enforced HERE — below
-            # the model — so prompt tricks can't bypass it. Fails closed on
-            # uncertain/stale/absent verdicts. This is convenience gating on a
-            # voice-type heuristic, not biometric auth.
-            if self.male_only_tools and function_name in self.male_only_tools:
-                speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
-                if speaker != "male":
-                    owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
-                    logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
-                    await params.result_callback({
-                        "error": (
-                            f"Not available: this capability is reserved for {owner}, "
-                            f"and the current speaker's voice was not recognized as {owner}. "
-                            f"Relay this politely."
-                        )
-                    })
+            # One line per call, every engine, every tool (MCP included):
+            # `⏱ tool <name> <ms> ok|fel`, timed to the moment the result is
+            # handed back -- that is what the person in the room waits for.
+            started = time.monotonic()
+            logged = False
+            ack_speaking = False
+
+            def log_timing(status: str) -> None:
+                nonlocal logged
+                if not logged:
+                    logged = True
+                    ms = round((time.monotonic() - started) * 1000)
+                    logger.info(f"⏱ tool {function_name} {ms} {status}")
+
+            async def ack_if_slow():
+                # The owner, 2026-10-02: a smart agent says it has understood
+                # but needs to check, instead of going quiet. Fast tools (HA:
+                # 0.1-0.8 s) finish before this fires and stay silent.
+                nonlocal ack_speaking
+                await asyncio.sleep(_early_ack_ms() / 1000.0)
+                liveness = self.turn_liveness
+                if liveness is not None and not liveness.claim_ack(started):
                     return
+                ack_speaking = True
+                try:
+                    await self.early_ack(started)
+                except Exception as e:
+                    logger.warning(f"⚠️ early ack failed: {e!r}")
+
+            ack_task = None
+            if self.early_ack is not None and _early_ack_ms() > 0:
+                ack_task = asyncio.ensure_future(ack_if_slow())
+
+            def stop_waiting_ack() -> None:
+                # Only a pending ack is dropped; one already speaking finishes
+                # its sentence (the device queues the reply after it).
+                if ack_task is not None and not ack_speaking:
+                    ack_task.cancel()
+
             # Capped here, below every engine and every tool, MCP included.
             original_callback = params.result_callback
             max_chars = _result_max_chars()
 
             async def capped_callback(result, *args, **kwargs):
+                stop_waiting_ack()
+                log_timing("fel" if _is_error(result) else "ok")
                 return await original_callback(cap_tool_result(result, max_chars), *args, **kwargs)
 
             params.result_callback = capped_callback
             if self.turn_liveness is not None:
                 self.turn_liveness.tool_started()
             try:
+                # Speaker gate (fork): tools listed in male_only_tools only execute
+                # when the last voice-type verdict is "male". Enforced HERE — below
+                # the model — so prompt tricks can't bypass it. Fails closed on
+                # uncertain/stale/absent verdicts. This is convenience gating on a
+                # voice-type heuristic, not biometric auth.
+                if self.male_only_tools and function_name in self.male_only_tools:
+                    speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
+                    if speaker != "male":
+                        owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
+                        logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
+                        await params.result_callback({
+                            "error": (
+                                f"Not available: this capability is reserved for {owner}, "
+                                f"and the current speaker's voice was not recognized as {owner}. "
+                                f"Relay this politely."
+                            )
+                        })
+                        return
                 return await handler(params)
+            except BaseException:
+                log_timing("fel")
+                raise
             finally:
+                stop_waiting_ack()
+                log_timing("ok")
                 if self.turn_liveness is not None:
                     self.turn_liveness.tool_finished()
 

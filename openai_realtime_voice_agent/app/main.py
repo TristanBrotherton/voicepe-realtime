@@ -12,6 +12,7 @@ from pipecat.pipeline.task import PipelineTask
 from app import ha_api
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
+from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, pick_early_ack
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -554,6 +555,8 @@ class Application:
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
         # Bana 0 speaks HA's confirmation through the same guarded lane.
         self.websocket_handler.say = self._guarded_say
+        self._last_early_ack = None
+        asyncio.ensure_future(self._warm_early_acks())
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
             and self.websocket_handler.resolve_device(device_id) is not None
@@ -660,7 +663,7 @@ class Application:
         """
         from app.providers import GEMINI, ProviderOptions
 
-        instructions = self.instructions + memory_instructions()
+        instructions = self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions()
         if provider == GEMINI:
             return ProviderOptions(
                 api_key=self.gemini_api_key,
@@ -825,6 +828,7 @@ class Application:
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
+            service.early_ack = lambda started, c=connection: self._early_ack(c, started)
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -989,7 +993,7 @@ class Application:
             register_openclaw_tool(service)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
-    async def _guarded_say(self, text, device_id=None):
+    async def _guarded_say(self, text, device_id=None, pace=True):
         """The conductor's TTS lane, guarded so the device cannot hear itself.
 
         Used by the announce endpoint and bana 0. NOT by timers: a timer
@@ -1007,14 +1011,48 @@ class Application:
             ser.suppress_inbound_until = time.monotonic() + 3600
         if connection is not None:
             connection.says_playing += 1
+        tail = 1.2
         try:
-            return await self.enrollment_conductor._say(text, device_id=device_id)
+            if pace:
+                return await self.enrollment_conductor._say(text, device_id=device_id)
+            result = await self.enrollment_conductor._say(text, device_id=device_id, pace=False)
+            # Sent at once, so it is still playing: keep the mic shut until it is done.
+            tail += getattr(self.enrollment_conductor, "last_say_s", 0.0)
+            return result
         finally:
             if ser is not None:
-                ser.suppress_inbound_until = time.monotonic() + 1.2
+                ser.suppress_inbound_until = time.monotonic() + tail
             if connection is not None:
                 connection.says_playing -= 1
                 connection.last_busy = time.monotonic()
+
+    async def _early_ack(self, connection, tool_started_at) -> None:
+        """Say a short "jag kollar" while a slow tool runs (tool_registration.py).
+
+        Out of band, through the guarded TTS lane: it never enters the
+        model's history and the mic stays shut while it plays. The clip is
+        fetched first (cached on disk after the first time) and the model is
+        checked once more, so an answer that started meanwhile is not talked
+        over.
+        """
+        text = pick_early_ack(self._last_early_ack)
+        self._last_early_ack = text
+        await self.enrollment_conductor._tts(text)
+        liveness = connection.turn_liveness
+        if liveness is not None and liveness.model_spoke_since(tool_started_at):
+            logger.info("⏱ early ack dropped: the model is already talking")
+            return
+        logger.info(f"⏱ early ack: {text}")
+        await self._guarded_say(text, connection.device_id, pace=False)
+
+    async def _warm_early_acks(self) -> None:
+        """Fetch every acknowledgement clip once, so the first slow tool is not slower."""
+        for text in EARLY_ACK_PHRASES:
+            try:
+                await self.enrollment_conductor._tts(text)
+            except Exception as e:
+                logger.warning(f"⚠️ early ack clip not cached: {e!r}")
+                return
 
     async def _recover_ha_tools(self, connection, service) -> None:
         """Retry the HA tool fetch; once HA answers, recycle the connection.

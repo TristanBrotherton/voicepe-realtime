@@ -89,9 +89,42 @@ class TurnLiveness:
     step of a long tool chain refreshes the window.
     """
 
+    # How long before a tool started the model's own speech still counts as
+    # "it already said something" for the early acknowledgement.
+    RECENT_BOT_S = 2.0
+
     def __init__(self) -> None:
         self.in_flight = 0
         self.last_activity = 0.0
+        # For the early acknowledgement (tool_registration.py): has the model's
+        # own audio started, and has this turn already had its "jag kollar".
+        self.bot_speaking = False
+        self.bot_started_at = float("-inf")
+        self.bot_stopped_at = float("-inf")
+        self.acked = False
+
+    def bot_started(self) -> None:
+        self.bot_speaking = True
+        self.bot_started_at = time.monotonic()
+
+    def bot_stopped(self) -> None:
+        self.bot_speaking = False
+        self.bot_stopped_at = time.monotonic()
+
+    def turn_over(self) -> None:
+        self.acked = False
+
+    def model_spoke_since(self, t: float) -> bool:
+        """The model's audio is playing, or played recently before `t`."""
+        recent = t - self.RECENT_BOT_S
+        return self.bot_speaking or self.bot_started_at > recent or self.bot_stopped_at > recent
+
+    def claim_ack(self, tool_started_at: float) -> bool:
+        """True once per turn, and never when the model is already talking."""
+        if self.acked or self.model_spoke_since(tool_started_at):
+            return False
+        self.acked = True
+        return True
 
     def tool_started(self) -> None:
         self.in_flight += 1
@@ -303,6 +336,7 @@ class PhaseEmitter(FrameProcessor):
             return
         if value == "idle":
             self.idle_since = time.monotonic()
+            self._liveness.turn_over()
         self._current = value
         logger.info(f"📞 phase -> {value}")  # TEMP instrumentation
         if self._send_phase is not None:
@@ -470,6 +504,7 @@ class PhaseEmitter(FrameProcessor):
                 await self._emit("thinking")
                 self._arm_watchdog()
         elif isinstance(frame, BotStartedSpeakingFrame):
+            self._liveness.bot_started()
             self._suppress_thinking = False
             self._model_turn_open = True
             self._cancel_pending_idle()
@@ -478,6 +513,7 @@ class PhaseEmitter(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self.note_engine_turn_complete()
         elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._liveness.bot_stopped()
             # Don't go idle immediately — TTS comes in segments. Only emit idle
             # if the bot stays silent for the debounce window.
             self._cancel_pending_idle()
