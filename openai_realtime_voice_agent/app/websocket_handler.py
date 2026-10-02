@@ -199,6 +199,8 @@ class ConnectionRecovery(FrameProcessor):
     # _is_dead_socket, not stored as a constant since it is a single phrase).
     RECONNECT_COOLDOWN_S = 5.0
     IDLE_UNSTICK_COOLDOWN_S = 2.0
+    # A rate limit inside this long after our own retry is the retry failing.
+    RATE_LIMIT_WINDOW_S = 30.0
     # Proactive refresh: reconnect BEFORE OpenAI's 60-min session cap, but only
     # while the house is genuinely quiet, so the cap practically never lands
     # mid-conversation (where it costs the user a turn).
@@ -264,6 +266,10 @@ class ConnectionRecovery(FrameProcessor):
         self._refresh_task = None
         self._recover_task = None
         self._closed = False
+        # Rate-limit ladder for the current turn: 0 nothing yet, 1 answer
+        # retried, 2 fallback said. Reset by a finished turn or by time.
+        self._rate_limit_stage = 0
+        self._rate_limit_at = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -358,6 +364,11 @@ class ConnectionRecovery(FrameProcessor):
         failure = classify(message)
         if failure is Failure.APP:
             return False
+        if failure is Failure.RATE_LIMIT:
+            # Before the flood dedup: the retry's own failure may read the
+            # same, and it must still reach the fallback. Never reported to
+            # the router: tokens-per-minute is not a broken engine.
+            return await self._answer_after_rate_limit(message)
 
         now = time.monotonic()
         # A dead/flooding socket delivers the SAME message ~15x/s. Without
@@ -391,19 +402,20 @@ class ConnectionRecovery(FrameProcessor):
         self._last_error_message = message
         self._last_reported_at = now
 
-        if self._router is not None:
-            after = self._router.report_failure(self._provider, message)
-            if after != self._provider:
-                logger.warning(f"🔀 failing over {self._provider} → {after}")
-                if self._on_failover is not None:
-                    await self._on_failover()
-                    return True
-                # No callback wired (e.g. a test-built ConnectionRecovery, or
-                # any caller that hasn't passed on_failover): returning True
-                # here would suppress the idle nudge below while nothing
-                # actually rebuilds the connection — the device would get
-                # neither a switch nor a way out.
-                return False
+        # A dead socket on an engine we repair ourselves is reported only if
+        # the repair fails. OpenAI closes healthy idle sessions server-side
+        # ("realtime receive loop died: ConnectionClosedError(None, None,
+        # None)") and they reconnect in ~1.5 s; on 2026-10-02 two of those 23
+        # minutes apart spent the retry budget and moved the house to a deaf
+        # backup. Same rule ResilientGeminiLiveService applies to Gemini's
+        # idle hang-ups.
+        repair_first = (
+            failure is Failure.TRANSIENT
+            and not self_heals(self._provider)
+            and self._is_dead_socket(message)
+        )
+        if not repair_first and await self._report(message):
+            return True
 
         if failure in (Failure.MONEY, Failure.AUTH):
             # Nothing here can be repaired, and there is nowhere to go.
@@ -450,8 +462,73 @@ class ConnectionRecovery(FrameProcessor):
 
         self._reconnecting = True
         self._last_attempt = now  # only stamped here, where a repair is actually attempted
-        await self._recover(message)
+        if not await self._recover(message):
+            # The engine did not come back: THAT is a strike.
+            await self._report(f"reconnect failed after: {message}")
         return True
+
+    async def _report(self, message: str) -> bool:
+        """Tell the router; carry out a switch if it decides one.
+
+        Returns True only when a failover was actually carried out.
+        """
+        if self._router is None:
+            return False
+        after = self._router.report_failure(self._provider, message)
+        if after == self._provider:
+            return False
+        logger.warning(f"🔀 failing over {self._provider} → {after}")
+        if self._on_failover is None:
+            # No callback wired (a test-built ConnectionRecovery, say):
+            # claiming "handled" would suppress the idle nudge while nothing
+            # rebuilds the connection.
+            return False
+        await self._on_failover()
+        return True
+
+    async def _answer_after_rate_limit(self, message: str) -> bool:
+        """Wait what OpenAI asks, ask for the answer once more, else say so.
+
+        2026-10-02 12:57: HassTurnOff ran, the reply after it was rate
+        limited, and the user heard nothing. The tool result is already in
+        the server conversation, so a fresh response.create is the answer.
+
+        Returns True when something audible is on its way (retry or
+        fallback), False when the caller should just nudge the device idle.
+        """
+        from app.provider_failures import retry_after_s
+
+        retry = getattr(self._service, "retry_response", None)
+        if retry is None:
+            return False  # an engine without a retry hook: idle nudge as before
+        now = time.monotonic()
+        if now - self._rate_limit_at > self.RATE_LIMIT_WINDOW_S:
+            self._rate_limit_stage = 0
+        self._rate_limit_at = now
+        if self._rate_limit_stage == 0:
+            self._rate_limit_stage = 1
+            wait = retry_after_s(message)
+            logger.warning(f"⏳ rate limited — asking for the answer again in {wait:.1f}s")
+            await asyncio.sleep(wait)
+            try:
+                await retry()
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ rate-limit retry could not be sent: {e!r}")
+        if self._rate_limit_stage < 2:
+            self._rate_limit_stage = 2
+            say = getattr(self._service, "say_rate_limited", None)
+            logger.warning(
+                "🙊 still rate limited after the retry — "
+                + ("saying so" if say else "no audio path, going idle")
+            )
+            if say is not None:
+                try:
+                    await say()
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ rate-limit fallback could not be sent: {e!r}")
+        return False
 
     def note_turn_success(self) -> None:
         """The assistant just finished a reply cleanly.
@@ -468,6 +545,7 @@ class ConnectionRecovery(FrameProcessor):
         two-in-a-row and switch engines for nothing — the one-retry budget
         must reset on real success, not just with the passage of time.
         """
+        self._rate_limit_stage = 0
         if self._router is not None:
             self._router.note_success(self._provider)
 
@@ -566,6 +644,11 @@ class ConnectionRecovery(FrameProcessor):
                 logger.error("❌ service has no reset_conversation(); cannot reconnect in place")
                 return False
             await reset()
+            if getattr(self._service, "_websocket", True) is None:
+                # pipecat's _connect swallows a failed connect and leaves this
+                # None; its "Error connecting" frame is dropped while we repair.
+                logger.error("❌ OpenAI reconnect did not open a socket")
+                return False
             self._connected_at = time.monotonic()
             logger.info(
                 f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "

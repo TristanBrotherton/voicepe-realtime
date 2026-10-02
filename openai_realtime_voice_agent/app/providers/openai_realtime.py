@@ -132,6 +132,34 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
             logger.debug(f"usage accounting failed: {e!r}")
         await super()._handle_evt_response_done(evt)
 
+    # Said when a reply stays rate limited after one retry. Short on purpose:
+    # it goes out as its own tiny out-of-band response, so it fits under the
+    # tokens-per-minute limit the full-context reply just hit.
+    RATE_LIMIT_FALLBACK = (
+        "Säg exakt detta på svenska och inget annat: "
+        "\"Jag är överbelastad just nu, fråga mig igen om en liten stund.\""
+    )
+
+    async def retry_response(self):
+        """Ask for the reply again after a rate limit (ConnectionRecovery)."""
+        if self._current_assistant_response is not None:
+            return  # a reply is already under way; do not collide with it
+        await self._create_response()
+
+    async def say_rate_limited(self):
+        """Speak the honest fallback, out of band, without the conversation."""
+        if not self._websocket:
+            raise RuntimeError("no OpenAI socket to speak through")
+        await self._ws_send({
+            "type": "response.create",
+            "response": {
+                "conversation": "none",
+                "input": [],
+                "output_modalities": ["audio"],
+                "instructions": self.RATE_LIMIT_FALLBACK,
+            },
+        })
+
     async def reset_conversation(self):  # type: ignore[override]
         """Reconnect WITHOUT forcing a response on the reconnected session.
 

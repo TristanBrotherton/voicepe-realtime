@@ -15,6 +15,12 @@ import pytest
 
 from app import ha_sensors
 from app.provider_router import ProviderRouter
+
+
+def _healthy(provider):
+    """The backup answers its probe (switch-only-to-healthy, 2026-10-02)."""
+    return True
+
 from app.websocket_handler import WebSocketHandler
 
 
@@ -54,7 +60,7 @@ async def test_the_sensor_says_which_engine_and_why(monkeypatch):
     posts = _capture(monkeypatch)
 
     clock = FakeClock()
-    router = ProviderRouter("gemini", "openai", cooldown_s=1800.0, clock=clock)
+    router = ProviderRouter("gemini", "openai", probe=_healthy, cooldown_s=1800.0, clock=clock)
     router.report_failure("gemini", "insufficient_quota")
     await ha_sensors.SensorPublisher().provider(router.status())
 
@@ -77,7 +83,7 @@ async def test_the_sensor_says_which_engine_and_why(monkeypatch):
 async def test_a_healthy_house_reports_no_reason(monkeypatch):
     posts = _capture(monkeypatch)
 
-    await ha_sensors.SensorPublisher().provider(ProviderRouter("openai", "gemini").status())
+    await ha_sensors.SensorPublisher().provider(ProviderRouter("openai", "gemini", probe=_healthy).status())
 
     assert len(posts) == 1
     posted = posts[0]
@@ -98,7 +104,7 @@ async def test_repeat_publish_with_nothing_changed_is_skipped(monkeypatch):
     posts = _capture(monkeypatch)
 
     clock = FakeClock()
-    router = ProviderRouter("openai", "gemini", cooldown_s=1800.0, clock=clock)
+    router = ProviderRouter("openai", "gemini", probe=_healthy, cooldown_s=1800.0, clock=clock)
     publisher = ha_sensors.SensorPublisher()
 
     await publisher.provider(router.status())
@@ -114,7 +120,7 @@ async def test_a_real_switch_is_never_swallowed_by_the_dedup(monkeypatch):
     posts = _capture(monkeypatch)
 
     clock = FakeClock()
-    router = ProviderRouter("gemini", "openai", cooldown_s=1800.0, clock=clock)
+    router = ProviderRouter("gemini", "openai", probe=_healthy, cooldown_s=1800.0, clock=clock)
     publisher = ha_sensors.SensorPublisher()
 
     await publisher.provider(router.status())  # healthy: gemini
@@ -143,7 +149,7 @@ async def test_a_switch_lost_to_an_unreachable_supervisor_is_published_next_time
     posts = _capture(monkeypatch, succeeds=False)
 
     clock = FakeClock()
-    router = ProviderRouter("gemini", "openai", cooldown_s=1800.0, clock=clock)
+    router = ProviderRouter("gemini", "openai", probe=_healthy, cooldown_s=1800.0, clock=clock)
     router.report_failure("gemini", "insufficient_quota")
     publisher = ha_sensors.SensorPublisher()
 
@@ -238,7 +244,7 @@ async def test_a_slow_publish_does_not_delay_the_connection(monkeypatch):
 
     monkeypatch.setattr(ha_sensors.PUBLISHER, "provider", slow_provider)
 
-    handler = _make_handler(ProviderRouter("openai", "gemini"))
+    handler = _make_handler(ProviderRouter("openai", "gemini", probe=_healthy))
 
     # If the publish were awaited on the setup path, this would still be
     # blocked on release.wait() and the wait_for below would time out.
@@ -262,7 +268,7 @@ async def test_a_failing_publish_is_logged_not_lost(caplog, monkeypatch):
 
     monkeypatch.setattr(ha_sensors.PUBLISHER, "provider", boom)
 
-    handler = _make_handler(ProviderRouter("openai", "gemini"))
+    handler = _make_handler(ProviderRouter("openai", "gemini", probe=_healthy))
 
     with caplog.at_level(logging.DEBUG, logger="app.websocket_handler"):
         await handler.serve_connection(_FakeWebSocket())
@@ -292,7 +298,7 @@ async def test_the_task_reference_is_held_then_dropped_when_done(monkeypatch):
 
     monkeypatch.setattr(ha_sensors.PUBLISHER, "provider", slow_provider)
 
-    handler = _make_handler(ProviderRouter("openai", "gemini"))
+    handler = _make_handler(ProviderRouter("openai", "gemini", probe=_healthy))
     seen = {}
 
     async def factory(connection):

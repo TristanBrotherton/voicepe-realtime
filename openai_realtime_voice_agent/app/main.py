@@ -80,6 +80,44 @@ def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:
     return choice or default
 
 
+def probe_engine(provider: str) -> bool:
+    """Does this engine's API answer our key at all? One cheap GET, 2 s cap.
+
+    Asked only when a switch to the backup is on the table. A 200 on the
+    model list proves the key and the network, not that a realtime session
+    will hear -- the cheapest honest signal there is.
+    """
+    import urllib.request
+
+    from app.providers import GEMINI, OPENAI
+
+    if provider == OPENAI:
+        key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
+        )
+    elif provider == GEMINI:
+        key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+        req = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+            headers={"x-goog-api-key": key},
+        )
+    else:
+        return False
+    if not key:
+        return False
+    # ponytail: blocking 2 s at most, once per switch decision while the
+    # primary is already failing; move to an async probe if that ever shows.
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            ok = resp.status == 200
+    except Exception as e:
+        logger.warning(f"⚠️ {provider} probe failed: {type(e).__name__}")
+        return False
+    logger.info(f"🩺 {provider} probe: {'ok' if ok else 'not ok'}")
+    return ok
+
+
 def build_router():
     """Build the engine router from the add-on options.
 
@@ -108,7 +146,7 @@ def build_router():
         f"🔀 voice engine: {primary}"
         + (f", backup {backup} (cooldown {minutes:.0f} min)" if backup else ", no backup")
     )
-    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0)
+    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0, probe=probe_engine)
 
 
 dotenv.load_dotenv()
