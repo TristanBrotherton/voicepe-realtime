@@ -110,6 +110,8 @@ class TurnLiveness:
         # turn with no wake since the last idle came through the follow-up
         # window. 0.0, not -inf: the first turn of a connection counts as woken.
         self.woke_at = 0.0
+        # Tool runs this user turn, per tool name (loop guard, 0.25.1).
+        self.tool_counts = {}
 
     def woke(self) -> None:
         self.woke_at = time.monotonic()
@@ -130,10 +132,21 @@ class TurnLiveness:
         self.acked = False
         self.turn_over_at = time.monotonic()
 
-    def user_started(self) -> None:
-        """A real utterance: a new turn, with its own acknowledgement."""
+    def user_started(self, emulated: bool = False) -> None:
+        """A real utterance: a new turn, with its own acknowledgement.
+
+        An emulated start is pipecat turning a transcript into "user started
+        speaking". On xAI and OpenAI the transcript of the turn just asked
+        arrives ~1 s after it ended (xai 2026-10-02 20:29:56.2 -> 57.0), so it
+        called off every silence ack before its 1.5 s were up. It counts only
+        when no real start has opened this turn (Gemini on Google's own VAD,
+        where the transcript is the only start there is).
+        """
+        if emulated and self.user_started_at > self.turn_over_at:
+            return
         self.user_started_at = time.monotonic()
         self.acked = False
+        self.tool_counts = {}
 
     def no_ack(self) -> None:
         """This stop is not a turn the model answers (dangling VAD, dead turn)."""
@@ -156,9 +169,17 @@ class TurnLiveness:
         self.acked = True
         return True
 
+    def spoke_this_turn(self) -> bool:
+        """The model's audio started since this turn opened (wake, utterance or idle).
+
+        The model may say what it is about to do before a slow tool (0.25.6,
+        early_ack.SLOW_TOOL_HINT); then no clip, however long ago it said it.
+        """
+        return self.bot_started_at > max(self.user_started_at, self.turn_over_at, self.woke_at)
+
     def claim_ack(self, tool_started_at: float) -> bool:
-        """True once per turn, and never when the model is already talking."""
-        if self.acked or self.model_spoke_since(tool_started_at):
+        """True once per turn, and never when the model has spoken this turn."""
+        if self.acked or self.model_spoke_since(tool_started_at) or self.spoke_this_turn():
             return False
         self.acked = True
         return True
@@ -510,7 +531,7 @@ class PhaseEmitter(FrameProcessor):
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.
             self._speech_since_wake = True
-            self._liveness.user_started()
+            self._liveness.user_started(getattr(frame, "emulated", False))
             if self._on_real_speech is not None:
                 self._on_real_speech()
             self._cancel_pending_idle()

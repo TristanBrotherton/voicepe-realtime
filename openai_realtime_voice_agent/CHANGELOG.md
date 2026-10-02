@@ -2,6 +2,95 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.25.6 (fork)
+
+- **"Jag kollar" säger vad agenten gör.** Ägaren 2026-10-02 23:12: de fasta
+  klippen låter mekaniska. Två lager:
+  1. Modellen säger det själv, med egna ord. De LÅNGSAMMA verktygens
+     beskrivningar (web_search, search_home, play_media, delegera_till_raawr,
+     kalender*, ask_openclaw) får en rad om det, på ett ställe:
+     `early_ack.with_ack_hint` i `providers.build_service`, alla motorer.
+     Verktygslagret, inte systemprompten (0.23.1:s promptrad gav "Jag
+     kollar." före varje svar). Snabba verktyg (lampor, GetLiveContext,
+     GetDateTime) får inget. På xai är webbsökningen serversidig och har
+     ingen beskrivning vi styr.
+  2. Skyddsnätet: klippet väljs per verktyg (`ack_phrase`): vädret, nätet,
+     kalendern, "Jag letar fram det.", "Jag ber Raawr ta det.", annars
+     "Ett ögonblick." (även tystnadskvittot). Förrenderas vid start som
+     förut. Spelas bara om modellen inte sagt något ALLS den här turen
+     (`TurnLiveness.spoke_this_turn`), inte bara de senaste 2 s.
+- **Loopvakten räknar identiska anrop** (granskning av PR #3): samma verktyg
+  med samma normaliserade argument, högst 3 per tur; totaltaket 8 -> 12.
+  "Tänd kontoret, köket, hallen och sovrummet" är fyra HassTurnOn och alla
+  fyra körs nu.
+- Testet för xai:s `_create_response` bygger tjänsten på riktigt (via
+  `__init__`), så det fäller 0.25.1-felet.
+
+## 0.25.3 (fork)
+
+- **xai: turslutet avgörs lokalt (Silero), inte av xAI:s server_vad.**
+  Live 2026-10-02 20:29:42: "Vad är det för väder i helgen?" nådde
+  "thinking" först 13 s efter väckningen, senare turer 5-9 s; musik och
+  rumsljud höll server_vad öppen. Sessionen får nu `turn_detection: null`;
+  samma lokala Silero som Gemini (flyttad till `app/providers/local_turns.py`,
+  delad av båda) avgör slutet, och då skickas `input_audio_buffer.commit`
+  och `response.create` -- eller, med bana 0 på, får bana 0 avgöra först
+  (som på OpenAI). Ljud före talet hålls som pre-roll (0,5 s); följdfönster
+  som stängs mitt i en mening besvaras i stället för att tappas. Ny env:
+  `XAI_TURN_SILENCE_MS` (förval 1200), `XAI_TURN_DETECTION=server` ger
+  tillbaka det gamla.
+- **"Jag kollar" kan nu höras på xai.** Tystnadskvittot startar vid
+  turslutet, som kom 13 s sent. Och pipecat gör användarens transkript
+  (ca 1 s efter turslutet, 20:29:56.2 -> 57.0) till ett emulerat "user
+  started speaking", som `TurnLiveness` tog för en ny yttring och som
+  avblåste kvittot före sina 1,5 s, varje tur, även på OpenAI. Ett emulerat
+  start räknas nu bara när inget riktigt start öppnat turen.
+- **xAI:s tomgångsstängning efter 900 s** ("Conversation timed out ... due to
+  inactivity", server_error/timeout) är ingen hicka längre: socketen stängs,
+  läsaren slutar och ConnectionRecovery återansluter utan att räkna det mot
+  motorn (förut "xai hiccup (1/2)" efter en tyst kvart).
+
+## 0.25.1 (fork)
+
+- **Spärr mot verktygsloopar, alla motorer.** Samma verktyg körs högst 3
+  gånger per användartur, alla verktyg tillsammans högst 8. Därefter anropas
+  inte HA; modellen får svaret "Stopp: du har redan anropat X N gånger i den
+  här turen. Svara nu med det du vet, eller säg ärligt att du inte hittar
+  det." och loggen får `⏱ tool-loop stopp <namn> <antal>`. Räknas i
+  `TurnLiveness`, nollas vid varje ny yttring (`user_started`), kontrolleras
+  i `ToolRegistrationMixin` under varje motor. Skäl: Grok anropade
+  GetLiveContext upp till 48 gånger i en tur när svaret saknades (0.25.0-proben).
+
+## 0.25.0 (fork)
+
+- **xAI Grok Voice som tredje motor: `VOICE_PROVIDER=xai`.** Ny
+  `app/providers/xai_realtime.py`, en underklass till OpenAI-motorn
+  (samma protokoll, `wss://api.x.ai/v1/realtime`). Ny env: `XAI_API_KEY`,
+  `XAI_MODEL` (förval `grok-voice-latest`), `XAI_VOICE` (förval `rex`;
+  `helios` är den mörkaste, median-F0 92 Hz mot rex 108). Går även som
+  backup (`VOICE_PROVIDER_BACKUP=xai`).
+- server_vad (xAI har ingen semantic_vad); med bana 0 på skickas
+  `create_response: false` och agenten ber om svaret själv, som på OpenAI.
+  Transkriptionen får `language_hint: sv`.
+- xAI:s egen webbsökning (`{"type":"web_search"}`) ersätter vår
+  `web_search`-funktion. Sökningen rapporteras som ett `web_search`-anrop
+  EFTER det talade svaret; det anropet besvaras inte (då pratar modellen
+  igen).
+- Socketen översätts innan pipecat läser: `ping` och okända typer släpps,
+  `usage: {}`, `role: "tool"`, `content_part.done` utan `part`,
+  `arguments.delta` utan `output_index` och xAI:s egen sessionsform i
+  `session.updated` fylls i. Utan det dör pipecats läsare (döv enhet) eller
+  tappas `response.done`/`session.updated`. Råa händelser från live-nyckeln
+  ligger i `tests/fixtures/xai_events.jsonl`.
+- "Jag kollar"-klippet på xai renderas med xAI:s TTS i sessionens röst
+  (`XAI_ACK_PREFIX`, t.ex. `"[breath] "`, sätts framför frasen).
+- Prob 2026-10-02 (core, svenska frågor från Gemini-TTS, live-instruktioner):
+  svar på svenska, transkription ordagrann. Första ljud från talets slut:
+  väder ~1,2-1,9 s, webb ~1,8-2,2 s (svaret ingår i första repliken),
+  "tänd lampan" ~2,1-2,5 s (HassTurnOn), huset 1,3-3,5 s med ett
+  GetLiveContext-anrop. Risk: när GetLiveContext inte har svaret anropar
+  Grok det igen och igen med påhittade argument (upp till 48 gånger).
+
 ## 0.24.1 (fork)
 
 - **"Jag kollar" bara på första frågan efter väckordet.** Ägaren

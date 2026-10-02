@@ -10,23 +10,26 @@ from typing import Any, Dict, List, Optional
 # The engine names used in the add-on config, in logs and by the router.
 OPENAI = "openai"
 GEMINI = "gemini"
-PROVIDERS = (OPENAI, GEMINI)
+# xAI Grok Voice: OpenAI Realtime's protocol on xAI's socket, so it takes the
+# OpenAI side of every branch below (0.25.0).
+XAI = "xai"
+PROVIDERS = (OPENAI, GEMINI, XAI)
 
 # What each engine wants the microphone audio to be. The device produces
 # 16 kHz; OpenAI needs it raised, Gemini takes it as it is. Both answer with
 # 24 kHz, which is what the pipeline already plays.
-_INPUT_RATE = {OPENAI: 24000, GEMINI: 16000}
+_INPUT_RATE = {OPENAI: 24000, GEMINI: 16000, XAI: 24000}
 
 # pipecat's OpenAI Realtime service has no reconnect logic; a dead socket
 # floods ErrorFrames forever. The Gemini service has _reconnect,
 # _handle_connection_error and session resumption, so it repairs itself and
 # ConnectionRecovery must keep its hands off.
-_SELF_HEALS = {OPENAI: False, GEMINI: True}
+_SELF_HEALS = {OPENAI: False, GEMINI: True, XAI: False}
 
 # Raw client events are OpenAI Realtime's own protocol. Gemini Live has no
 # equivalent, so anything sent that way reaches one engine and vanishes on the
 # other -- which is how the speaker's name silently stopped reaching the model.
-_CLIENT_EVENTS = {OPENAI: True, GEMINI: False}
+_CLIENT_EVENTS = {OPENAI: True, GEMINI: False, XAI: True}
 
 
 @dataclass
@@ -76,6 +79,11 @@ class ProviderOptions:
     # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
     # which is Google's own VAD and only used when local detection is off.
     gemini_turn_silence_ms: int = 1200
+    # xAI: "local" (default since 0.25.3) = the same local Silero turn end as
+    # Gemini, with xai_turn_silence_ms; "server" = xAI's server_vad, which
+    # ended turns 5-13 s late in a room with music (2026-10-02).
+    xai_turn_detection: str = "local"
+    xai_turn_silence_ms: int = 1200
     # "Proactive audio": Google's own answer to a speaker that hears the room.
     # The model listens to everything but decides for itself whether the audio
     # was addressed to it, and stays silent when it was not (silence is not
@@ -121,8 +129,8 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
         provider: "openai" or "gemini".
         service: That engine's live service object.
         keep_speech: The follow-up window closed (not a stop word). Gemini's
-            local VAD then answers speech already under way instead of
-            dropping it; OpenAI's server VAD has no such view, unchanged.
+            and xAI's local VAD then answer speech already under way instead
+            of dropping it; OpenAI's server VAD has no such view, unchanged.
 
     Returns:
         The name of what was sent, for the caller's log line.
@@ -132,13 +140,13 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
         event that already logs and swallows, and a silent failure here would
         hide the exact thing this function exists to guarantee.
     """
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider) and getattr(type(service), "end_audio_stream", None) is None:
         from pipecat.services.openai.realtime import events as openai_rt_events
 
         await service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
         return "input_audio_buffer.clear"
-    await service.end_audio_stream(keep_speech=keep_speech)
-    return "audioStreamEnd"
+    # Gemini, and xAI (whose local turns answer a cut-off utterance too).
+    return await service.end_audio_stream(keep_speech=keep_speech) or "audioStreamEnd"
 
 
 async def bana0_hit(provider: str, service, text: str) -> None:
@@ -150,7 +158,7 @@ async def bana0_hit(provider: str, service, text: str) -> None:
     """
     from app import bana0
 
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider):
         await bana0.lagg_till_svar(service, text)
     else:
         await service.drop_turn()
@@ -160,7 +168,7 @@ async def bana0_miss(provider: str, service) -> None:
     """Bana 0 missed: let the model answer the turn."""
     from app import bana0
 
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider):
         await bana0.be_om_svar(service)
         service.arm_silence_ack()
     else:
@@ -184,8 +192,15 @@ def build_service(provider: str, options: ProviderOptions, tools: List[Dict[str,
     Returns:
         A pipecat LLMService.
     """
+    # The one place every engine's tools pass: slow tools learn to say what
+    # they are about to do (early_ack.with_ack_hint, 0.25.6).
+    from app.early_ack import with_ack_hint
+    tools = with_ack_hint(tools)
     if _known(provider) == OPENAI:
         from app.providers import openai_realtime
         return openai_realtime.build(options, tools)
+    if provider == XAI:
+        from app.providers import xai_realtime
+        return xai_realtime.build(options, tools)
     from app.providers import gemini_live
     return gemini_live.build(options, tools)

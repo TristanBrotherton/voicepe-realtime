@@ -16,7 +16,7 @@ import pytest
 from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from app.early_ack import EARLY_ACK_PHRASES, pick_early_ack
+from app.early_ack import ACK_FALLBACK, EARLY_ACK_PHRASES, SLOW_TOOL_HINT, ack_phrase
 from app.main import Application
 from app.phase_emitter import PhaseEmitter, TurnLiveness
 from app.providers import GEMINI, OPENAI, ProviderOptions, build_service
@@ -252,13 +252,77 @@ def test_gemini_clip_is_resampled_to_what_the_device_plays():
     assert to_clip_rate(same, "audio/L16;codec=pcm;rate=24000") is same
 
 
-def test_phrases_vary_and_never_ask():
+def test_phrases_never_ask():
     assert all("?" not in p for p in EARLY_ACK_PHRASES)
-    last = None
-    for _ in range(50):
-        p = pick_early_ack(last)
-        assert p != last
-        last = p
+
+
+# --- 2c. semantic "jag kollar" (0.25.6) ---------------------------------------
+# Owner 2026-10-02 23:12: the fixed clips sound mechanical; the agent should
+# say what it is about to do. The model says it (slow tools' descriptions);
+# the clip names the tool's job and only fills in when the model was silent.
+
+def test_slow_tools_carry_the_hint_fast_tools_do_not(monkeypatch):
+    seen = {}
+    monkeypatch.setattr("app.providers.openai_realtime.build",
+                        lambda options, tools: seen.setdefault("tools", tools))
+    tools = [{"type": "function", "name": n, "description": "Gör saken.", "parameters": {}}
+             for n in ("web_search", "search_home", "play_media", "script__delegera_till_raawr",
+                       "kalender_sok", "kalenderaktivitet", "HassTurnOn", "GetLiveContext",
+                       "GetDateTime")]
+    build_service(OPENAI, ProviderOptions(api_key="sk-test", model="gpt-realtime-2", voice="cedar",
+                                                  instructions="Du är Björn."), tools)
+    desc = {t["name"]: t["description"] for t in seen["tools"]}
+    for slow in ("web_search", "search_home", "play_media", "script__delegera_till_raawr",
+                 "kalender_sok", "kalenderaktivitet"):
+        assert desc[slow] == "Gör saken." + SLOW_TOOL_HINT, slow
+    for fast in ("HassTurnOn", "GetLiveContext", "GetDateTime"):
+        assert desc[fast] == "Gör saken.", fast
+    assert tools[0]["description"] == "Gör saken."  # the caller's list is untouched
+
+
+def test_phrase_is_chosen_by_tool():
+    assert ack_phrase("vaderprognos") == "Jag kollar vädret."
+    assert ack_phrase("web_search") == "Jag söker på nätet."
+    assert ack_phrase("script__kalender_sok") == "Jag tittar i kalendern."
+    assert ack_phrase("kalenderaktivitet") == "Jag tittar i kalendern."
+    assert ack_phrase("play_media") == ack_phrase("search_home") == "Jag letar fram det."
+    assert ack_phrase("delegera_till_raawr") == "Jag ber Raawr ta det."
+    assert ack_phrase(None) == ack_phrase("HassTurnOn") == ACK_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_slow_tool_ack_says_what_the_tool_does(monkeypatch):
+    import time
+    service = _acking_service(GEMINI, monkeypatch)
+    await _call(service, "web_search", _slow)
+    assert service.early_ack.await_args.kwargs == {"tool": "web_search"}
+    app, connection = _app(TurnLiveness())
+    await app._early_ack(connection, time.monotonic(), tool="web_search")
+    assert app._guarded_say.await_args.args[0] == "Jag söker på nätet."
+    await app._early_ack(connection, time.monotonic(), 0.0)  # the silence trigger
+    assert app._guarded_say.await_args.args[0] == ACK_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_no_clip_when_the_model_spoke_earlier_this_turn(monkeypatch):
+    """It said "Jag söker på nätet efter det" 3 s before the slow call (a tool chain)."""
+    import time
+    liveness = TurnLiveness()
+    now = time.monotonic()
+    liveness.user_started_at = now - 4.0
+    liveness.bot_started_at, liveness.bot_stopped_at = now - 3.5, now - 3.0  # past RECENT_BOT_S
+    service = _acking_service(GEMINI, monkeypatch, liveness)
+    await _call(service, "web_search", _slow)
+    service.early_ack.assert_not_awaited()
+    # The clip itself checks again: nothing over the model's own words.
+    app, connection = _app(liveness)
+    await app._early_ack(connection, time.monotonic(), tool="web_search")
+    app._guarded_say.assert_not_awaited()
+    # A new turn, the model silent: the clip plays.
+    liveness.turn_over()
+    liveness.woke()
+    await _call(service, "web_search", _slow)
+    assert service.early_ack.await_count == 1
 
 
 # --- 3. silence acknowledgement (0.23.2) -----------------------------------

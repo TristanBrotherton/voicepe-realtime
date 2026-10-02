@@ -13,7 +13,7 @@ from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
-from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, gemini_tts, pick_early_ack
+from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, xai_tts
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -91,9 +91,14 @@ def probe_engine(provider: str) -> bool:
     """
     import urllib.request
 
-    from app.providers import GEMINI, OPENAI
+    from app.providers import GEMINI, OPENAI, XAI
 
-    if provider == OPENAI:
+    if provider == XAI:
+        key = (os.environ.get("XAI_API_KEY") or "").strip()
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/models", headers={"Authorization": f"Bearer {key}"}
+        )
+    elif provider == OPENAI:
         key = (os.environ.get("OPENAI_API_KEY") or "").strip()
         req = urllib.request.Request(
             "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
@@ -216,6 +221,10 @@ class Application:
 
     # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
     gemini_turn_silence_ms = 1200
+    # Same on xAI (0.25.3): XAI_TURN_SILENCE_MS; XAI_TURN_DETECTION=server
+    # gives the turn end back to xAI's server_vad.
+    xai_turn_detection = "local"
+    xai_turn_silence_ms = 1200
 
     def __init__(self):
         """Initialize application."""
@@ -558,7 +567,6 @@ class Application:
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
         # Bana 0 speaks HA's confirmation through the same guarded lane.
         self.websocket_handler.say = self._guarded_say
-        self._last_early_ack = None
         self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
@@ -588,6 +596,16 @@ class Application:
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         self.gemini_model = os.environ.get("GEMINI_MODEL", "").strip()
         self.gemini_voice = os.environ.get("GEMINI_VOICE", "").strip()
+        # xAI Grok Voice (0.25.0). rex is the default; helios is the deepest
+        # male voice measured (median F0 92 Hz against rex's 108).
+        self.xai_api_key = os.environ.get("XAI_API_KEY", "").strip()
+        self.xai_model = os.environ.get("XAI_MODEL", "").strip() or "grok-voice-latest"
+        self.xai_voice = os.environ.get("XAI_VOICE", "").strip() or "rex"
+        self.xai_turn_detection = os.environ.get("XAI_TURN_DETECTION", "").strip().lower() or "local"
+        try:
+            self.xai_turn_silence_ms = int(os.environ.get("XAI_TURN_SILENCE_MS", "1200"))
+        except ValueError:
+            self.xai_turn_silence_ms = 1200
         # Gemini's own turn detection: easy to start a turn (START LOW never
         # opened one for most commands, 2026-10-02 -- see ProviderOptions),
         # slow to end one.
@@ -669,7 +687,7 @@ class Application:
             A ProviderOptions. The instructions are the same for both engines,
             memory included -- only the key, model and voice differ.
         """
-        from app.providers import GEMINI, ProviderOptions
+        from app.providers import GEMINI, XAI, ProviderOptions
 
         instructions = self._instructions()
         if provider == GEMINI:
@@ -687,6 +705,23 @@ class Application:
                 gemini_turn_silence_ms=self.gemini_turn_silence_ms,
                 gemini_proactive_audio=self.gemini_proactive_audio,
                 gemini_affective_dialog=self.gemini_affective_dialog,
+            )
+        if provider == XAI:
+            return ProviderOptions(
+                api_key=self.xai_api_key,
+                model=self.xai_model,
+                voice=self.xai_voice,
+                instructions=instructions,
+                max_output_tokens=self.max_output_tokens,
+                turn_detection_type="server_vad",
+                vad_threshold=self.vad_threshold,
+                vad_prefix_padding_ms=self.vad_prefix_padding_ms,
+                vad_silence_duration_ms=self.vad_silence_duration_ms,
+                # Bana 0 on: the agent sends response.create itself, on a miss.
+                semantic_vad_create_response=not self.bana0_stt,
+                transcription_language=self.transcription_language or "sv",
+                xai_turn_detection=self.xai_turn_detection,
+                xai_turn_silence_ms=self.xai_turn_silence_ms,
             )
         return ProviderOptions(
             api_key=self.openai_api_key,
@@ -710,7 +745,10 @@ class Application:
 
     def _instructions(self) -> str:
         """The system instruction, Idag block last (the time is rendered now)."""
-        return self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions() + self.idag.block()
+        # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
+        # jokes included (owner 2026-10-02 23:07). The slow tools' descriptions
+        # carry it instead (early_ack.with_ack_hint, 0.25.6).
+        return self.instructions + memory_instructions() + self.idag.block()
 
     async def _idag_loop(self) -> None:
         """Keep the Idag block fresh: refetch, then let Gemini reconnect when quiet.
@@ -887,7 +925,7 @@ class Application:
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
-            service.early_ack = lambda started, recent=None, c=connection: self._early_ack(c, started, recent)
+            service.early_ack = lambda started, recent=None, tool=None, c=connection: self._early_ack(c, started, recent, tool)
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -1080,8 +1118,11 @@ class Application:
                 connection.says_playing -= 1
                 connection.last_busy = time.monotonic()
 
-    async def _early_ack(self, connection, tool_started_at, recent=None) -> None:
-        """Say a short "jag kollar" while a slow tool or a silent model runs (tool_registration.py).
+    async def _early_ack(self, connection, tool_started_at, recent=None, tool=None) -> None:
+        """Say what is going on while a slow tool or a silent model runs (tool_registration.py).
+
+        The phrase names the tool's job (early_ack.ack_phrase, 0.25.6); the
+        silence trigger has no tool and says the fallback.
 
         Out of band, through the guarded TTS lane: it never enters the
         model's history and the mic stays shut while it plays. The clip is
@@ -1089,11 +1130,11 @@ class Application:
         checked once more, so an answer that started meanwhile is not talked
         over.
         """
-        text = pick_early_ack(self._last_early_ack)
-        self._last_early_ack = text
+        text = ack_phrase(tool)
         pcm = await self._ack_clip(getattr(connection, "provider", ""), text)
         liveness = connection.turn_liveness
-        if liveness is not None and liveness.model_spoke_since(tool_started_at, recent):
+        if liveness is not None and (liveness.model_spoke_since(tool_started_at, recent)
+                                     or liveness.spoke_this_turn()):
             logger.info("⏱ early ack dropped: the model is already talking")
             return
         logger.info(f"⏱ early ack: {text}")
@@ -1103,11 +1144,12 @@ class Application:
         """The ack in the voice of the engine that answers (0.23.3).
 
         Gemini: its own TTS with the session's prebuilt voice (Charon).
+        xAI: its own TTS with the session's voice (0.25.0).
         OpenAI: gpt-4o-mini-tts with the session's voice (cedar). A failed
         render falls back to the conductor's old clip, once per phrase and
         engine, and says so in the log.
         """
-        from app.providers import GEMINI
+        from app.providers import GEMINI, XAI
 
         clips = self._ack_clips
         if (provider, text) in clips:
@@ -1115,6 +1157,8 @@ class Application:
         try:
             if provider == GEMINI:
                 pcm = await gemini_tts(text, self.gemini_api_key, self.gemini_voice or "Charon")
+            elif provider == XAI:
+                pcm = await xai_tts(text, self.xai_api_key, self.xai_voice)
             else:
                 pcm = await self.enrollment_conductor._tts(text, voice=self.voice)
         except Exception as e:
@@ -1128,9 +1172,10 @@ class Application:
 
     async def _warm_early_acks(self) -> None:
         """Render every ack once per configured engine, so the first slow tool is not slower."""
-        from app.providers import GEMINI, OPENAI
+        from app.providers import GEMINI, OPENAI, XAI
 
-        engines = [p for p, key in ((GEMINI, self.gemini_api_key), (OPENAI, self.openai_api_key)) if key]
+        engines = [p for p, key in ((GEMINI, self.gemini_api_key), (OPENAI, self.openai_api_key),
+                                    (XAI, self.xai_api_key)) if key]
         for provider in engines:
             for text in EARLY_ACK_PHRASES:
                 try:

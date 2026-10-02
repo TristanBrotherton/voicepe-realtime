@@ -79,6 +79,56 @@ def ack_delay_ms(wake_ms: int, liveness) -> int:
     return _followup_ack_ms()
 
 
+# Loop guard (0.25.1), every engine: Grok called GetLiveContext up to 48
+# times in one turn with made-up arguments when the answer was not there
+# (probe 2026-10-02). Past the limit HA is not called; the model is told to
+# answer with what it has. 0.25.6: IDENTICAL calls are counted (same tool,
+# same arguments) -- "tänd kontoret, köket, hallen och sovrummet" is four
+# HassTurnOn and all four must run.
+MAX_SAME_TOOL_PER_TURN = 3
+MAX_TOOLS_PER_TURN = 12
+
+
+def _norm(value):
+    if isinstance(value, str):
+        return " ".join(value.lower().split())
+    if isinstance(value, dict):
+        return {k: _norm(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_norm(v) for v in value]
+    return value
+
+
+def _call_key(function_name, arguments) -> str:
+    """The tool and its arguments, normalized (key order, case, spaces)."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            pass
+    return function_name + " " + json.dumps(_norm(arguments or {}), sort_keys=True,
+                                            ensure_ascii=False, default=str)
+
+
+def loop_stop(liveness, function_name, arguments=None):
+    """Count this run; return the stop text if it is over the turn's limit."""
+    if liveness is None:
+        return None
+    counts = liveness.tool_counts
+    key = _call_key(function_name, arguments)
+    same, total = counts.get(key, 0), sum(counts.values())
+    if same >= MAX_SAME_TOOL_PER_TURN or total >= MAX_TOOLS_PER_TURN:
+        logger.info(f"⏱ tool-loop stopp {function_name} {same + 1}")
+        if same >= MAX_SAME_TOOL_PER_TURN:
+            what = f"{function_name} med samma argument {same} gånger"
+        else:
+            what = f"verktyg {total} gånger"
+        return (f"Stopp: du har redan anropat {what} i den här turen. "
+                "Svara nu med det du vet, eller säg ärligt att du inte hittar det.")
+    counts[key] = same + 1
+    return None
+
+
 def _is_error(result) -> bool:
     return isinstance(result, dict) and "error" in result
 
@@ -96,8 +146,8 @@ class ToolRegistrationMixin:
     speaker_probe = None
     male_only_tools: set = set()
     turn_liveness = None
-    # async (started, recent=None) -> None: speaks a short "jag kollar" on this connection's
-    # device. Set by main.py; None (tests, no device) means stay silent.
+    # async (started, recent=None, tool=None) -> None: speaks a short phrase for `tool`
+    # ("Jag söker på nätet.") on this connection's device. Set by main.py; None (tests, no device) means stay silent.
     early_ack = None
     _silence_ack_task = None
 
@@ -192,7 +242,7 @@ class ToolRegistrationMixin:
                     return
                 ack_speaking = True
                 try:
-                    await self.early_ack(started)
+                    await self.early_ack(started, tool=function_name)
                 except Exception as e:
                     logger.warning(f"⚠️ early ack failed: {e!r}")
 
@@ -220,6 +270,10 @@ class ToolRegistrationMixin:
             if self.turn_liveness is not None:
                 self.turn_liveness.tool_started()
             try:
+                stop = loop_stop(self.turn_liveness, function_name, getattr(params, "arguments", None))
+                if stop is not None:
+                    await params.result_callback({"result": stop})
+                    return
                 # Speaker gate (fork): tools listed in male_only_tools only execute
                 # when the last voice-type verdict is "male". Enforced HERE — below
                 # the model — so prompt tricks can't bypass it. Fails closed on
