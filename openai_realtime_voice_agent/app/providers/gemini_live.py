@@ -338,8 +338,32 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         """
         self._on_turn_complete = handler
 
+    # True from a toolCall until the model's next audio. gemini-3.8-live (the
+    # 3.1 live backend) closes the tool step with an EMPTY turn_complete --
+    # usage metadata, no audio, 0.01 s after our tool response -- and speaks
+    # the answer in a NEW turn (probed on the live key 2026-10-02, twice for a
+    # two-call turn). Taken as the end of the reply, that empty one cleared
+    # the lost-turn clock, flushed the follow-up request before the answer
+    # was spoken and let PhaseEmitter go idle after a spoken preamble.
+    _answer_after_tool = False
+
+    async def _handle_msg_tool_call(self, message) -> None:
+        self._answer_after_tool = True
+        await super()._handle_msg_tool_call(message)
+
     async def _handle_msg_turn_complete(self, message) -> None:
-        """Pass the engine's own end-of-turn on, then behave as before."""
+        """Pass the engine's own end-of-turn on, then behave as before.
+
+        Not the empty one that closes a tool step (see _answer_after_tool):
+        that is swallowed whole, pipecat's bookkeeping included, so the
+        answer's turn continues the same reply for everything downstream.
+        """
+        # ponytail: a tool step the model never follows with audio stays open
+        # until the next activityEnd; PhaseEmitter's thinking watchdog (15 s)
+        # and mid-turn grace (8 s) are the bound on the device.
+        if self._answer_after_tool:
+            logger.info("⏳ empty turn_complete after a tool call — the answer comes in a new turn")
+            return
         self._reply_awaited_at = None
         await super()._handle_msg_turn_complete(message)
         handler = getattr(self, "_on_turn_complete", None)
@@ -447,6 +471,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
 
     async def _end_activity(self) -> None:
         self._activity_open = False
+        self._answer_after_tool = False  # a new question; the old step is moot
         self._reply_awaited_at = time.monotonic()
         logger.debug("🎙️ local VAD: silence → activityEnd")
         await self._send_activity(activity_end=ActivityEnd())
@@ -506,6 +531,8 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         part behind a thought part was lost. Each part is handled on its own.
         """
         parts = list(msg.server_content.model_turn.parts or [])
+        if any(p.inline_data and p.inline_data.data for p in parts):
+            self._answer_after_tool = False
         if self._settings.get("modalities") != GeminiModalities.AUDIO:
             return await super()._handle_msg_model_turn(msg)
         for part in parts:
@@ -552,6 +579,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
     async def _handle_session_ready(self, session):
         """A new socket knows nothing of an activity the old one had open."""
         self._activity_open = False
+        self._answer_after_tool = False
         self._preroll = bytearray()
         if self._turns is not None:
             self._turns.reset()
@@ -677,6 +705,23 @@ def _native_audio_features(options, model: str):
     return proactivity, affective, HttpOptions(api_version=NATIVE_AUDIO_API_VERSION)
 
 
+def _google_search_on(model: str) -> bool:
+    """GEMINI_GOOGLE_SEARCH, or unset: on for the 3.x models, off for 2.5.
+
+    On 2.5 native audio (-latest = preview-12-2025), google_search + function
+    tools + thinking_budget 0 kill the socket with 1011 before the toolCall
+    whenever a house question also smells like a web fact ("Vilken
+    temperatur är det i kontoret?" 10/12, "Vad kostar elen?" 3/3; probed on
+    the live key 2026-10-02). Google-side; Google documents built-in +
+    custom tool combinations for Gemini 3 only. gemini-3.8-live and
+    3.1-flash-live-preview: 0 of 15 with grounding, and grounded web answers.
+    """
+    value = os.environ.get("GEMINI_GOOGLE_SEARCH", "").strip().lower()
+    if value:
+        return value == "true"
+    return "gemini-3" in model
+
+
 def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     """Build a configured Gemini Live session for one device.
 
@@ -693,17 +738,11 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     """
     model = options.model or DEFAULT_MODEL
     voice = options.voice or DEFAULT_VOICE
-    search = os.environ.get("GEMINI_GOOGLE_SEARCH", "false").strip().lower() == "true"
+    search = _google_search_on(model)
     gemini_tools = []
     if search:
-        # OFF by default. Google's own search would save our web_search round
-        # trip (Gemini -> OpenAI Responses -> back), and measured 2026-10-02
-        # on the live key and model it answers web questions grounded and
-        # costs no time on other turns (median first audio 1.63 s with it,
-        # 1.82 s without, 20 turns each). But with it in the session,
-        # "Vilken temperatur är det i kontoret?" -- a GetLiveContext call --
-        # killed the socket with 1011 Internal error 5 times out of 5, and
-        # never without it. A house question matters more than a web one.
+        # Google's own search replaces our web_search round trip (Gemini ->
+        # OpenAI Responses -> back). Never both: the model would pick either.
         tools = [t for t in tools if t.get("name") != "web_search"]
     if tools:
         # One wrapper deeper than it looks: the Live API takes a LIST OF
@@ -722,8 +761,12 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     native = NATIVE_AUDIO_MODEL_MARKER in model
     drop_language = native and not NATIVE_AUDIO_PINS_LANGUAGE
     params = InputParams(
-        # Only the native-audio models: gemini-3.1-flash-live-preview calls its
-        # tools as it is, and its thinking knob is a level, not a budget.
+        # Only the native-audio models: the 3.x models call their tools as
+        # they are. Probed 2026-10-02 on gemini-3.8-live: thinking_level is
+        # refused (1007 "not supported for this model"), thinking_budget 0
+        # and 512 are accepted, so nothing is sent; language sv and sv-SE,
+        # voice Charon and proactivity are accepted, affective dialog is
+        # refused (1007) -- _native_audio_features never asks for it there.
         thinking=NATIVE_AUDIO_THINKING if native else None,
         max_tokens=options.max_output_tokens or 4096,
         language=language,

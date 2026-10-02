@@ -229,3 +229,67 @@ async def test_a_finished_reply_is_not_lost():
     with um.patch.object(GeminiLiveLLMService, "_handle_msg_turn_complete", _noop):
         await service._handle_msg_turn_complete(None)
     assert await _drop_socket(service) == []
+
+
+# --- 5. 3.8-live: an empty turn closes the tool step ---------------------------
+
+
+def _tool_call():
+    from google.genai.types import FunctionCall, LiveServerToolCall
+
+    return LiveServerMessage(tool_call=LiveServerToolCall(
+        function_calls=[FunctionCall(id="c1", name="search_home", args={})]))
+
+
+def _turn_complete():
+    return LiveServerMessage(server_content=LiveServerContent(turn_complete=True))
+
+
+def _audio():
+    return _model_turn(Part(inline_data=Blob(data=b"\x01\x00" * 480, mime_type="audio/pcm;rate=24000")))
+
+
+@pytest.mark.asyncio
+async def test_the_empty_turn_after_a_tool_call_is_not_the_end_of_the_reply():
+    """Probed on gemini-3.8-live 2026-10-02: toolCall, our response, then an
+    EMPTY turn_complete 0.01 s later, and the spoken answer in a new turn.
+    The empty one must not end the reply: the device stays in its phase, the
+    lost-turn clock keeps running, and the reply ends once, after the audio."""
+    from app.phase_emitter import PhaseEmitter
+
+    phases = []
+
+    async def send_phase(value):
+        phases.append(value)
+
+    emitter = PhaseEmitter(send_phase, idle_debounce_s=0.05)
+    service = build_service(GEMINI, options(model="models/gemini-3.8-live"), OPENAI_SHAPE)
+    service._sample_rate = 24000
+    pushed = _pushed(service)
+
+    async def noop(*a, **k):
+        return None
+
+    service.stop_ttfb_metrics = noop
+    service.run_function_calls = noop
+    service.set_turn_complete_handler(emitter.note_engine_turn_complete)
+    # A previous turn ended properly, and this one began with a spoken
+    # preamble whose audio has stopped: the debounce is now running.
+    emitter._seen_engine_end = True
+    emitter._model_turn_open = True
+    service._reply_awaited_at = time.monotonic()
+
+    await service._handle_msg_tool_call(_tool_call())
+    await service._handle_msg_turn_complete(_turn_complete())
+    await emitter._emit_idle_after_debounce.__wrapped__(emitter) if hasattr(
+        emitter._emit_idle_after_debounce, "__wrapped__") else None
+    idle = asyncio.ensure_future(emitter._emit_idle_after_debounce())
+    await asyncio.sleep(0.3)
+    assert "idle" not in phases
+    assert service._reply_awaited_at is not None
+
+    await service._handle_msg_model_turn(_audio())
+    await service._handle_msg_turn_complete(_turn_complete())
+    await asyncio.wait_for(idle, 1)
+    assert phases == ["idle"]
+    assert service._reply_awaited_at is None

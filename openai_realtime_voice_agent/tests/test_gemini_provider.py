@@ -115,7 +115,8 @@ def test_the_service_gets_tools_wrapped_the_way_the_api_wants_them():
     """
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     tools = service._tools_from_init
-    assert isinstance(tools, list) and len(tools) == 1
+    # One entry for the declarations; a 3.x model adds {"google_search": {}}.
+    assert isinstance(tools, list) and len(tools) == 2 and tools[1] == {"google_search": {}}
     declarations = tools[0]["function_declarations"]
     assert [d["name"] for d in declarations] == ["search_home", "list_timers"]
 

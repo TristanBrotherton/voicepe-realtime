@@ -169,3 +169,18 @@ def test_google_search_on_replaces_our_web_search(monkeypatch):
     assert {"google_search": {}} in tools
     names = [d["name"] for d in tools[0]["function_declarations"]]
     assert "web_search" not in names and names
+
+
+def test_google_search_is_on_by_default_for_the_3x_models(monkeypatch):
+    """2.5 native audio + google_search + function tools gives 1011; the 3.x
+    live backend does not (0/15 probed), so grounding is its default."""
+    monkeypatch.delenv("GEMINI_GOOGLE_SEARCH", raising=False)
+    tools = _tools(build_service(GEMINI, options(model="models/gemini-3.8-live"), WITH_WEB))
+    assert {"google_search": {}} in tools
+    assert "web_search" not in [d["name"] for d in tools[0]["function_declarations"]]
+
+
+def test_google_search_can_be_turned_off_on_3x(monkeypatch):
+    monkeypatch.setenv("GEMINI_GOOGLE_SEARCH", "false")
+    tools = _tools(build_service(GEMINI, options(model="models/gemini-3.8-live"), WITH_WEB))
+    assert all("google_search" not in t for t in tools)

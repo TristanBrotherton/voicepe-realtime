@@ -2,6 +2,29 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.24.0 (fork)
+
+- **Redo för `gemini-3.8-live`.** Efter verktygssvaret skickar 3.8 en
+  TOM `turn_complete` (usage, inget ljud, 0,01 s efter svaret) och talar
+  svaret i en NY tur; två anrop ger två tomma (uppmätt mot live-nyckeln
+  2026-10-02). Den tomma togs för svarets slut: förlorad-tur-klockan
+  nollades, uppföljningsbegäran gick före svaret och efter en talad
+  inledning gick enheten idle innan svaret kom. Nu sväljs en
+  `turn_complete` som kommer efter ett toolCall men före nytt ljud, även
+  för pipecat; svarets tur fortsätter samma replik och avslutar den en gång.
+- **Googles sökning: förval PÅ för 3.x, AV för 2.5.** `GEMINI_GOOGLE_SEARCH`
+  osatt följer modellen; `true`/`false` styr som förut. På, tas vår
+  `web_search` bort ur Geminis lista. 2.5 native audio + google_search +
+  funktioner + thinking_budget 0 ger 1011 före verktygsanropet (Googles
+  fel); 3.8 gav 0 av 21 ljudsessioner med sökningen på.
+- Prob mot 3.8: `thinking_level` vägras (1007), `thinking_budget` 0/512
+  accepteras (vi skickar inget), språk `sv` och `sv-SE` ok, Charon ok,
+  proactivity accepteras, affective dialog vägras (1007, vi ber inte om
+  den). Mätt i ljudläge, median första ljud från activityEnd, 5 körningar
+  vardera, 2.5 → 3.8: husfråga med verktyg 4,9 → 5,2 s (svaret 6,4 → 5,2),
+  väder ur Idag-blocket 4,0 → 2,2 s, webbfråga 12,7 (vår web_search) →
+  3,4 s (grundad). Inga 1011/1008 på någon av dem.
+
 ## 0.23.3 (fork)
 
 - **"Jag kollar" i svarets röst.** Ägaren 2026-10-02 18:12: kvittensen kom
