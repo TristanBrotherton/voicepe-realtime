@@ -9,6 +9,9 @@ VOICE_PROVIDER_BACKUP=$(bashio::config 'voice_provider_backup')
 GEMINI_API_KEY=$(bashio::config 'gemini_api_key')
 GEMINI_MODEL=$(bashio::config 'gemini_model')
 GEMINI_VOICE=$(bashio::config 'gemini_voice')
+XAI_API_KEY=$(bashio::config 'xai_api_key')
+XAI_MODEL=$(bashio::config 'xai_model')
+XAI_VOICE=$(bashio::config 'xai_voice')
 GEMINI_VAD_START_SENSITIVITY=$(bashio::config 'gemini_vad_start_sensitivity')
 GEMINI_VAD_END_SENSITIVITY=$(bashio::config 'gemini_vad_end_sensitivity')
 GEMINI_VAD_PREFIX_PADDING_MS=$(bashio::config 'gemini_vad_prefix_padding_ms')
@@ -82,6 +85,9 @@ export VOICE_PROVIDER_BACKUP
 export GEMINI_API_KEY
 export GEMINI_MODEL
 export GEMINI_VOICE
+export XAI_API_KEY
+export XAI_MODEL
+export XAI_VOICE
 export GEMINI_VAD_START_SENSITIVITY
 export GEMINI_VAD_END_SENSITIVITY
 export GEMINI_VAD_PREFIX_PADDING_MS

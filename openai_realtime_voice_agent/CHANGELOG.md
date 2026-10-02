@@ -2,6 +2,36 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.25.0 (fork)
+
+- **xAI Grok Voice som tredje motor: `VOICE_PROVIDER=xai`.** Ny
+  `app/providers/xai_realtime.py`, en underklass till OpenAI-motorn
+  (samma protokoll, `wss://api.x.ai/v1/realtime`). Ny env: `XAI_API_KEY`,
+  `XAI_MODEL` (förval `grok-voice-latest`), `XAI_VOICE` (förval `rex`;
+  `helios` är den mörkaste, median-F0 92 Hz mot rex 108). Går även som
+  backup (`VOICE_PROVIDER_BACKUP=xai`).
+- server_vad (xAI har ingen semantic_vad); med bana 0 på skickas
+  `create_response: false` och agenten ber om svaret själv, som på OpenAI.
+  Transkriptionen får `language_hint: sv`.
+- xAI:s egen webbsökning (`{"type":"web_search"}`) ersätter vår
+  `web_search`-funktion. Sökningen rapporteras som ett `web_search`-anrop
+  EFTER det talade svaret; det anropet besvaras inte (då pratar modellen
+  igen).
+- Socketen översätts innan pipecat läser: `ping` och okända typer släpps,
+  `usage: {}`, `role: "tool"`, `content_part.done` utan `part`,
+  `arguments.delta` utan `output_index` och xAI:s egen sessionsform i
+  `session.updated` fylls i. Utan det dör pipecats läsare (döv enhet) eller
+  tappas `response.done`/`session.updated`. Råa händelser från live-nyckeln
+  ligger i `tests/fixtures/xai_events.jsonl`.
+- "Jag kollar"-klippet på xai renderas med xAI:s TTS i sessionens röst
+  (`XAI_ACK_PREFIX`, t.ex. `"[breath] "`, sätts framför frasen).
+- Prob 2026-10-02 (core, svenska frågor från Gemini-TTS, live-instruktioner):
+  svar på svenska, transkription ordagrann. Första ljud från talets slut:
+  väder ~1,2-1,9 s, webb ~1,8-2,2 s (svaret ingår i första repliken),
+  "tänd lampan" ~2,1-2,5 s (HassTurnOn), huset 1,3-3,5 s med ett
+  GetLiveContext-anrop. Risk: när GetLiveContext inte har svaret anropar
+  Grok det igen och igen med påhittade argument (upp till 48 gånger).
+
 ## 0.24.1 (fork)
 
 - **"Jag kollar" bara på första frågan efter väckordet.** Ägaren

@@ -99,3 +99,41 @@ async def gemini_tts(text: str, api_key: str, voice: str, model: str = "") -> by
     except OSError:
         pass  # a clip that is not on disk is fetched again after a restart
     return pcm
+
+
+XAI_TTS_URL = "https://api.x.ai/v1/tts"
+
+
+async def xai_tts(text: str, api_key: str, voice: str) -> bytes:
+    """`text` in an xAI voice, as 24 kHz PCM16, cached on disk (0.25.0).
+
+    The ack on the xai engine comes in the session's own voice, like Charon
+    on Gemini. XAI_ACK_PREFIX (default empty) goes in front of the phrase, for
+    an inline speech tag such as "[breath] " -- the owner picks by ear.
+    """
+    import hashlib
+
+    import httpx
+
+    text = os.environ.get("XAI_ACK_PREFIX", "") + text
+    path = os.path.join(CACHE_DIR, "xai_" + hashlib.md5(f"{voice}:{text}".encode()).hexdigest() + ".pcm")
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, "rb") as f:
+            return f.read()
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            XAI_TTS_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"text": text, "voice_id": voice, "language": "sv",
+                  "output_format": {"codec": "pcm", "sample_rate": CLIP_RATE}},
+        )
+    r.raise_for_status()
+    if not r.content:
+        raise ValueError("xAI TTS returned no audio")
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(r.content)
+    except OSError:
+        pass  # a clip that is not on disk is fetched again after a restart
+    return r.content

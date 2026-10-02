@@ -113,11 +113,14 @@ its key, or goes down.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `voice_provider` | `openai` | Which engine answers (either `openai` or `gemini`) |
-| `voice_provider_backup` | `none` | Automatic failover when primary is unavailable (`none` / `openai` / `gemini`) |
+| `voice_provider` | `openai` | Which engine answers (`openai`, `gemini` or `xai`) |
+| `voice_provider_backup` | `none` | Automatic failover when primary is unavailable (`none` / `openai` / `gemini` / `xai`) |
 | `gemini_api_key` | *(blank)* | Google Gemini API key (required only if using Gemini) |
 | `gemini_model` | `models/gemini-3.1-flash-live-preview` | Gemini live model (preview names are retired in turn; you can update it here) |
 | `gemini_voice` | `Charon` | Gemini voice name |
+| `xai_api_key` | *(blank)* | xAI API key (required only if using `xai`) |
+| `xai_model` | `grok-voice-latest` | xAI realtime voice model |
+| `xai_voice` | `rex` | xAI voice id (deepest male: `helios`) |
 | `provider_cooldown_minutes` | `30` | How long the backup runs before trying the primary again |
 
 **Automatic failover** is off by default (`voice_provider_backup: "none"`). When

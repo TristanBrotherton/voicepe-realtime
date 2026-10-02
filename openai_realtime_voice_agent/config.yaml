@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (Raawr)
-version: "0.24.1"
+version: "0.25.0"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -58,6 +58,11 @@ options:
   gemini_api_key: ""
   gemini_model: "models/gemini-3.1-flash-live-preview"
   gemini_voice: "Charon"
+  # xAI Grok Voice (0.25.0): OpenAI-compatible realtime, server_vad, xAI's own
+  # web search. Voices: GET https://api.x.ai/v1/tts/voices.
+  xai_api_key: ""
+  xai_model: "grok-voice-latest"
+  xai_voice: "rex"
   # Gemini's own turn detection ("automatic activity detection"). Google's
   # default is start=high, which answers room noise and the speaker's own echo
   # (live 2026-09-09). low/low is the equivalent of vad_eagerness: low on the
@@ -188,8 +193,11 @@ schema:
   # --- 🔑 Basics ---
   openai_api_key: password
   # --- 🔀 Röstmotor ---
-  voice_provider: "list(openai|gemini)"
-  voice_provider_backup: "list(none|openai|gemini)"
+  voice_provider: "list(openai|gemini|xai)"
+  voice_provider_backup: "list(none|openai|gemini|xai)"
+  xai_api_key: password
+  xai_model: str
+  xai_voice: str
   gemini_api_key: password
   gemini_model: str
   gemini_voice: str

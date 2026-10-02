@@ -10,23 +10,26 @@ from typing import Any, Dict, List, Optional
 # The engine names used in the add-on config, in logs and by the router.
 OPENAI = "openai"
 GEMINI = "gemini"
-PROVIDERS = (OPENAI, GEMINI)
+# xAI Grok Voice: OpenAI Realtime's protocol on xAI's socket, so it takes the
+# OpenAI side of every branch below (0.25.0).
+XAI = "xai"
+PROVIDERS = (OPENAI, GEMINI, XAI)
 
 # What each engine wants the microphone audio to be. The device produces
 # 16 kHz; OpenAI needs it raised, Gemini takes it as it is. Both answer with
 # 24 kHz, which is what the pipeline already plays.
-_INPUT_RATE = {OPENAI: 24000, GEMINI: 16000}
+_INPUT_RATE = {OPENAI: 24000, GEMINI: 16000, XAI: 24000}
 
 # pipecat's OpenAI Realtime service has no reconnect logic; a dead socket
 # floods ErrorFrames forever. The Gemini service has _reconnect,
 # _handle_connection_error and session resumption, so it repairs itself and
 # ConnectionRecovery must keep its hands off.
-_SELF_HEALS = {OPENAI: False, GEMINI: True}
+_SELF_HEALS = {OPENAI: False, GEMINI: True, XAI: False}
 
 # Raw client events are OpenAI Realtime's own protocol. Gemini Live has no
 # equivalent, so anything sent that way reaches one engine and vanishes on the
 # other -- which is how the speaker's name silently stopped reaching the model.
-_CLIENT_EVENTS = {OPENAI: True, GEMINI: False}
+_CLIENT_EVENTS = {OPENAI: True, GEMINI: False, XAI: True}
 
 
 @dataclass
@@ -132,7 +135,7 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
         event that already logs and swallows, and a silent failure here would
         hide the exact thing this function exists to guarantee.
     """
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider):
         from pipecat.services.openai.realtime import events as openai_rt_events
 
         await service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
@@ -150,7 +153,7 @@ async def bana0_hit(provider: str, service, text: str) -> None:
     """
     from app import bana0
 
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider):
         await bana0.lagg_till_svar(service, text)
     else:
         await service.drop_turn()
@@ -160,7 +163,7 @@ async def bana0_miss(provider: str, service) -> None:
     """Bana 0 missed: let the model answer the turn."""
     from app import bana0
 
-    if _known(provider) == OPENAI:
+    if supports_client_events(provider):
         await bana0.be_om_svar(service)
         service.arm_silence_ack()
     else:
@@ -187,5 +190,8 @@ def build_service(provider: str, options: ProviderOptions, tools: List[Dict[str,
     if _known(provider) == OPENAI:
         from app.providers import openai_realtime
         return openai_realtime.build(options, tools)
+    if provider == XAI:
+        from app.providers import xai_realtime
+        return xai_realtime.build(options, tools)
     from app.providers import gemini_live
     return gemini_live.build(options, tools)
