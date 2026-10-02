@@ -115,7 +115,7 @@ def test_session_update_is_rewritten_into_xai_shape():
              {"type": "function", "name": "intent__HassTurnOn", "parameters": {}}]
     service = build_service(XAI, _options(semantic_vad_create_response=False), tools)
     payload = E.SessionUpdateEvent(session=service._session_properties).model_dump(exclude_none=True)
-    xai_session(payload, service._language, service._server_search, service._create_response)
+    xai_session(payload, service._language, service._server_search, service._xai_create_response)
     session = payload["session"]
     assert "truncation" not in session
     assert session["audio"]["input"]["transcription"] == {"language_hint": "sv"}

@@ -132,11 +132,11 @@ class XaiRealtimeLLMService(SafeRealtimeLLMService):
         super().__init__(**kwargs)
         self._language = language
         self._server_search = server_search
-        self._create_response = create_response
+        self._xai_create_response = create_response  # not _create_response: that is pipecat's method
 
     async def send_client_event(self, event):  # type: ignore[override]
         payload = event.model_dump(exclude_none=True)
-        xai_session(payload, self._language, self._server_search, self._create_response)
+        xai_session(payload, self._language, self._server_search, self._xai_create_response)
         await self._ws_send(payload)
 
     async def _receive_task_handler(self):  # type: ignore[override]
