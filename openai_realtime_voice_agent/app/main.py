@@ -211,7 +211,10 @@ def _compact_slots(tool_name: str, properties: dict) -> dict:
 
 class Application:
     """Main application class using Pipecat."""
-    
+
+    # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
+    gemini_turn_silence_ms = 1200
+
     def __init__(self):
         """Initialize application."""
         # NB: there is deliberately no application-wide pipeline, transport or
@@ -600,6 +603,10 @@ class Application:
             )
         except ValueError:
             self.gemini_vad_silence_duration_ms = 800
+        try:
+            self.gemini_turn_silence_ms = int(os.environ.get("GEMINI_TURN_SILENCE_MS", "1200"))
+        except ValueError:
+            self.gemini_turn_silence_ms = 1200
         self.gemini_proactive_audio = (
             os.environ.get("GEMINI_PROACTIVE_AUDIO", "").strip().lower() == "true"
         )
@@ -666,6 +673,7 @@ class Application:
                 gemini_vad_end_sensitivity=self.gemini_vad_end_sensitivity,
                 gemini_vad_prefix_padding_ms=self.gemini_vad_prefix_padding_ms,
                 gemini_vad_silence_duration_ms=self.gemini_vad_silence_duration_ms,
+                gemini_turn_silence_ms=self.gemini_turn_silence_ms,
                 gemini_proactive_audio=self.gemini_proactive_audio,
                 gemini_affective_dialog=self.gemini_affective_dialog,
             )

@@ -71,6 +71,11 @@ class ProviderOptions:
     gemini_vad_end_sensitivity: str = "low"
     gemini_vad_prefix_padding_ms: int = 300
     gemini_vad_silence_duration_ms: int = 800
+    # Local turn detection (the default since 0.22.5): how long a silence ends
+    # his turn. 800 ms cut him off mid-question at every natural pause
+    # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
+    # which is Google's own VAD and only used when local detection is off.
+    gemini_turn_silence_ms: int = 1200
     # "Proactive audio": Google's own answer to a speaker that hears the room.
     # The model listens to everything but decides for itself whether the audio
     # was addressed to it, and stays silent when it was not (silence is not
@@ -101,7 +106,7 @@ def self_heals(provider: str) -> bool:
     return _SELF_HEALS[_known(provider)]
 
 
-async def drop_pending_input_audio(provider: str, service) -> str:
+async def drop_pending_input_audio(provider: str, service, keep_speech: bool = False) -> str:
     """Tell the engine the microphone stopped and to drop what it is holding.
 
     Both engines have this; they spell it differently, which is why it lives
@@ -115,6 +120,9 @@ async def drop_pending_input_audio(provider: str, service) -> str:
     Args:
         provider: "openai" or "gemini".
         service: That engine's live service object.
+        keep_speech: The follow-up window closed (not a stop word). Gemini's
+            local VAD then answers speech already under way instead of
+            dropping it; OpenAI's server VAD has no such view, unchanged.
 
     Returns:
         The name of what was sent, for the caller's log line.
@@ -129,8 +137,33 @@ async def drop_pending_input_audio(provider: str, service) -> str:
 
         await service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
         return "input_audio_buffer.clear"
-    await service.end_audio_stream()
+    await service.end_audio_stream(keep_speech=keep_speech)
     return "audioStreamEnd"
+
+
+async def bana0_hit(provider: str, service, text: str) -> None:
+    """Bana 0 hit: Home Assistant already did it and said so; the model must not.
+
+    OpenAI heard the turn, so it is told what HA said (and never asked to
+    answer). Gemini's turn was held back and is simply dropped: the model
+    never heard the order, so it cannot answer it or do it again.
+    """
+    from app import bana0
+
+    if _known(provider) == OPENAI:
+        await bana0.lagg_till_svar(service, text)
+    else:
+        await service.drop_turn()
+
+
+async def bana0_miss(provider: str, service) -> None:
+    """Bana 0 missed: let the model answer the turn."""
+    from app import bana0
+
+    if _known(provider) == OPENAI:
+        await bana0.be_om_svar(service)
+    else:
+        await service.answer_turn()
 
 
 def supports_client_events(provider: str) -> bool:

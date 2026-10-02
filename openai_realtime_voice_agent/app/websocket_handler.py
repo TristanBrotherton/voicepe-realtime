@@ -23,6 +23,8 @@ from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.providers import (
     OPENAI,
+    bana0_hit,
+    bana0_miss,
     drop_pending_input_audio,
     input_sample_rate,
     supports_client_events,
@@ -1442,7 +1444,9 @@ class WebSocketHandler:
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
             try:
-                sent = await drop_pending_input_audio(connection.provider, openai_service)
+                sent = await drop_pending_input_audio(
+                    connection.provider, openai_service, keep_speech=True
+                )
                 logger.info(f"🧽 follow-up cut-off → {sent} (drop partial utterance)")
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input drop no-op ({e!r})")
@@ -1483,13 +1487,16 @@ class WebSocketHandler:
         # callback rather than a frame ConnectionRecovery sees directly.
         phase_emitter.set_turn_success_handler(connection.recovery.note_turn_success)
 
-        # Bana 0 (raawr US-016), OpenAI only: at the end of every user turn,
-        # try HA's own agent first; the model answers only on a miss (main.py
-        # turned the server's create_response off for exactly this case).
+        # Bana 0 (raawr US-016), on either engine: at the end of every user
+        # turn, try HA's own agent first; the model answers only on a miss.
+        # OpenAI: main.py turned the server's create_response off for this.
+        # Gemini: the service holds the turn's audio until bana 0 decides.
+        # Up to 0.22.5 this was OpenAI only, so on Gemini "släck kontoret"
+        # always went the slow way through the model (2026-10-02).
+        provider = connection.provider or OPENAI
         if (
             self.bana0_stt is not None
             and serializer is not None
-            and (connection.provider or OPENAI) == OPENAI
             and hasattr(openai_service, "on_user_turn_end")
         ):
             host, port = self.bana0_stt
@@ -1507,8 +1514,8 @@ class WebSocketHandler:
                     timeout_stt=timeout_stt,
                     timeout_comms=timeout_comms,
                     say=_say,
-                    skicka_svar_till_modellen=lambda text: bana0.lagg_till_svar(openai_service, text),
-                    skapa_svar=lambda: bana0.be_om_svar(openai_service),
+                    skicka_svar_till_modellen=lambda text: bana0_hit(provider, openai_service, text),
+                    skapa_svar=lambda: bana0_miss(provider, openai_service),
                 )
                 if bana == "bana0":
                     await phase_emitter.force_idle("bana0")
@@ -1516,6 +1523,22 @@ class WebSocketHandler:
             openai_service.on_user_turn_end = _on_user_turn_end
             openai_service.on_user_turn_start = serializer.start_turn_audio
             serializer.is_replying = lambda: phase_emitter.phase == "replying"
+
+        # Google dropped the socket with a turn in flight (1011, 2026-10-02
+        # 14:30:47: the wake got nothing back). The engine reconnects on its
+        # own; he gets told, through the add-on's own TTS lane, not silence.
+        if hasattr(openai_service, "on_turn_lost"):
+            from app.providers.gemini_live import TURN_LOST_LINE
+
+            async def _on_turn_lost():
+                try:
+                    if self.say is not None:
+                        await self.say(TURN_LOST_LINE, client_id)
+                except Exception as e:
+                    logger.warning(f"⚠️ could not say the turn was lost: {e!r}")
+                await phase_emitter.force_idle("turn-lost")
+
+            openai_service.on_turn_lost = _on_turn_lost
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
