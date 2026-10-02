@@ -39,6 +39,16 @@ def _options(**over):
     return ProviderOptions(**base)
 
 
+@pytest.fixture
+def google_turns(monkeypatch):
+    """Build sessions on Google's automatic activity detection -- the path
+    a session falls back to when local turn detection cannot load."""
+    from app.providers import gemini_live
+
+    monkeypatch.setattr(gemini_live.LocalTurns, "create", classmethod(lambda cls, *a, **k: None))
+
+
+
 def test_tools_keep_their_name_description_and_parameters():
     decls = to_gemini_tools(OPENAI_SHAPE)
     assert [d["name"] for d in decls] == ["search_home", "list_timers"]
@@ -105,7 +115,8 @@ def test_the_service_gets_tools_wrapped_the_way_the_api_wants_them():
     """
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     tools = service._tools_from_init
-    assert isinstance(tools, list) and len(tools) == 1
+    # One entry for the declarations; a 3.x model adds {"google_search": {}}.
+    assert isinstance(tools, list) and len(tools) == 2 and tools[1] == {"google_search": {}}
     declarations = tools[0]["function_declarations"]
     assert [d["name"] for d in declarations] == ["search_home", "list_timers"]
 
@@ -140,6 +151,7 @@ def test_gemini_never_sees_additional_properties():
     assert params["properties"]["nested"]["properties"]["deep"]["type"] == "string"
 
 
+@pytest.mark.usefixtures("google_turns")
 def test_the_session_always_carries_turn_detection_settings():
     """Live 2026-09-09: the first Gemini session sent no realtime_input_config
     at all, so Google ran its automatic activity detection at its own default
@@ -147,17 +159,17 @@ def test_the_session_always_carries_turn_detection_settings():
     echo and half-words nobody said -- "Och?", "Ja.", "Ne?", and one whole
     sentence in Portuguese. pipecat only attaches the config when at least one
     field is set, so every field is sent."""
-    from google.genai.types import EndSensitivity, StartSensitivity
+    from google.genai.types import EndSensitivity
 
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     vad = service._vad_params
     assert vad is not None
-    assert vad.start_sensitivity == StartSensitivity.START_SENSITIVITY_LOW
     assert vad.end_sensitivity == EndSensitivity.END_SENSITIVITY_LOW
     assert vad.prefix_padding_ms == 300
     assert vad.silence_duration_ms == 800
 
 
+@pytest.mark.usefixtures("google_turns")
 def test_the_sensitivities_follow_the_add_on_settings():
     from google.genai.types import EndSensitivity, StartSensitivity
 
@@ -178,19 +190,38 @@ def test_the_sensitivities_follow_the_add_on_settings():
     assert vad.silence_duration_ms == 400
 
 
-def test_an_unreadable_sensitivity_falls_back_to_low_not_to_googles_default():
-    """A typo in add-on config must not silently hand the room back to
-    Google's HIGH default -- that is the exact failure this setting exists to
-    prevent, and it is inaudible until the assistant starts answering the
-    television."""
+@pytest.mark.usefixtures("google_turns")
+def test_a_turn_starts_easily_by_default():
+    """Live 2026-10-02 12:52-12:54, office, START_SENSITIVITY_LOW: Gemini
+    opened ONE user turn for seven things said to it. The mic audio reached
+    Google intact (every frame -- checked against a local fake server through
+    1008 reconnects and audioStreamEnd), yet "Hallo!" and "Vad är klockan?",
+    said loudly into the device, never produced an input transcription, and
+    "Vad händer, frågar jag" was answered 22 s after it was spoken, from
+    cached audio, once later room sounds finally tripped the start detector.
+    The Voice PE only streams after a wake or inside a follow-up window, and
+    the mic is closed while the assistant speaks (barge_in: false), so the
+    start detector does not have to defend against the room all day -- it has
+    to hear the person who just woke it."""
+    from google.genai.types import StartSensitivity
+
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_HIGH
+
+
+@pytest.mark.usefixtures("google_turns")
+def test_an_unreadable_start_sensitivity_falls_back_to_the_default():
+    """A typo must not quietly pick LOW: on this device that is a deaf
+    assistant (see test_a_turn_starts_easily_by_default)."""
     from google.genai.types import StartSensitivity
 
     service = build_service(
         "gemini", _options(gemini_vad_start_sensitivity="lowish"), OPENAI_SHAPE
     )
-    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_LOW
+    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_HIGH
 
 
+@pytest.mark.usefixtures("google_turns")
 def test_a_negative_padding_is_clamped_rather_than_sent():
     service = build_service(
         "gemini", _options(gemini_vad_prefix_padding_ms=-50), OPENAI_SHAPE
@@ -234,6 +265,7 @@ def test_affective_dialog_shares_the_native_audio_gate():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("google_turns")
 async def test_ending_the_audio_stream_tells_google_the_mic_stopped():
     """Gemini Live's answer to input_audio_buffer.clear. Never sent before, so
     a sentence cut off by a closing follow-up window stayed cached on Google's
@@ -270,11 +302,12 @@ async def test_each_engine_drops_pending_input_in_its_own_dialect():
     gemini_calls = []
 
     class FakeGemini:
-        async def end_audio_stream(self):
-            gemini_calls.append(True)
+        async def end_audio_stream(self, keep_speech=False):
+            gemini_calls.append(keep_speech)
 
     assert await drop_pending_input_audio("gemini", FakeGemini()) == "audioStreamEnd"
-    assert gemini_calls == [True]
+    assert await drop_pending_input_audio("gemini", FakeGemini(), keep_speech=True) == "audioStreamEnd"
+    assert gemini_calls == [False, True]
 
     openai_events = []
 
@@ -404,3 +437,161 @@ def test_the_half_cascade_model_keeps_its_language_code():
 
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     assert service._settings.get("language") == Language.SV_SE
+
+
+# --- Local turn detection (0.22.5) --------------------------------------------
+# Live 2026-10-02 13:42-13:45: Google's automatic activity detection, even at
+# START_SENSITIVITY_HIGH, opened no turn for "Var är klockan?" said at -26 dBFS.
+# The add-on now decides turn boundaries itself and tells Google.
+
+
+class _ScriptedTurns:
+    """Stands in for LocalTurns: replays a fixed list of VAD events."""
+
+    def __init__(self, events):
+        self.events = list(events)
+        self.resets = 0
+
+    def feed(self, pcm16):
+        return self.events.pop(0)
+
+    def reset(self):
+        self.resets += 1
+
+
+def _wire(service, turns):
+    sent = []
+
+    class FakeSession:
+        async def send_realtime_input(self, **kw):
+            sent.append(kw)
+
+    service._session = FakeSession()
+    service._disconnecting = False
+    service._turns = turns
+    return sent
+
+
+def _frame(byte):
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    return InputAudioRawFrame(audio=bytes([byte, 0]) * 320, sample_rate=16000, num_channels=1)
+
+
+def _kinds(sent):
+    out = []
+    for kw in sent:
+        if "activity_start" in kw:
+            out.append("start")
+        elif "activity_end" in kw:
+            out.append("end")
+        elif "audio" in kw:
+            out.append("audio")
+        else:
+            out.append(sorted(kw))
+    return out
+
+
+def test_a_session_turns_googles_detection_off_and_detects_turns_itself():
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    assert service._vad_params.disabled is True
+    assert service._turns is not None, "Silero (pipecat) + sherpa-onnx must load"
+
+
+@pytest.mark.asyncio
+async def test_speech_is_framed_by_activity_start_and_end():
+    """Nothing reaches Google before speech; then activityStart, the pre-roll
+    (the first syllable Silero needed time to be sure of), the speech, and
+    activityEnd when the speech stops -- which is what makes Gemini answer."""
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    sent = _wire(service, _ScriptedTurns([None, None, "start", None, "end", None]))
+
+    for b in range(6):
+        await service._send_user_audio(_frame(b))
+
+    assert _kinds(sent) == ["start", "audio", "audio", "audio", "audio", "end"]
+    preroll = sent[1]["audio"].data
+    assert preroll == _frame(0).audio + _frame(1).audio
+    assert sent[2]["audio"].data == _frame(2).audio
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_turn_is_abandoned_not_answered():
+    """Stop word / follow-up cut-off: the device wants the input gone. In
+    manual mode no audioStreamEnd (that belongs to automatic detection) and no
+    activityEnd (that would make Gemini answer the fragment)."""
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    turns = _ScriptedTurns(["start", None, None, "start"])
+    sent = _wire(service, turns)
+
+    await service._send_user_audio(_frame(1))
+    await service._send_user_audio(_frame(2))
+    await service.end_audio_stream()
+    assert _kinds(sent) == ["start", "audio", "audio"]
+    assert turns.resets == 1
+
+    sent.clear()
+    await service._send_user_audio(_frame(3))  # quiet: held back, not sent
+    await service._send_user_audio(_frame(4))  # next speech opens a fresh turn
+    assert _kinds(sent) == ["start", "audio", "audio"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_socket_starts_with_no_open_turn():
+    """1008/1011 reconnects mid-turn: the new session never saw our
+    activityStart, so the next speech must open one again."""
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    turns = _ScriptedTurns(["start"])
+    _wire(service, turns)
+    await service._send_user_audio(_frame(1))
+    assert service._activity_open
+
+    from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+
+    async def _noop(self, session):
+        self._session = session
+
+    import unittest.mock as um
+    with um.patch.object(GeminiLiveLLMService, "_handle_session_ready", _noop):
+        await service._handle_session_ready(object())
+    assert not service._activity_open
+    assert turns.resets == 1
+
+
+class _FakeVad:
+    def __init__(self, states):
+        self.states = list(states)
+        self.resets = 0
+
+    def accept_waveform(self, samples):
+        pass
+
+    def empty(self):
+        return True
+
+    def is_speech_detected(self):
+        return self.states.pop(0)
+
+    def reset(self):
+        self.resets += 1
+
+
+def test_local_turns_report_transitions_only():
+    from app.providers.gemini_live import LocalTurns
+
+    turns = LocalTurns(_FakeVad([False, True, True, False, False]))
+    events = [turns.feed(b"\0\0" * 320) for _ in range(5)]
+    assert events == [None, "start", None, "end", None]
+
+
+def test_silero_is_reset_after_five_quiet_seconds():
+    """Measured on the 13:42 recording: without a reset, Silero stopped
+    detecting anything after ~20 s of room sound, and the command at 144 s
+    went unnoticed. pipecat's own Silero wrapper resets every 5 s."""
+    from app.providers.gemini_live import LocalTurns
+
+    vad = _FakeVad([False] * 260)
+    turns = LocalTurns(vad)
+    for _ in range(260):  # 20 ms frames: 5.2 s of quiet
+        turns.feed(b"\0\0" * 320)
+    assert vad.resets == 1

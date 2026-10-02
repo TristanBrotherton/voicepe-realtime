@@ -24,6 +24,7 @@ class Failure(str, Enum):
     MONEY = "money"          # switch engine now; retrying cannot help
     AUTH = "auth"            # switch engine now; this engine will not accept us
     TRANSIENT = "transient"  # try once more on this engine, then switch
+    RATE_LIMIT = "rate_limit"  # wait the stated seconds and ask again; never a strike
     APP = "app"              # our own fault; never switch
 
 
@@ -53,8 +54,12 @@ _AUTH = (
     "not supported for bidigeneratecontent",
 )
 _AUTH_CODES = (r"\b401\b", r"\b403\b")
+# Tokens-per-minute clears by itself in seconds and OpenAI says exactly how
+# many ("Please try again in 2.9s"). Not an engine fault: the answer is to wait
+# and ask again on the SAME engine (ConnectionRecovery does), never a strike.
+# Checked after MONEY, so a spent quota delivered as a 429 still switches.
+_RATE_LIMIT = ("rate limit", "rate_limit_exceeded")
 _TRANSIENT = (
-    "rate limit",
     "keepalive ping timeout",
     "going away",
     "no close frame",
@@ -131,8 +136,19 @@ def classify(message: str) -> Failure:
         return Failure.AUTH
     if any(re.search(pattern, text) for pattern in _AUTH_CODES):
         return Failure.AUTH
+    if any(marker in text for marker in _RATE_LIMIT):
+        return Failure.RATE_LIMIT
     if any(marker in text for marker in _TRANSIENT):
         return Failure.TRANSIENT
     if any(re.search(pattern, text) for pattern in _TRANSIENT_CODES):
         return Failure.TRANSIENT
     return Failure.TRANSIENT
+
+
+def retry_after_s(message: str, default: float = 1.0, cap: float = 5.0) -> float:
+    """The wait a rate-limit error asks for ("try again in 769ms" / "2.941s"), capped."""
+    m = re.search(r"try again in\s*([\d.]+)\s*(ms|s)\b", (message or "").lower())
+    if not m:
+        return default
+    seconds = float(m.group(1)) / (1000.0 if m.group(2) == "ms" else 1.0)
+    return min(max(seconds, 0.0), cap)

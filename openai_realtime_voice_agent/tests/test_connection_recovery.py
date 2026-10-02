@@ -100,6 +100,12 @@ import time as _time
 import pytest
 
 from app.provider_router import ProviderRouter
+
+
+def _healthy(provider):
+    """The backup answers its probe (switch-only-to-healthy, 2026-10-02)."""
+    return True
+
 from pipecat.frames.frames import ErrorFrame as _ErrorFrame
 from pipecat.processors.frame_processor import FrameDirection
 
@@ -136,7 +142,7 @@ def _recovery(provider, router, switched):
 @pytest.mark.asyncio
 async def test_a_dropped_socket_on_openai_is_repaired_in_place():
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error(_DEAD_SOCKET_MSG)
     assert rec._service.resets == 1
@@ -169,7 +175,7 @@ async def test_gemini_repairs_itself_so_we_keep_our_hands_off():
     headline behaviour -- Gemini's own reconnect logic is left alone -- is
     that reset_conversation is never called; assert that directly."""
     switched = []
-    router = ProviderRouter("gemini", "openai")
+    router = ProviderRouter("gemini", "openai", probe=_healthy)
     rec = _recovery("gemini", router, switched)
     await rec.handle_error("keepalive ping timeout")
     assert switched == []
@@ -179,7 +185,7 @@ async def test_gemini_repairs_itself_so_we_keep_our_hands_off():
 @pytest.mark.asyncio
 async def test_out_of_money_is_never_repaired_only_switched():
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error("You exceeded your current quota")
     assert rec._service.resets == 0
@@ -190,7 +196,7 @@ async def test_out_of_money_is_never_repaired_only_switched():
 @pytest.mark.asyncio
 async def test_a_tool_failure_neither_repairs_nor_switches():
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error("play_media failed: 500 Internal Server Error")
     assert rec._service.resets == 0
@@ -204,7 +210,7 @@ async def test_a_second_dropped_socket_switches_engine():
     the bare, non-send-flood message is fine): two TRANSIENT reports of the
     same failure must exceed the one-retry budget and switch engines."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error("keepalive ping timeout")
     rec._last_reported_at = 0.0  # step past the flood-collapse cooldown
@@ -223,7 +229,7 @@ async def test_out_of_money_reaches_the_router_through_an_ordinary_error_frame()
     empty. Going through process_frame itself (not calling handle_error
     directly, like the tests above) is what actually exercises that wiring."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     try:
         await rec.process_frame(
@@ -282,13 +288,14 @@ async def test_a_flood_of_identical_errors_is_handled_once():
     strike, no switch, and exactly one reset_conversation call across all
     three, i.e. that the whole trio was handled as a single occurrence."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error(_DEAD_SOCKET_MSG)
     await rec.handle_error(_DEAD_SOCKET_MSG)
     await rec.handle_error(_DEAD_SOCKET_MSG)
     assert switched == []
-    assert router._strikes.get("openai") == 1
+    # 2026-10-02: a dead socket that reconnects is no strike at all.
+    assert not router._strikes.get("openai")
     assert rec._service.resets == 1
 
 
@@ -305,7 +312,7 @@ async def test_a_duplicate_dead_socket_message_does_not_nudge_a_fresh_turns_phas
     (not handle_error directly) so _route_error's nudge-or-not decision is
     actually exercised."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     idled = []
 
@@ -361,10 +368,13 @@ async def test_two_different_death_messages_in_a_row_repair_only_once():
             "a second, differently-worded report of the SAME socket death "
             "repaired again inside the cooldown"
         )
-        assert router._strikes.get("openai") == 2, (
-            "the second message never reached the router at all -- it was "
-            "deduped, so this test is not exercising the cooldown"
+        # A reconnected socket is no strike (2026-10-02), so "not deduped"
+        # is read off the dedup's own record instead of the strike count.
+        assert rec._last_error_message.startswith("Error sending client event"), (
+            "the second message was deduped, so this test is not exercising "
+            "the cooldown"
         )
+        assert not router._strikes.get("openai")
         assert switched == []
     finally:
         await rec.close()
@@ -378,7 +388,7 @@ async def test_a_different_message_right_after_is_not_deduped():
     the message and only checked the time window, this second, different
     failure would be silently dropped too)."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error("keepalive ping timeout")
     await rec.handle_error("You exceeded your current quota")
@@ -396,7 +406,7 @@ async def test_a_failover_decision_with_no_switch_callback_yet_still_lets_the_id
     process_frame -> _route_error path (not just reading handle_error's
     return value, as an earlier version of this test did) is what actually
     proves the nudge fires, not merely that nothing else happened."""
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = ConnectionRecovery(FakeService(), provider="openai", router=router, on_failover=None)
     idled = []
 
@@ -428,7 +438,7 @@ async def test_note_turn_success_resets_the_strike_budget_under_the_shipped_conf
     exactly like test_a_second_dropped_socket_switches_engine passes (switched
     becomes [True]) -- confirming the assertion depends on the reset."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     await rec.handle_error(_DEAD_SOCKET_MSG)
     # Step past BOTH windows, which guard different things (see handle_error):
@@ -457,7 +467,7 @@ async def test_note_turn_success_only_clears_this_connections_own_engine():
     itself keyed by provider name; this proves ConnectionRecovery passes its
     own _provider, not something else.)"""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("gemini", router, switched)  # this connection IS gemini
     router._strikes["gemini"] = 1  # simulate an earlier hiccup already charged
     router._strikes["openai"] = 1  # a DIFFERENT engine's charge -- must survive
@@ -475,7 +485,7 @@ async def test_a_successful_wedge_repair_resets_the_strike_budget():
     handle_error repair, cannot erase a strike that a second real failure
     still needed to be measured against."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     router._strikes["openai"] = 1  # a prior hiccup already charged
     rec._last_attempt = 0.0
@@ -492,7 +502,7 @@ async def test_a_failed_wedge_repair_does_not_credit_success():
     tell the difference from the passing case above. Make reset_conversation
     itself fail, and the earlier strike must survive."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     router._strikes["openai"] = 1  # a prior hiccup already charged
 
@@ -513,7 +523,7 @@ async def test_a_successful_proactive_refresh_credits_success():
     _maybe_proactive_refresh directly -- the same decision+credit code the
     background loop calls after each REFRESH_CHECK_S sleep."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     router._strikes["openai"] = 1  # a prior hiccup already charged
     now = _time.monotonic()
@@ -531,7 +541,7 @@ async def test_a_failed_proactive_refresh_does_not_credit_success():
     scheduled refresh must not erase a strike a real recurring failure still
     needs to be measured against."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     router._strikes["openai"] = 1  # a prior hiccup already charged
 
@@ -571,7 +581,7 @@ async def test_the_wedge_repair_stands_back_from_a_self_healing_engine():
     guard from the start; force_reconnect, which is the path the wedge
     detector actually uses, did not."""
     switched = []
-    router = ProviderRouter("gemini", "openai")
+    router = ProviderRouter("gemini", "openai", probe=_healthy)
     rec = _recovery("gemini", router, switched)
     idled = []
     rec._emit_idle = lambda value: idled.append(value)
@@ -590,7 +600,7 @@ async def test_the_wedge_repair_still_runs_for_an_engine_that_cannot_heal():
     no reconnect logic of its own, so its wedge repair is the only thing that
     gets a half-open socket back."""
     switched = []
-    router = ProviderRouter("openai", "gemini")
+    router = ProviderRouter("openai", "gemini", probe=_healthy)
     rec = _recovery("openai", router, switched)
     rec._last_attempt = 0.0
 
@@ -604,7 +614,7 @@ async def test_the_proactive_refresh_loop_never_starts_for_a_self_healing_engine
     """The 60-minute cap is OpenAI Realtime's. On Gemini this loop could only
     ever reach the same dead `_recover` path -- idle the device, then fail --
     so it must return before its first sleep instead of polling forever."""
-    router = ProviderRouter("gemini", "openai")
+    router = ProviderRouter("gemini", "openai", probe=_healthy)
     rec = _recovery("gemini", router, [])
     rec.REFRESH_CHECK_S = 0
 

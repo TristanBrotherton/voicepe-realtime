@@ -23,10 +23,13 @@ from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.providers import (
     OPENAI,
+    bana0_hit,
+    bana0_miss,
     drop_pending_input_audio,
     input_sample_rate,
     supports_client_events,
 )
+from app import bana0
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
@@ -198,6 +201,8 @@ class ConnectionRecovery(FrameProcessor):
     # _is_dead_socket, not stored as a constant since it is a single phrase).
     RECONNECT_COOLDOWN_S = 5.0
     IDLE_UNSTICK_COOLDOWN_S = 2.0
+    # A rate limit inside this long after our own retry is the retry failing.
+    RATE_LIMIT_WINDOW_S = 30.0
     # Proactive refresh: reconnect BEFORE OpenAI's 60-min session cap, but only
     # while the house is genuinely quiet, so the cap practically never lands
     # mid-conversation (where it costs the user a turn).
@@ -263,6 +268,10 @@ class ConnectionRecovery(FrameProcessor):
         self._refresh_task = None
         self._recover_task = None
         self._closed = False
+        # Rate-limit ladder for the current turn: 0 nothing yet, 1 answer
+        # retried, 2 fallback said. Reset by a finished turn or by time.
+        self._rate_limit_stage = 0
+        self._rate_limit_at = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -357,6 +366,11 @@ class ConnectionRecovery(FrameProcessor):
         failure = classify(message)
         if failure is Failure.APP:
             return False
+        if failure is Failure.RATE_LIMIT:
+            # Before the flood dedup: the retry's own failure may read the
+            # same, and it must still reach the fallback. Never reported to
+            # the router: tokens-per-minute is not a broken engine.
+            return await self._answer_after_rate_limit(message)
 
         now = time.monotonic()
         # A dead/flooding socket delivers the SAME message ~15x/s. Without
@@ -390,19 +404,20 @@ class ConnectionRecovery(FrameProcessor):
         self._last_error_message = message
         self._last_reported_at = now
 
-        if self._router is not None:
-            after = self._router.report_failure(self._provider, message)
-            if after != self._provider:
-                logger.warning(f"🔀 failing over {self._provider} → {after}")
-                if self._on_failover is not None:
-                    await self._on_failover()
-                    return True
-                # No callback wired (e.g. a test-built ConnectionRecovery, or
-                # any caller that hasn't passed on_failover): returning True
-                # here would suppress the idle nudge below while nothing
-                # actually rebuilds the connection — the device would get
-                # neither a switch nor a way out.
-                return False
+        # A dead socket on an engine we repair ourselves is reported only if
+        # the repair fails. OpenAI closes healthy idle sessions server-side
+        # ("realtime receive loop died: ConnectionClosedError(None, None,
+        # None)") and they reconnect in ~1.5 s; on 2026-10-02 two of those 23
+        # minutes apart spent the retry budget and moved the house to a deaf
+        # backup. Same rule ResilientGeminiLiveService applies to Gemini's
+        # idle hang-ups.
+        repair_first = (
+            failure is Failure.TRANSIENT
+            and not self_heals(self._provider)
+            and self._is_dead_socket(message)
+        )
+        if not repair_first and await self._report(message):
+            return True
 
         if failure in (Failure.MONEY, Failure.AUTH):
             # Nothing here can be repaired, and there is nowhere to go.
@@ -449,8 +464,73 @@ class ConnectionRecovery(FrameProcessor):
 
         self._reconnecting = True
         self._last_attempt = now  # only stamped here, where a repair is actually attempted
-        await self._recover(message)
+        if not await self._recover(message):
+            # The engine did not come back: THAT is a strike.
+            await self._report(f"reconnect failed after: {message}")
         return True
+
+    async def _report(self, message: str) -> bool:
+        """Tell the router; carry out a switch if it decides one.
+
+        Returns True only when a failover was actually carried out.
+        """
+        if self._router is None:
+            return False
+        after = self._router.report_failure(self._provider, message)
+        if after == self._provider:
+            return False
+        logger.warning(f"🔀 failing over {self._provider} → {after}")
+        if self._on_failover is None:
+            # No callback wired (a test-built ConnectionRecovery, say):
+            # claiming "handled" would suppress the idle nudge while nothing
+            # rebuilds the connection.
+            return False
+        await self._on_failover()
+        return True
+
+    async def _answer_after_rate_limit(self, message: str) -> bool:
+        """Wait what OpenAI asks, ask for the answer once more, else say so.
+
+        2026-10-02 12:57: HassTurnOff ran, the reply after it was rate
+        limited, and the user heard nothing. The tool result is already in
+        the server conversation, so a fresh response.create is the answer.
+
+        Returns True when something audible is on its way (retry or
+        fallback), False when the caller should just nudge the device idle.
+        """
+        from app.provider_failures import retry_after_s
+
+        retry = getattr(self._service, "retry_response", None)
+        if retry is None:
+            return False  # an engine without a retry hook: idle nudge as before
+        now = time.monotonic()
+        if now - self._rate_limit_at > self.RATE_LIMIT_WINDOW_S:
+            self._rate_limit_stage = 0
+        self._rate_limit_at = now
+        if self._rate_limit_stage == 0:
+            self._rate_limit_stage = 1
+            wait = retry_after_s(message)
+            logger.warning(f"⏳ rate limited — asking for the answer again in {wait:.1f}s")
+            await asyncio.sleep(wait)
+            try:
+                await retry()
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ rate-limit retry could not be sent: {e!r}")
+        if self._rate_limit_stage < 2:
+            self._rate_limit_stage = 2
+            say = getattr(self._service, "say_rate_limited", None)
+            logger.warning(
+                "🙊 still rate limited after the retry — "
+                + ("saying so" if say else "no audio path, going idle")
+            )
+            if say is not None:
+                try:
+                    await say()
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ rate-limit fallback could not be sent: {e!r}")
+        return False
 
     def note_turn_success(self) -> None:
         """The assistant just finished a reply cleanly.
@@ -467,6 +547,7 @@ class ConnectionRecovery(FrameProcessor):
         two-in-a-row and switch engines for nothing — the one-retry budget
         must reset on real success, not just with the passage of time.
         """
+        self._rate_limit_stage = 0
         if self._router is not None:
             self._router.note_success(self._provider)
 
@@ -565,6 +646,11 @@ class ConnectionRecovery(FrameProcessor):
                 logger.error("❌ service has no reset_conversation(); cannot reconnect in place")
                 return False
             await reset()
+            if getattr(self._service, "_websocket", True) is None:
+                # pipecat's _connect swallows a failed connect and leaves this
+                # None; its "Error connecting" frame is dropped while we repair.
+                logger.error("❌ OpenAI reconnect did not open a socket")
+                return False
             self._connected_at = time.monotonic()
             logger.info(
                 f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "
@@ -979,6 +1065,12 @@ class WebSocketHandler:
         # the connection that starts it.
         self.enrollment_recorder = None
         self.enrollment_conductor = None
+        # Bana 0 (raawr US-016), set by main.py: the local STT's (host, port),
+        # None = off; its timeouts in seconds (stt, comms); and the guarded
+        # announcer `say(text, device_id)` that speaks HA's confirmation.
+        self.bana0_stt: Optional[tuple[str, int]] = None
+        self.bana0_timeouts: tuple[float, float] = (0.6, 4.0)
+        self.say = None
     
     def create_transport(
         self, websocket, serializer: RawAudioSerializer, provider: str = OPENAI
@@ -1352,7 +1444,9 @@ class WebSocketHandler:
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
             try:
-                sent = await drop_pending_input_audio(connection.provider, openai_service)
+                sent = await drop_pending_input_audio(
+                    connection.provider, openai_service, keep_speech=True
+                )
                 logger.info(f"🧽 follow-up cut-off → {sent} (drop partial utterance)")
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input drop no-op ({e!r})")
@@ -1367,6 +1461,10 @@ class WebSocketHandler:
             # segment closing late → suppress its thinking + cancel its garbage
             # response (handled in PhaseEmitter via the kill-window callbacks).
             phase_emitter.note_wake()
+            # Only here, never on the mic flush: the early ack tells a woken
+            # turn from a follow-up by this (TurnLiveness.from_wake).
+            if connection.turn_liveness is not None:
+                connection.turn_liveness.woke()
             # New turn boundary: drop any pending post-tool kill so it can't
             # leak onto this fresh turn's response.
             _kill_next_response["v"] = False
@@ -1392,6 +1490,59 @@ class WebSocketHandler:
         # and PhaseEmitter.set_turn_success_handler for why this has to be a
         # callback rather than a frame ConnectionRecovery sees directly.
         phase_emitter.set_turn_success_handler(connection.recovery.note_turn_success)
+
+        # Bana 0 (raawr US-016), on either engine: at the end of every user
+        # turn, try HA's own agent first; the model answers only on a miss.
+        # OpenAI: main.py turned the server's create_response off for this.
+        # Gemini: the service holds the turn's audio until bana 0 decides.
+        # Up to 0.22.5 this was OpenAI only, so on Gemini "släck kontoret"
+        # always went the slow way through the model (2026-10-02).
+        provider = connection.provider or OPENAI
+        if (
+            self.bana0_stt is not None
+            and serializer is not None
+            and hasattr(openai_service, "on_user_turn_end")
+        ):
+            host, port = self.bana0_stt
+            timeout_stt, timeout_comms = self.bana0_timeouts
+
+            async def _say(text):
+                if self.say is None:
+                    raise RuntimeError("no announcer wired")
+                await self.say(text, client_id)
+
+            async def _on_user_turn_end():
+                bana = await bana0.tur(
+                    serializer.take_turn_audio(),
+                    stt=lambda pcm, t: bana0.transkribera(pcm, host, port, t),
+                    timeout_stt=timeout_stt,
+                    timeout_comms=timeout_comms,
+                    say=_say,
+                    skicka_svar_till_modellen=lambda text: bana0_hit(provider, openai_service, text),
+                    skapa_svar=lambda: bana0_miss(provider, openai_service),
+                )
+                if bana == "bana0":
+                    await phase_emitter.force_idle("bana0")
+
+            openai_service.on_user_turn_end = _on_user_turn_end
+            openai_service.on_user_turn_start = serializer.start_turn_audio
+            serializer.is_replying = lambda: phase_emitter.phase == "replying"
+
+        # Google dropped the socket with a turn in flight (1011, 2026-10-02
+        # 14:30:47: the wake got nothing back). The engine reconnects on its
+        # own; he gets told, through the add-on's own TTS lane, not silence.
+        if hasattr(openai_service, "on_turn_lost"):
+            from app.providers.gemini_live import TURN_LOST_LINE
+
+            async def _on_turn_lost():
+                try:
+                    if self.say is not None:
+                        await self.say(TURN_LOST_LINE, client_id)
+                except Exception as e:
+                    logger.warning(f"⚠️ could not say the turn was lost: {e!r}")
+                await phase_emitter.force_idle("turn-lost")
+
+            openai_service.on_turn_lost = _on_turn_lost
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
@@ -1828,6 +1979,9 @@ class WebSocketHandler:
                 await connection.task.cancel()
             except Exception as e:
                 logger.debug(f"task cancel for {connection.device_id}: {e!r}")
+        if connection.ha_tools_task is not None:
+            connection.ha_tools_task.cancel()
+            connection.ha_tools_task = None
         recovery = connection.recovery
         if recovery is not None:
             await recovery.close()

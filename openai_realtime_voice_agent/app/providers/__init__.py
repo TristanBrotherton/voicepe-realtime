@@ -61,12 +61,21 @@ class ProviderOptions:
     # Left unset, Google runs it at START_SENSITIVITY_HIGH, which treats room
     # noise, the speaker's own echo and half-words as a user turn -- observed
     # live 2026-09-09 as answers to "Och?", "Ja." and one Portuguese sentence
-    # nobody said. LOW is the equivalent of the OpenAI side's
-    # vad_eagerness="low": harder to start a turn, slower to call it finished.
-    gemini_vad_start_sensitivity: str = "low"
+    # nobody said. That is why START was LOW from 2026-09-09 -- and on
+    # 2026-10-02 LOW turned out to be a deaf assistant: one turn opened for
+    # seven things said, the first answered 22 s late from cached audio, the
+    # rest never. The device only streams after a wake or in a follow-up
+    # window, with the mic shut while the assistant speaks, so START is HIGH:
+    # hearing the person who just woke it matters more than ignoring the room.
+    gemini_vad_start_sensitivity: str = "high"
     gemini_vad_end_sensitivity: str = "low"
     gemini_vad_prefix_padding_ms: int = 300
     gemini_vad_silence_duration_ms: int = 800
+    # Local turn detection (the default since 0.22.5): how long a silence ends
+    # his turn. 800 ms cut him off mid-question at every natural pause
+    # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
+    # which is Google's own VAD and only used when local detection is off.
+    gemini_turn_silence_ms: int = 1200
     # "Proactive audio": Google's own answer to a speaker that hears the room.
     # The model listens to everything but decides for itself whether the audio
     # was addressed to it, and stays silent when it was not (silence is not
@@ -97,7 +106,7 @@ def self_heals(provider: str) -> bool:
     return _SELF_HEALS[_known(provider)]
 
 
-async def drop_pending_input_audio(provider: str, service) -> str:
+async def drop_pending_input_audio(provider: str, service, keep_speech: bool = False) -> str:
     """Tell the engine the microphone stopped and to drop what it is holding.
 
     Both engines have this; they spell it differently, which is why it lives
@@ -111,6 +120,9 @@ async def drop_pending_input_audio(provider: str, service) -> str:
     Args:
         provider: "openai" or "gemini".
         service: That engine's live service object.
+        keep_speech: The follow-up window closed (not a stop word). Gemini's
+            local VAD then answers speech already under way instead of
+            dropping it; OpenAI's server VAD has no such view, unchanged.
 
     Returns:
         The name of what was sent, for the caller's log line.
@@ -125,8 +137,34 @@ async def drop_pending_input_audio(provider: str, service) -> str:
 
         await service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
         return "input_audio_buffer.clear"
-    await service.end_audio_stream()
+    await service.end_audio_stream(keep_speech=keep_speech)
     return "audioStreamEnd"
+
+
+async def bana0_hit(provider: str, service, text: str) -> None:
+    """Bana 0 hit: Home Assistant already did it and said so; the model must not.
+
+    OpenAI heard the turn, so it is told what HA said (and never asked to
+    answer). Gemini's turn was held back and is simply dropped: the model
+    never heard the order, so it cannot answer it or do it again.
+    """
+    from app import bana0
+
+    if _known(provider) == OPENAI:
+        await bana0.lagg_till_svar(service, text)
+    else:
+        await service.drop_turn()
+
+
+async def bana0_miss(provider: str, service) -> None:
+    """Bana 0 missed: let the model answer the turn."""
+    from app import bana0
+
+    if _known(provider) == OPENAI:
+        await bana0.be_om_svar(service)
+        service.arm_silence_ack()
+    else:
+        await service.answer_turn()  # arms the silence ack at its activityEnd
 
 
 def supports_client_events(provider: str) -> bool:

@@ -143,10 +143,8 @@ def get_false_alarm_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "mark_false_wake",
         "description": (
-            "Mark the most recent wake as a FALSE trigger. Use when the user says "
-            "the device woke by mistake — e.g. 'that was a false alarm', 'nobody "
-            "called you', 'you weren't being spoken to'. Confirms in one short "
-            "sentence; no apology beyond that."
+            "Mark the last wake as false when the user says nobody called you. "
+            "Confirm in one short sentence."
         ),
         "parameters": {"type": "object", "properties": {}},
     }
@@ -189,15 +187,10 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "voice_enrollment",
         "description": (
-            "Start or stop a guided voice-training (enrollment) recording session "
-            "for a household member. Use when someone asks to train, teach, or "
-            "enroll their voice (e.g. 'teach the assistant my voice', 'voice "
-            "training', 'continue voice training'). Call start IMMEDIATELY and "
-            "WITHOUT a person name — the system identifies the speaker by voice "
-            "automatically (never ask who is enrolling unless the tool says it "
-            "could not identify them, or they are enrolling someone else). Then "
-            "follow the returned protocol exactly. Recording captures everything "
-            "the microphone hears until stopped."
+            "Guided voice training (enrollment) when someone asks to train or "
+            "teach you their voice. Call start IMMEDIATELY without a person: "
+            "the speaker is identified by voice. Then follow the returned "
+            "protocol exactly."
         ),
         "parameters": {
             "type": "object",
@@ -205,16 +198,11 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop", "status"],
-                    "description": "start a session, stop the current one, or check status",
+                    "description": "start, stop or status",
                 },
                 "person": {
                     "type": "string",
-                    "description": (
-                        "First name of the person enrolling. OPTIONAL: leave it out "
-                        "and the system uses the voice-identified speaker "
-                        "automatically. Only provide it when enrolling someone "
-                        "other than the current speaker."
-                    ),
+                    "description": "Only when enrolling someone other than the speaker.",
                 },
             },
             "required": ["action"],
@@ -329,11 +317,16 @@ class EnrollmentConductor:
     def running(self):
         return self._task is not None and not self._task.done()
 
-    async def _tts(self, text):
-        """Synthesize one prompt to 24 kHz mono PCM16, cached in /data."""
+    async def _tts(self, text, voice=None):
+        """Synthesize one prompt to 24 kHz mono PCM16, cached in /data.
+
+        `voice` overrides tts_voice: the early ack speaks in the OpenAI
+        session's own voice.
+        """
         import hashlib
+        voice = voice or self.tts_voice
         os.makedirs("/data/enroll_prompts", exist_ok=True)
-        key = hashlib.md5(f"{self.tts_voice}:{text}".encode()).hexdigest()
+        key = hashlib.md5(f"{voice}:{text}".encode()).hexdigest()
         path = f"/data/enroll_prompts/{key}.pcm"
         if os.path.exists(path) and os.path.getsize(path) > 0:
             with open(path, "rb") as f:
@@ -342,7 +335,7 @@ class EnrollmentConductor:
             r = await client.post(
                 "https://api.openai.com/v1/audio/speech",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": "gpt-4o-mini-tts", "voice": self.tts_voice,
+                json={"model": "gpt-4o-mini-tts", "voice": voice,
                       "input": text, "response_format": "pcm",
                       # This lane speaks in the same room as the assistant, so
                       # it has to sound like him. It used to be a "calm,
@@ -363,13 +356,24 @@ class EnrollmentConductor:
             f.write(pcm)
         return pcm
 
-    async def _say(self, text, device_id=None):
+    async def _say(self, text, device_id=None, pace=True, pcm=None):
+        """Speak `text` on one device.
+
+        pace=False sends the whole clip at once: the device queues it, and a
+        reply that starts while it plays is queued after it instead of
+        interleaving with it chunk by chunk (the early acknowledgement).
+        `last_say_s` is how long the clip plays. `pcm` is a clip rendered
+        elsewhere (24 kHz mono PCM16), spoken instead of rendering `text`.
+        """
         target = self.device_id if device_id is None else device_id
-        pcm = await self._tts(text)
+        if pcm is None:
+            pcm = await self._tts(text)
+        self.last_say_s = len(pcm) / 48000.0
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False
-            await asyncio.sleep(0.095)
+            if pace:
+                await asyncio.sleep(0.095)
         return True
 
     def start(self, person, device_id: str):

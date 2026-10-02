@@ -27,6 +27,7 @@ class ProviderRouter:
         backup: Optional[str] = None,
         cooldown_s: float = 1800.0,
         clock: Callable[[], float] = time.monotonic,
+        probe: Optional[Callable[[str], bool]] = None,
     ) -> None:
         """
         Args:
@@ -35,6 +36,10 @@ class ProviderRouter:
             cooldown_s: How long the backup runs before the primary is tried
                 again.
             clock: Monotonic time source. Injected so tests need not sleep.
+            probe: Cheap "does this engine answer at all?" check, asked only
+                when a switch to the backup is on the table and the backup has
+                not proved itself within the cooldown. None means no probe, so
+                an unproven backup is never switched to.
         """
         self.primary = primary
         self.backup = backup or None
@@ -47,6 +52,9 @@ class ProviderRouter:
         # good turn. Keyed by engine so a late frame from the one we left
         # cannot spend the new engine's budget.
         self._strikes: Dict[str, int] = {}
+        # When each engine last completed a turn: the proof that it works.
+        self._healthy_at: Dict[str, float] = {}
+        self._probe = probe
 
     def current(self) -> str:
         """The engine the next session should be built with."""
@@ -84,7 +92,9 @@ class ProviderRouter:
             return active
 
         failure = classify(message)
-        if failure is Failure.APP:
+        if failure in (Failure.APP, Failure.RATE_LIMIT):
+            # A rate limit clears in seconds on the same engine; the caller
+            # waits and asks again. Switching would cost half an hour.
             return active
 
         if failure is Failure.TRANSIENT:
@@ -101,6 +111,20 @@ class ProviderRouter:
     def note_success(self, provider: str) -> None:
         """A turn completed on this engine, so forget its earlier hiccups."""
         self._strikes.pop(provider, None)
+        self._healthy_at[provider] = self._clock()
+
+    def _known_healthy(self, provider: str) -> bool:
+        """Proved itself within the cooldown, or passes the probe now."""
+        seen = self._healthy_at.get(provider)
+        if seen is not None and self._clock() - seen < self.cooldown_s:
+            return True
+        if self._probe is None:
+            return False
+        try:
+            return bool(self._probe(provider))
+        except Exception as e:
+            logger.warning(f"⚠️ probe of {provider} raised: {e!r}")
+            return False
 
     def status(self) -> Dict[str, object]:
         """What a dashboard needs to show which engine is live and why."""
@@ -124,6 +148,17 @@ class ProviderRouter:
                 f"⚠️ {self._active} failed ({failure.value}) and there is no backup: {message[:120]}"
             )
             self._reason = f"{failure.value}: {message[:160]}"
+            return self._active
+
+        # 2026-10-02: the house was moved to a backup that could not hear and
+        # sat deaf for 30 min. A primary that hiccups beats a backup nobody
+        # has seen work. Going back to the primary needs no proof.
+        if other != self.primary and not self._known_healthy(other):
+            logger.warning(
+                f"⚠️ {self._active} failed ({failure.value}) but {other} is not known "
+                f"healthy — staying on {self._active}: {message[:120]}"
+            )
+            self._reason = f"{failure.value}, backup unhealthy: {message[:140]}"
             return self._active
 
         logger.warning(

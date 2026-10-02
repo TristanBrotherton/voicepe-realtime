@@ -2,6 +2,239 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.24.1 (fork)
+
+- **"Jag kollar" bara på första frågan efter väckordet.** Ägaren
+  2026-10-02 21:16: i en uppföljning (mikrofonen öppen efter svaret, inget
+  nytt väckord) ska den inte låta, utom vid en riktigt lång väntan. En tur
+  räknas som väckt om enhetens `{"type":"wake"}` kom efter senaste idle;
+  annars gäller `EARLY_ACK_FOLLOWUP_MS` (3000, 0 = aldrig) för både
+  tystnads- och verktygsutlösaren. Väckta turer behåller `EARLY_ACK_MS` och
+  `EARLY_ACK_SILENCE_MS`. Mikrofonens flush räknas inte som väckning.
+
+## 0.24.0 (fork)
+
+- **Redo för `gemini-3.8-live`.** Efter verktygssvaret skickar 3.8 en
+  TOM `turn_complete` (usage, inget ljud, 0,01 s efter svaret) och talar
+  svaret i en NY tur; två anrop ger två tomma (uppmätt mot live-nyckeln
+  2026-10-02). Den tomma togs för svarets slut: förlorad-tur-klockan
+  nollades, uppföljningsbegäran gick före svaret och efter en talad
+  inledning gick enheten idle innan svaret kom. Nu sväljs en
+  `turn_complete` som kommer efter ett toolCall men före nytt ljud, även
+  för pipecat; svarets tur fortsätter samma replik och avslutar den en gång.
+- **Googles sökning: förval PÅ för 3.x, AV för 2.5.** `GEMINI_GOOGLE_SEARCH`
+  osatt följer modellen; `true`/`false` styr som förut. På, tas vår
+  `web_search` bort ur Geminis lista. 2.5 native audio + google_search +
+  funktioner + thinking_budget 0 ger 1011 före verktygsanropet (Googles
+  fel); 3.8 gav 0 av 21 ljudsessioner med sökningen på.
+- Prob mot 3.8: `thinking_level` vägras (1007), `thinking_budget` 0/512
+  accepteras (vi skickar inget), språk `sv` och `sv-SE` ok, Charon ok,
+  proactivity accepteras, affective dialog vägras (1007, vi ber inte om
+  den). Mätt i ljudläge, median första ljud från activityEnd, 5 körningar
+  vardera, 2.5 → 3.8: husfråga med verktyg 4,9 → 5,2 s (svaret 6,4 → 5,2),
+  väder ur Idag-blocket 4,0 → 2,2 s, webbfråga 12,7 (vår web_search) →
+  3,4 s (grundad). Inga 1011/1008 på någon av dem.
+
+## 0.23.3 (fork)
+
+- **"Jag kollar" i svarets röst.** Ägaren 2026-10-02 18:12: kvittensen kom
+  i OpenAI:s röst, svaret i Geminis Charon -- två personer i rummet. Nu
+  renderas replikerna i den aktiva motorns röst: på Gemini med Geminis TTS
+  (`GEMINI_TTS_MODEL`, förval `gemini-2.5-flash-preview-tts`) och sessionens
+  `GEMINI_VOICE`, på OpenAI med `gpt-4o-mini-tts` och `OPENAI_VOICE`.
+  Förrenderas vid start för båda motorerna, cachas på disk, 24 kHz PCM16
+  som enheten spelar (omsamplas om Google svarar med annan takt). Misslyckas
+  en rendering används den gamla klippet, och loggen säger det. Geminis TTS
+  vägrar ibland den nakna frasen (tom kandidat, "Två sek, jag tittar." varje
+  gång); inramad som "Läs upp på svenska ...: <fras>" sägs den, och ramen
+  hörs inte (kontrollerat med STT). TTS-kvoten är 10 anrop/min.
+- **Raden "Idag:" finns nu i systemprompten.** Kalenderskripten har länge
+  bett modellen räkna datum "ur raden Idag: i systemprompten" -- en rad som
+  inte fanns. Blocket (`app/idag.py`, ~125 tokens): veckodag, datum och
+  klocka (Europe/Stockholm), SMHI-prognosen för idag, i morgon och i
+  övermorgon (`script__vaderprognos`) och de tre nästa kalenderhändelserna
+  (`script__kalender_sok`), hämtade genom comms MCP-dörr som modellens egna
+  anrop. Hämtas var `IDAG_REFRESH_SECONDS` (600) och före första sessionen;
+  en misslyckad hämtning behåller sista goda delen. Dagnamn räknas när
+  blocket skrivs, inte när det hämtades. Gemini: instruktionen renderas om
+  vid varje (åter)anslutning, och en session vars block är äldre än
+  intervallet återansluts (med resumption-handtaget, samtalet kvar) först
+  när enheten varit tyst -- aldrig mitt i en tur. Uppmätt mot live-nyckeln:
+  en återupptagen session följer en NY systeminstruktion. Ingen
+  session.update (D-70). OpenAI får blocket när sessionen byggs.
+- **Googles sökning på Gemini: byggd men AV** (`GEMINI_GOOGLE_SEARCH=true`
+  slår på, och tar då bort vår `web_search` ur Geminis lista). Uppmätt
+  2026-10-02: grundade webbsvar fungerar och vanliga turer blir inte
+  långsammare (median första ljud 1,63 s med, 1,82 s utan), men med
+  sökningen i sessionen dog "Vilken temperatur är det i kontoret?"
+  (GetLiveContext) med 1011 Internal error 5 av 5 gånger, aldrig utan.
+
+## 0.23.2 (fork)
+
+- **"Jag kollar" även när modellen själv är långsam.** Live 2026-10-02
+  15:19:44, Gemini, "vad blir det för väder i helgen": activityEnd 44.05,
+  funktionsanrop 47.97, verktyget klart 48.18 (0,2 s), första ljud 49.99.
+  Sex sekunders tystnad, 5,5 av dem Gemini, och 0.23.1:s kvittens tände
+  aldrig eftersom verktyget var snabbt. Nu: har modellen inte gett något
+  ljud `EARLY_ACK_SILENCE_MS` (1500, 0 = av) efter att den fått turen
+  (Geminis activityEnd; OpenAI:s speech_stopped, eller bana 0:s miss) sägs
+  samma korta replik. Samma regler som 0.23.1: en gång per tur (delad med
+  verktygskvittensen), aldrig över modellens ljud eller ett nytt yttrande,
+  aldrig i historiken. En bana 0-träff frågar aldrig modellen och kvitteras
+  aldrig; en hängande VAD-stopp på OpenAI inte heller.
+- **Smalare verktygslista, båda motorerna: 57 → 40.** Gemini läser alla
+  deklarationer före sitt första anrop. Gömda (ingen anropad 1-2 okt):
+  `HassBroadcast`, `HassClimateSetTemperature`, `HassSetPosition`,
+  `HassStopMoving`, `RaawrHubVisa`, `RaawrHubAterstall`, och elva gamla
+  numrerade skript (Homekit start, Skicka hem Hugo, nio Städa-rum; de nås
+  fortfarande via `HassTurnOn` med skriptets namn). Deklarationerna
+  24 885 → 21 175 byte. Listan bor på ett ställe, `app/tool_selection.py`;
+  `TOOL_DENY` (kommaseparerad) ersätter den, `-` gömmer inget.
+  `MCP_TOOL_ALLOWLIST` gäller som förut, nu genom samma funktion.
+  Effekten på Geminis tid till första anrop är inte uppmätt.
+
+## 0.23.1 (fork)
+
+- **Ett tidigt "jag kollar" när ett verktyg dröjer.** Ägaren 2026-10-02:
+  när agenten måste kolla i backend blir det tyst. Ett verktyg som inte
+  är klart efter `EARLY_ACK_MS` (700) ger en kort replik i Björns röst
+  ("Vänta, jag kollar.", varierad, aldrig frågetecken) genom samma
+  skyddade TTS-fil som bana 0, utanför modellens historik, högst en gång
+  per tur och aldrig om modellens eget ljud redan har börjat. Klippet
+  skickas i ett svep så ett svar som börjar under det köas efter.
+  Personan ber också modellen säga det själv före en långsam uppslagning.
+  `EARLY_ACK_MS=0` stänger av.
+- **Varje verktygsanrop loggar `⏱ tool <namn> <ms> ok|fel`.** Journalen
+  1-2 okt: HA-verktygen 0,07-0,9 s; `web_search` 4,7-4,9 s, `play_media`
+  2,7-4,8 s, `ask_openclaw` 8,9 s.
+- **web_search med låg resonemangsinsats.** `WEB_SEARCH_REASONING_EFFORT`
+  (förval `low`, tom = modellens eget). Mätt från core: gpt-5.5 10,6/7,2 s
+  på förval, 5,5/6,3 s på low; gpt-5.4-mini på low 4,5/4,6 s.
+
+## 0.22.5 (fork)
+
+- **Tillägget bestämmer själv var en tur börjar och slutar på Gemini.**
+  0.22.4 (START HIGH) provades live 13:42-13:45: "Var är klockan?" sades
+  vid -26 dBFS, samma nivå som OpenAI-turer som fungerat (röstprob
+  134234), och Gemini gav ingenting på en minut. Ljudet är rätt — Gemini
+  transkriberade det korrekt en gång samma morgon — men Googles
+  automatiska aktivitetsdetektering öppnar inga turer för den här
+  enheten. Nu stängs den av (`automatic_activity_detection.disabled`),
+  och en lokal Silero-VAD (modellen pipecat redan levererar, körd av
+  sherpa-onnx som redan finns för röstavtryck — inget nytt beroende)
+  skickar `activityStart` med 0,5 s förrulle när någon börjar tala och
+  `activityEnd` efter `gemini_vad_silence_duration_ms` tystnad. Enheten
+  signalerar bara väckningen, aldrig slut på tal; OpenAI avgör det också
+  på serversidan. Stoppord och följdfönstrets avklipp överger en öppen
+  aktivitet utan `activityEnd`, så den besvaras aldrig; `audioStreamEnd`
+  skickas inte i manuellt läge. Silero nollställs efter 5 s tystnad
+  (utan det döv efter ~20 s — uppmätt på 13:42-inspelningen). Går VAD:n
+  inte att ladda faller sessionen tillbaka på Googles detektering.
+
+## 0.22.4 (fork)
+
+- **Gemini hör den som just väckte den** (gemini-snabb). Kontoret
+  2026-10-02 12:52-12:54, Gemini efter failover, START_SENSITIVITY_LOW:
+  sju saker sades till enheten, Gemini öppnade en enda tur. "Vad händer,
+  frågar jag" besvarades 22 s efter att det sades, ur cachat ljud; "Hallo!"
+  och "Vad är klockan?", högt och tydligt, gav inte ens en transkription,
+  och följdfönstrets och stoppknappens audioStreamEnd kastade sedan det
+  cachade ljudet. Ljudet nådde Google helt (provat mot en lokal falsk
+  Live-server genom 1008-återanslutningar och audioStreamEnd), så det var
+  startdetektorn. Standard för `gemini_vad_start_sensitivity` är nu
+  `high`, även vid felstavat värde. Mikrofonen strömmar bara efter
+  väckning eller i följdfönstret och är stängd medan assistenten talar,
+  så LOW:s skydd mot rummet kostade mer än det gav. **Driftsteg:**
+  `/etc/raawr-rostagent.env` sätter uttryckligen `low` och måste ändras
+  till `high`, annars ändrar uppdateringen ingenting i kontoret.
+
+## 0.22.3 (fork)
+
+- **Omkopplingen efter en HA-omstart klipper inte längre utrop eller
+  följdfönster, och studsar inte enheten om HA fladdrar** (D-72). När
+  HA:s verktyg kommer tillbaka stänger agenten enhetens anslutning först
+  när enheten är ledig. "Ledig" räknade bara fas och senaste väckning, så
+  ett utrop (som saknar fas) eller följdfönstret efter en lång tur kunde
+  klippas. Nu räknas ett pågående utrop som upptaget, och tystnaden mäts
+  också från turens och utropets slut, förlängd med följdfönstret
+  (`follow_up_listen_seconds`). Högst en omkoppling per enhet var tionde
+  minut (`MCP_RECYCLE_MIN_INTERVAL_SECONDS`); däremellan fortsätter
+  hämtningen.
+
+## 0.22.2 (fork)
+
+- **En enhet som återansluter mitt i en nedstängning blir inte längre döv**
+  (D-80). Ljudinspelningens två processorer delades av alla pipelines, så
+  när kontoret återanslöt medan den gamla sessionen avbröts gick den gamla
+  pipelinens CancelFrame in i den nya och satte inspelaren i ett
+  avbrytläge som pipecat aldrig återställer. Därefter släpptes allt ljud
+  från enheten innan det nådde OpenAI, tills tillägget startades om. Nu
+  får varje pipeline egna inspelare.
+
+## 0.22.1 (fork)
+
+- **Bana 0 hör bara användarens yttrande** (US-016, granskningsfynd F2).
+  En följdtur har ingen väckning, så turens ljud nollställdes aldrig och
+  STT:n fick allt sedan förra turen: tystnad och ekot av modellens eget
+  svar, upp till 30 s. Det kunde spräcka tidsgränsen på 600 ms och, värre,
+  få Whisper att skriva ut modellens egna ord som en order som HA sedan
+  utför. Nu börjar turens ljud om när användaren börjar tala
+  (`input_audio_buffer.speech_started`), med 0,8 s förrulle så att första
+  stavelsen följer med, och inget ljud sparas medan modellen svarar.
+
+## 0.22.0 (fork)
+
+- **Bana 0: enkla hemkommandon går till HA:s egen agent först** (raawr
+  US-016). Nytt tillval `bana0_stt` (`host:port` till en lokal Wyoming-STT,
+  tomt = av, som i dag). När det är satt skickas turens ljud vid turens slut
+  (`input_audio_buffer.speech_stopped`) till STT:n, texten till HA:s
+  konversationsagent genom raawr-comms, och HA:s bekräftelse talas upp i
+  rummet. Modellen får då bara veta vad som sades och ombeds aldrig svara.
+  Hanterade HA inte ordern (204, fel, tidsgräns) får modellen svara som
+  vanligt. Med bana 0 på skapar servern inte längre svar själv
+  (`create_response` av); agenten skickar `response.create` vid en miss.
+  Tidsgränser: `BANA0_STT_TIMEOUT_MS` (förval 600) och
+  `BANA0_COMMS_TIMEOUT_MS` (förval 4000). Bara OpenAI och `semantic_vad`.
+
+## 0.21.2 (fork)
+
+- **0.21.1:s återhämtning gjorde sessionen döv — nu återansluts enheten i
+  stället** (raawr D-70). 0.21.1 lade in de återhämtade HA-verktygen i den
+  levande OpenAI-sessionen med `session.update`. Live 2026-10-01 blev
+  sessionen efter det döv: två väckningar i rad fick "no server VAD activity
+  12s after wake", och inte ens en återanslutning mot OpenAI hjälpte, först
+  när högtalaren själv anslöt på nytt fungerade det. Nu rör agenten inte den
+  levande sessionen alls. När HA svarar igen väntar den tills enheten är
+  ledig (ingen tur pågår och ingen väckning på `MCP_RECYCLE_QUIET_SECONDS`,
+  förval 30) och stänger sedan enhetens anslutning normalt. Firmwaren
+  ansluter igen och får en ny session med alla verktyg den vanliga vägen:
+  `✅ HA back — recycling connection for <enhet> to load N tools`.
+
+## 0.21.1 (fork)
+
+- **HA-verktygen kommer tillbaka av sig själva** (raawr D-70). Var HA nere
+  (omstart) när en högtalare anslöt byggdes sessionen utan HA-verktyg (14
+  i stället för 59), och de kom inte tillbaka förrän högtalaren anslöt på
+  nytt — vilket kan dröja timmar. Nu försöker agenten igen i bakgrunden var
+  `MCP_TOOLS_RETRY_SECONDS` (förval 15) och lägger in verktygen i den
+  levande sessionen (`session.update` för OpenAI; Gemini får dem vid nästa
+  återanslutning) när HA svarar: `✅ HA tools recovered: N`. Försöket
+  stoppas när enheten kopplar ner.
+
+## 0.21.0 (fork)
+
+- **En Home Assistant som startar om tystar inte längre högtalaren** (raawr
+  US-014). 2026-09-30 startades HA om; agenten tog emot ljud men öppnade
+  ingen modellsession förrän den själv startades om 35 minuter senare.
+  Hämtningen av HA:s MCP-verktyg sker under pipeline-låset, och pipecats
+  MCP-klient låter en läsning hänga i upp till 300 s per försök — varje ny
+  anslutning ställde sig i kö bakom den. Nu ger hämtningen upp efter
+  `MCP_TOOLS_TIMEOUT_SECONDS` (förval 5) och sessionen byggs utan HA-verktyg,
+  precis som vid andra fel. Nästa anslutning försöker igen.
+- **Announce-endpointen kan binda till loopback.** `ANNOUNCE_HOST` (förval
+  `0.0.0.0`, så tillägget är oförändrat) — `127.0.0.1` när agenten kör som
+  systemd-tjänst bakom en omvänd proxy.
+
 ## 0.20.0 (fork)
 
 - **Tillägget håller ingen Home Assistant-nyckel längre** (raawr US-011,

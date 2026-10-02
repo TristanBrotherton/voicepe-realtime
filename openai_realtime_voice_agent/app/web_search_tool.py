@@ -13,6 +13,7 @@ WEB_SEARCH_MODEL (the mini/nano models are cheaper) so a different price/quality
 (or a renamed model) can be swapped in without a code change.
 """
 import logging
+import os
 from typing import Dict, Any, Callable, Awaitable, TYPE_CHECKING
 
 from openai import AsyncOpenAI
@@ -29,21 +30,15 @@ def get_web_search_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "web_search",
         "description": (
-            "Search the public internet for current, real-time, or factual "
-            "information the assistant does not already know — for example the "
-            "weather, news, sports scores, opening hours, prices, travel info, or "
-            "recent events. Do NOT use this for controlling the smart home — use "
-            "the Hass* tools for lights, switches, climate, etc."
+            "Search the internet for current facts you do not know: news, "
+            "scores, opening hours, prices, recent events. Not for the house."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": (
-                        "The search query, phrased as a clear natural-language "
-                        "question in the user's language."
-                    ),
+                    "description": "A clear question in the user's language.",
                 }
             },
             "required": ["query"],
@@ -61,10 +56,18 @@ def create_web_search_tool_handler(
     the function_call_output the Realtime model speaks).
     """
     client = AsyncOpenAI(api_key=api_key)
+    # Reasoning effort is most of the wait. Measured from core 2026-10-02,
+    # two questions each: gpt-5.5 at its default effort 10.6 s / 7.2 s, at
+    # "low" 5.5 s / 6.3 s; gpt-5.4-mini at "low" 4.5 s / 4.6 s, all correct.
+    # "" sends no effort (the model's default); non-reasoning models get none.
+    effort = os.environ.get("WEB_SEARCH_REASONING_EFFORT", "low").strip()
+    extra = {}
+    if effort and model.startswith(("gpt-5", "o")):
+        extra["reasoning"] = {"effort": effort}
 
     async def web_search_tool_handler(params: "FunctionCallParams") -> None:
         query = (params.arguments or {}).get("query", "").strip()
-        logger.info(f"🔎 web_search called: {query!r} (model={model})")
+        logger.info(f"🔎 web_search called: {query!r} (model={model}, effort={effort or 'default'})")
 
         if not query:
             await params.result_callback("Geen zoekopdracht ontvangen.")
@@ -79,6 +82,7 @@ def create_web_search_tool_handler(
                     "aloud, in the same language as the question. Do not include "
                     "URLs, citations, or markdown. Question: " + query
                 ),
+                **extra,
             )
             answer = (getattr(response, "output_text", None) or "").strip()
             logger.info(f"🔎 web_search answer: {answer[:200]}")

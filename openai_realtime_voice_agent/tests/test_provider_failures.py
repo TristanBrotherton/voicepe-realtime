@@ -34,10 +34,10 @@ def test_a_model_that_does_not_exist_switches_immediately():
     ) is Failure.AUTH
 
 
-def test_a_plain_rate_limit_is_worth_one_retry():
-    # Tokens-per-minute clears by itself in under a minute. Burning the switch
-    # on it would move the house to the backup for half an hour for nothing.
-    assert classify("Rate limit reached for gpt-realtime-2 in organization org-x") is Failure.TRANSIENT
+def test_a_plain_rate_limit_is_its_own_class_never_a_strike():
+    # Tokens-per-minute clears by itself in seconds. Burning the switch on it
+    # would move the house to the backup for half an hour for nothing.
+    assert classify("Rate limit reached for gpt-realtime-2 in organization org-x") is Failure.RATE_LIMIT
 
 
 def test_a_dead_socket_is_worth_one_retry():

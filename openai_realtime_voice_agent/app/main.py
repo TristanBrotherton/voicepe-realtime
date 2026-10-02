@@ -3,14 +3,17 @@ import os
 import sys
 import asyncio
 import logging
+import time
 from typing import Optional
 import dotenv
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
-from app import ha_api
+from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
+from app.idag import Idag
+from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, gemini_tts, pick_early_ack
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -79,6 +82,44 @@ def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:
     return choice or default
 
 
+def probe_engine(provider: str) -> bool:
+    """Does this engine's API answer our key at all? One cheap GET, 2 s cap.
+
+    Asked only when a switch to the backup is on the table. A 200 on the
+    model list proves the key and the network, not that a realtime session
+    will hear -- the cheapest honest signal there is.
+    """
+    import urllib.request
+
+    from app.providers import GEMINI, OPENAI
+
+    if provider == OPENAI:
+        key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
+        )
+    elif provider == GEMINI:
+        key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+        req = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+            headers={"x-goog-api-key": key},
+        )
+    else:
+        return False
+    if not key:
+        return False
+    # ponytail: blocking 2 s at most, once per switch decision while the
+    # primary is already failing; move to an async probe if that ever shows.
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            ok = resp.status == 200
+    except Exception as e:
+        logger.warning(f"⚠️ {provider} probe failed: {type(e).__name__}")
+        return False
+    logger.info(f"🩺 {provider} probe: {'ok' if ok else 'not ok'}")
+    return ok
+
+
 def build_router():
     """Build the engine router from the add-on options.
 
@@ -107,15 +148,75 @@ def build_router():
         f"🔀 voice engine: {primary}"
         + (f", backup {backup} (cooldown {minutes:.0f} min)" if backup else ", no backup")
     )
-    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0)
+    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0, probe=probe_engine)
 
 
 dotenv.load_dotenv()
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """A float env knob in seconds, falling back to `default` when unparsable."""
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _device_idle(connection, quiet_s: float) -> bool:
+    """Nothing is happening on this device, and nothing has for `quiet_s` s.
+
+    Busy: a turn in progress (phase), an announcement playing (it has no
+    phase), or less than `quiet_s` since the last wake, turn end or
+    announcement end. The phase stays "idle" between a wake and the first
+    speech, and the device holds its follow-up mic open after a turn or an
+    announcement with no wake at all, so the caller folds the follow-up
+    window into `quiet_s` (raawr D-72).
+    """
+    if connection.says_playing:
+        return False
+    emitter = connection.phase_emitter
+    phase = getattr(emitter, "phase", None) if emitter is not None else None
+    if phase not in (None, "idle"):
+        return False
+    last = max(
+        connection.last_active,
+        connection.last_busy,
+        getattr(emitter, "idle_since", 0.0),
+    )
+    return time.monotonic() - last >= quiet_s
+
+
+def _compact_slots(tool_name: str, properties: dict) -> dict:
+    """HA's generic intent slots, minus the ones that only cost tokens.
+
+    Every OpenAI turn re-bills the whole tool list (40k TPM). HA gives each
+    intent the same name/area/floor/domain/device_class block; on the media,
+    light and intent_script tools `device_class` is a list of enums the tool
+    already implies, and a `domain` that can only be one value says nothing.
+    The `intent__` tools keep both: "open the blinds" needs device_class, and
+    "turn off the lights" sends domain (it did in every logged call).
+    """
+    if tool_name.startswith("intent__"):
+        return properties
+    out = {}
+    for key, schema in (properties or {}).items():
+        if key == "device_class":
+            continue
+        if key == "domain" and (
+            tool_name.startswith("intent_script__")
+            or len(((schema or {}).get("items") or {}).get("enum") or [0, 0]) == 1
+        ):
+            continue
+        out[key] = schema
+    return out
+
+
 class Application:
     """Main application class using Pipecat."""
-    
+
+    # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
+    gemini_turn_silence_ms = 1200
+
     def __init__(self):
         """Initialize application."""
         # NB: there is deliberately no application-wide pipeline, transport or
@@ -131,7 +232,14 @@ class Application:
         self.speaker_male_name = ""
         self.speaker_female_name = ""
         self.male_only_tools: set[str] = set()
-        
+        # Bana 0 (raawr US-016): the local Wyoming STT, None = off.
+        self.bana0_stt: Optional[tuple[str, int]] = None
+        # device_id -> monotonic time of the last HA-recovery recycle, so a
+        # flapping HA cannot bounce a device again and again (raawr D-72).
+        self._last_recycle: dict[str, float] = {}
+        # Date, time, weather and the next events, at the end of the prompt.
+        self.idag = Idag()
+
     async def initialize(self) -> None:
         """Initialize all components."""
         # Get configuration from environment
@@ -172,6 +280,19 @@ class Application:
         # server makes it. FALSE reproduces the old single-turn-only behaviour
         # (turn 1 answers, turn 2 hangs in "thinking"). See create_service.
         semantic_vad_create_response = os.environ.get("SEMANTIC_VAD_CREATE_RESPONSE", "true").strip().lower() == "true"
+        # Bana 0 (raawr US-016): plain home commands go to HA's own agent
+        # first; the model is asked only on a miss, so with bana 0 on the
+        # server must NOT create a response per turn (see provider_options).
+        # semantic_vad only: the hook ends a turn the way semantic_vad does.
+        from app.bana0 import stt_adress
+        self.bana0_stt = stt_adress(os.environ.get("BANA0_STT", ""))
+        if self.bana0_stt and turn_detection_type != "semantic_vad":
+            logger.warning("⚠️ bana0_stt needs turn_detection_type semantic_vad — bana 0 off")
+            self.bana0_stt = None
+        bana0_timeouts = (
+            int(os.environ.get("BANA0_STT_TIMEOUT_MS", "600") or 600) / 1000,
+            int(os.environ.get("BANA0_COMMS_TIMEOUT_MS", "4000") or 4000) / 1000,
+        )
         # Expose the `disconnect_client` tool to the model. DEFAULT FALSE: on the
         # Voice PE the device owns its own session lifecycle (wake word starts a
         # turn, the no-speech watchdog / idle phase ends it), so a model-driven
@@ -392,6 +513,10 @@ class Application:
             tts_voice=os.environ.get("ENROLLMENT_TTS_VOICE", "fable").strip() or "fable",
         )
         self.websocket_handler.enrollment_conductor = self.enrollment_conductor
+        self.websocket_handler.bana0_stt = self.bana0_stt
+        self.websocket_handler.bana0_timeouts = bana0_timeouts
+        if self.bana0_stt:
+            logger.info(f"⚡ bana 0 on: STT {self.bana0_stt[0]}:{self.bana0_stt[1]}, timeouts {bana0_timeouts}")
 
         # Auto-build the voice print when enrollment finishes (fork, 0.16.5):
         # recording alone used to require a manual `python3 -m app.build_voiceprint`
@@ -431,23 +556,10 @@ class Application:
                     "to the speaker settings in the add-on configuration, then restart it.")
             await PUBLISHER.voice_prints()
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
-        # The conductor's TTS lane, guarded so the device cannot hear itself
-        # speak. Used by the announce endpoint below. NOT by timers: a timer
-        # expiry is the bell alone, on the second (see app/timers.py).
-        async def _guarded_say(text, device_id=None):
-            # Speak on ONE device. With several connected, "the device" is
-            # whichever was named, else the one most recently spoken to.
-            # Suppress that device's inbound mic while the announcement plays
-            # (+ tail) so the assistant can't hear itself and reply.
-            ser = self.websocket_handler.serializer_for(device_id)
-            import time as _t
-            if ser is not None:
-                ser.suppress_inbound_until = _t.monotonic() + 3600
-            try:
-                return await self.enrollment_conductor._say(text, device_id=device_id)
-            finally:
-                if ser is not None:
-                    ser.suppress_inbound_until = _t.monotonic() + 1.2
+        # Bana 0 speaks HA's confirmation through the same guarded lane.
+        self.websocket_handler.say = self._guarded_say
+        self._last_early_ack = None
+        self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
             and self.websocket_handler.resolve_device(device_id) is not None
@@ -458,10 +570,13 @@ class Application:
         # guarded announcer above; off unless both port and token are set.
         announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
         announce_token = os.environ.get("ANNOUNCE_TOKEN", "").strip()
+        # 127.0.0.1 when a reverse proxy in front is the only way in (US-014).
+        announce_host = os.environ.get("ANNOUNCE_HOST", "0.0.0.0")
         if announce_port and announce_token:
             await start_announce_server(
-                announce_port, announce_token, _guarded_say,
+                announce_port, announce_token, self._guarded_say,
                 lambda device_id: self.websocket_handler.resolve_device(device_id) is not None,
+                host=announce_host,
             )
         elif announce_port or announce_token:
             logger.warning("⚠️ announce endpoint needs BOTH announce_port and announce_token — disabled")
@@ -473,11 +588,11 @@ class Application:
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         self.gemini_model = os.environ.get("GEMINI_MODEL", "").strip()
         self.gemini_voice = os.environ.get("GEMINI_VOICE", "").strip()
-        # Gemini's own turn detection. Defaults match the OpenAI side's
-        # vad_eagerness="low": hard to start a turn, slow to end one. Left
-        # unconfigured, Google runs at HIGH and the assistant answers the room.
+        # Gemini's own turn detection: easy to start a turn (START LOW never
+        # opened one for most commands, 2026-10-02 -- see ProviderOptions),
+        # slow to end one.
         self.gemini_vad_start_sensitivity = (
-            os.environ.get("GEMINI_VAD_START_SENSITIVITY", "").strip() or "low"
+            os.environ.get("GEMINI_VAD_START_SENSITIVITY", "").strip() or "high"
         )
         self.gemini_vad_end_sensitivity = (
             os.environ.get("GEMINI_VAD_END_SENSITIVITY", "").strip() or "low"
@@ -494,6 +609,10 @@ class Application:
             )
         except ValueError:
             self.gemini_vad_silence_duration_ms = 800
+        try:
+            self.gemini_turn_silence_ms = int(os.environ.get("GEMINI_TURN_SILENCE_MS", "1200"))
+        except ValueError:
+            self.gemini_turn_silence_ms = 1200
         self.gemini_proactive_audio = (
             os.environ.get("GEMINI_PROACTIVE_AUDIO", "").strip().lower() == "true"
         )
@@ -524,6 +643,11 @@ class Application:
         self.enable_web_search = enable_web_search
         self.web_search_model = web_search_model
 
+        # After the keys and voices above: the warm-up reads them.
+        asyncio.ensure_future(self._warm_early_acks())
+        if ha_api.configured():
+            asyncio.ensure_future(self._idag_loop())
+
         logger.info("✅ Application initialized - ready to accept WebSocket connections")
     
     def _update_session_activity(self):
@@ -547,7 +671,7 @@ class Application:
         """
         from app.providers import GEMINI, ProviderOptions
 
-        instructions = self.instructions + memory_instructions()
+        instructions = self._instructions()
         if provider == GEMINI:
             return ProviderOptions(
                 api_key=self.gemini_api_key,
@@ -560,6 +684,7 @@ class Application:
                 gemini_vad_end_sensitivity=self.gemini_vad_end_sensitivity,
                 gemini_vad_prefix_padding_ms=self.gemini_vad_prefix_padding_ms,
                 gemini_vad_silence_duration_ms=self.gemini_vad_silence_duration_ms,
+                gemini_turn_silence_ms=self.gemini_turn_silence_ms,
                 gemini_proactive_audio=self.gemini_proactive_audio,
                 gemini_affective_dialog=self.gemini_affective_dialog,
             )
@@ -576,11 +701,53 @@ class Application:
             vad_threshold=self.vad_threshold,
             vad_prefix_padding_ms=self.vad_prefix_padding_ms,
             vad_silence_duration_ms=self.vad_silence_duration_ms,
-            semantic_vad_create_response=self.semantic_vad_create_response,
+            # Bana 0 on: the agent sends response.create itself, on a miss.
+            semantic_vad_create_response=self.semantic_vad_create_response and not self.bana0_stt,
             interrupt_response=self.interrupt_response,
             transcription_model=self.transcription_model,
             transcription_language=self.transcription_language,
         )
+
+    def _instructions(self) -> str:
+        """The system instruction, Idag block last (the time is rendered now)."""
+        return self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions() + self.idag.block()
+
+    async def _idag_loop(self) -> None:
+        """Keep the Idag block fresh: refetch, then let Gemini reconnect when quiet.
+
+        Every IDAG_REFRESH_SECONDS (600) the weather and calendar are
+        fetched again. A Gemini session gets the new block by reconnecting
+        (it renders its instruction on every connect; the resumption handle
+        keeps the conversation) -- only when its device has been idle, so a
+        turn is never cut. Nothing is pushed into a live session: a
+        mid-session session.update made OpenAI sessions deaf (D-70). OpenAI
+        sessions get the block when they are built, and nothing after.
+        """
+        from app.providers import GEMINI
+
+        every = _env_seconds("IDAG_REFRESH_SECONDS", 600.0)
+        tick = min(30.0, every)
+        follow_up_s = getattr(self.websocket_handler, "follow_up_ms", 0) / 1000.0
+        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0) + follow_up_s
+        fetched = float("-inf")
+        while True:
+            try:
+                if time.monotonic() - fetched >= every:
+                    await self.idag.refresh()
+                    fetched = time.monotonic()
+                for connection in list(self.websocket_handler.devices):
+                    service = connection.openai_service
+                    if connection.provider != GEMINI or service is None:
+                        continue
+                    if time.monotonic() - getattr(service, "instructions_at", 0.0) < every:
+                        continue
+                    if _device_idle(connection, quiet_s) and await service.refresh_instructions():
+                        logger.info(f"📅 Idag block refreshed for {connection.device_id} (reconnect)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"⚠️ Idag refresh failed: {e!r}")
+            await asyncio.sleep(tick)
 
     async def create_service(self, connection):
         """Create a voice-engine session for ONE device.
@@ -673,44 +840,18 @@ class Application:
             if self.mcp_client:
                 try:
                     logger.info("🔧 Fetching MCP tool definitions...")
-                    mcp_tools_schema = await self.mcp_client.get_tools_schema()
-                    
-                    # Convert MCP tool schemas to OpenAI format, applying the
-                    # optional allow-list so the realtime session isn't flooded
-                    # with ha-mcp's 80+ tools.
-                    exposed = 0
-                    for function_schema in mcp_tools_schema.standard_tools:
-                        if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
-                            continue
-                        if openclaw_url() and function_schema.name == "ask_openclaw":
-                            continue
-                        # Our play_media does the same job and can be told what
-                        # kind of thing to look for. Leaving both in place means
-                        # the model sometimes picks the one that answers "play
-                        # P3" with a Spotify track. See play_media_tool.
-                        if function_schema.name == "HassMediaSearchAndPlay":
-                            continue
-                        openai_tool = {
-                            "type": "function",
-                            "name": function_schema.name,
-                            "description": function_schema.description,
-                            "parameters": {
-                                "type": "object",
-                                "properties": function_schema.properties,
-                                "required": function_schema.required
-                            }
-                        }
-                        all_tools.append(openai_tool)
-                        exposed += 1
-
+                    mcp_tools_schema = await self._fetch_ha_tools_schema()
+                    ha_tools = self._ha_tool_definitions(mcp_tools_schema)
+                    all_tools.extend(ha_tools)
                     if self.mcp_tool_allowlist:
-                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {exposed} per allow-list")
+                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {len(ha_tools)} per allow-list")
                     else:
                         logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools")
                 except Exception as e:
+                    mcp_tools_schema = None
                     logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
             
-            from app.providers import build_service
+            from app.providers import GEMINI, build_service
 
             # The engine is decided exactly ONCE per connection, by
             # WebSocketHandler.serve_connection, before the transport is even
@@ -731,11 +872,22 @@ class Application:
                 f"🔧 Creating {provider} session with {len(all_tools)} tools: "
                 f"{[tool.get('name', 'unknown') for tool in all_tools]}"
             )
+            if self.idag.fetched_at is None and ha_api.configured():
+                # First session after a start, before _idag_loop's first fetch.
+                try:
+                    await asyncio.wait_for(self.idag.refresh(), 3.0)
+                except Exception as e:
+                    logger.warning(f"⚠️ Idag: no weather/calendar for this session ({e!r})")
+                options = self.provider_options(provider)
             service = build_service(provider, options, all_tools)
+            if provider == GEMINI:
+                # Rendered again on every (re)connect: a fresh time and block.
+                service.instructions_provider = self._instructions
             service.speaker_probe = None
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
+            service.early_ack = lambda started, recent=None, c=connection: self._early_ack(c, started, recent)
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -796,20 +948,15 @@ class Application:
 
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:
-                try:
-                    await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
-                    logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
-            # MUST come AFTER register_tools_schema: pipecat registers a handler
-            # for EVERY MCP tool (our allow-list/dedup only trims the definitions
-            # sent to the model, not handler registration), so a same-named
-            # ask_openclaw script silently rebinds the tool back onto the HA MCP
-            # path and its 60s cap. Observed live 2026-07-13: "It failed. I
-            # couldn't send the text" at exactly 60s — while the text sent fine.
-            if openclaw_url():
-                register_openclaw_tool(service)
-                logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+                await self._register_ha_handlers(service, mcp_tools_schema)
+            elif self.mcp_client:
+                # HA was down (restart) while this session was built. The
+                # connection can live for hours, so fetch again in the
+                # background rather than waiting for the device to reconnect
+                # (raawr D-70).
+                connection.ha_tools_task = asyncio.create_task(
+                    self._recover_ha_tools(connection, service)
+                )
             
             # Register service with session manager
             if client_id:
@@ -819,6 +966,245 @@ class Application:
 
             logger.info("✅ New session created")
             return service
+
+    async def _fetch_ha_tools_schema(self):
+        """Fetch HA's MCP tool schema, bounded.
+
+        pipecat's MCP client lets one read hang for up to 300 s. A Home
+        Assistant mid-restart held the pipeline lock and kept every new
+        session out for 35 min (2026-09-30), so give up after
+        MCP_TOOLS_TIMEOUT_SECONDS and let the caller go on without HA tools.
+
+        Returns:
+            The ToolsSchema. Raises on any failure, TimeoutError included.
+        """
+        try:
+            mcp_timeout = float(os.environ.get("MCP_TOOLS_TIMEOUT_SECONDS", "5"))
+        except ValueError:
+            mcp_timeout = 5.0
+        try:
+            return await asyncio.wait_for(
+                self.mcp_client.get_tools_schema(), timeout=mcp_timeout
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"no answer from Home Assistant in {mcp_timeout:g} s")
+
+    def _ha_tool_definitions(self, mcp_tools_schema) -> list:
+        """The HA tools the model gets to see, in OpenAI Realtime shape.
+
+        Only what tool_selection lets through (allow-list, deny-list), so the
+        session is not flooded with every intent HA exposes.
+        """
+        tools = []
+        for function_schema in mcp_tools_schema.standard_tools:
+            name = function_schema.name
+            # Allow/deny for what the model is offered: app/tool_selection.py.
+            if not tool_selection.shown(name, self.mcp_tool_allowlist):
+                continue
+            # Comms hands tools out as `<domain>__<name>`, HA itself bare.
+            base = name.rsplit("__", 1)[-1]
+            if openclaw_url() and base == "ask_openclaw":
+                continue
+            description = function_schema.description
+            if base == "GetLiveContext":
+                # Unfiltered it is the whole house, ~6,300 tokens re-billed on
+                # every later turn (see cap_tool_result).
+                description += (" ALWAYS filter by name, area or domain; unfiltered it "
+                                "is the whole house and gets cut off. For the time, use GetDateTime.")
+            tools.append({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": _compact_slots(name, function_schema.properties),
+                    "required": function_schema.required
+                }
+            })
+        return tools
+
+    async def _register_ha_handlers(self, service, mcp_tools_schema) -> None:
+        """Bind HA's MCP tools to `service`, then put the direct ask_openclaw back.
+
+        register_function keys by name, so running this twice replaces the
+        handlers rather than adding a second set.
+        """
+        try:
+            await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
+            logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
+        # MUST come AFTER register_tools_schema: pipecat registers a handler
+        # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+        # sent to the model, not handler registration), so a same-named
+        # ask_openclaw script silently rebinds the tool back onto the HA MCP
+        # path and its 60s cap. Observed live 2026-07-13: "It failed. I
+        # couldn't send the text" at exactly 60s — while the text sent fine.
+        if openclaw_url():
+            register_openclaw_tool(service)
+            logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+
+    async def _guarded_say(self, text, device_id=None, pace=True, pcm=None):
+        """The conductor's TTS lane, guarded so the device cannot hear itself.
+
+        Used by the announce endpoint and bana 0. NOT by timers: a timer
+        expiry is the bell alone, on the second (see app/timers.py).
+
+        Speaks on ONE device: the one named, else the one most recently
+        spoken to. Suppresses that device's inbound mic while the
+        announcement plays (+ tail) so the assistant can't hear itself and
+        reply, and marks the connection busy so the HA-recovery recycle
+        cannot cut it (raawr D-72).
+        """
+        connection = self.websocket_handler.resolve_device(device_id)
+        ser = self.websocket_handler.serializer_for(device_id)
+        if ser is not None:
+            ser.suppress_inbound_until = time.monotonic() + 3600
+        if connection is not None:
+            connection.says_playing += 1
+        tail = 1.2
+        try:
+            clip = {} if pcm is None else {"pcm": pcm}
+            if pace:
+                return await self.enrollment_conductor._say(text, device_id=device_id, **clip)
+            result = await self.enrollment_conductor._say(
+                text, device_id=device_id, pace=False, **clip
+            )
+            # Sent at once, so it is still playing: keep the mic shut until it is done.
+            tail += getattr(self.enrollment_conductor, "last_say_s", 0.0)
+            return result
+        finally:
+            if ser is not None:
+                ser.suppress_inbound_until = time.monotonic() + tail
+            if connection is not None:
+                connection.says_playing -= 1
+                connection.last_busy = time.monotonic()
+
+    async def _early_ack(self, connection, tool_started_at, recent=None) -> None:
+        """Say a short "jag kollar" while a slow tool or a silent model runs (tool_registration.py).
+
+        Out of band, through the guarded TTS lane: it never enters the
+        model's history and the mic stays shut while it plays. The clip is
+        fetched first (cached on disk after the first time) and the model is
+        checked once more, so an answer that started meanwhile is not talked
+        over.
+        """
+        text = pick_early_ack(self._last_early_ack)
+        self._last_early_ack = text
+        pcm = await self._ack_clip(getattr(connection, "provider", ""), text)
+        liveness = connection.turn_liveness
+        if liveness is not None and liveness.model_spoke_since(tool_started_at, recent):
+            logger.info("⏱ early ack dropped: the model is already talking")
+            return
+        logger.info(f"⏱ early ack: {text}")
+        await self._guarded_say(text, connection.device_id, pace=False, pcm=pcm)
+
+    async def _ack_clip(self, provider, text) -> bytes:
+        """The ack in the voice of the engine that answers (0.23.3).
+
+        Gemini: its own TTS with the session's prebuilt voice (Charon).
+        OpenAI: gpt-4o-mini-tts with the session's voice (cedar). A failed
+        render falls back to the conductor's old clip, once per phrase and
+        engine, and says so in the log.
+        """
+        from app.providers import GEMINI
+
+        clips = self._ack_clips
+        if (provider, text) in clips:
+            return clips[(provider, text)]
+        try:
+            if provider == GEMINI:
+                pcm = await gemini_tts(text, self.gemini_api_key, self.gemini_voice or "Charon")
+            else:
+                pcm = await self.enrollment_conductor._tts(text, voice=self.voice)
+        except Exception as e:
+            logger.warning(
+                f"⚠️ early ack '{text}' not rendered in {provider or 'openai'}'s voice "
+                f"({e!r}) — using the old clip"
+            )
+            pcm = await self.enrollment_conductor._tts(text)
+        clips[(provider, text)] = pcm
+        return pcm
+
+    async def _warm_early_acks(self) -> None:
+        """Render every ack once per configured engine, so the first slow tool is not slower."""
+        from app.providers import GEMINI, OPENAI
+
+        engines = [p for p, key in ((GEMINI, self.gemini_api_key), (OPENAI, self.openai_api_key)) if key]
+        for provider in engines:
+            for text in EARLY_ACK_PHRASES:
+                try:
+                    await self._ack_clip(provider, text)
+                except Exception as e:
+                    logger.warning(f"⚠️ early ack clip not cached: {e!r}")
+                    return
+
+    async def _recover_ha_tools(self, connection, service) -> None:
+        """Retry the HA tool fetch; once HA answers, recycle the connection.
+
+        Runs outside the pipeline lock, and each attempt keeps the fetch
+        timeout, so a turn never waits on HA. When HA is back the device's
+        socket is closed (normal close) as soon as the device is idle; the
+        firmware reconnects and create_service builds a fresh session with
+        the full tool list through the normal path. 0.21.1 pushed the tools
+        into the live OpenAI session instead (session.update), and live
+        2026-10-01 that left the session deaf until the device reconnected.
+
+        At most one recycle per device per MCP_RECYCLE_MIN_INTERVAL_SECONDS
+        (600): if HA flaps, keep fetching and recycle once the interval is
+        over. "Idle" includes announcements and the follow-up window
+        (_device_idle).
+
+        Cancelled by WebSocketHandler._teardown when the device disconnects.
+        """
+        retry_s = _env_seconds("MCP_TOOLS_RETRY_SECONDS", 15.0)
+        poll_s = _env_seconds("MCP_RECYCLE_POLL_SECONDS", 3.0)
+        follow_up_s = getattr(self.websocket_handler, "follow_up_ms", 0) / 1000.0
+        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0) + follow_up_s
+        min_interval_s = _env_seconds("MCP_RECYCLE_MIN_INTERVAL_SECONDS", 600.0)
+        device_id = connection.device_id
+        held_back = False
+        try:
+            while True:
+                await asyncio.sleep(retry_s)
+                if connection.openai_service is not service:
+                    return
+                try:
+                    schema = await self._fetch_ha_tools_schema()
+                except Exception as e:
+                    logger.debug(f"HA tools still unavailable for {device_id}: {e}")
+                    continue
+                since = time.monotonic() - self._last_recycle.get(device_id, float("-inf"))
+                if since < min_interval_s:
+                    # HA is flapping: keep fetching, recycle once the interval is over.
+                    if not held_back:
+                        logger.warning(
+                            f"⚠️ HA back, but {device_id} was recycled {since:.0f} s ago — "
+                            f"holding off until {min_interval_s:.0f} s have passed"
+                        )
+                        held_back = True
+                    continue
+                break
+            exposed = len(self._ha_tool_definitions(schema))
+            while not _device_idle(connection, quiet_s):
+                await asyncio.sleep(poll_s)
+                if connection.openai_service is not service:
+                    return
+            logger.info(
+                f"✅ HA back — recycling connection for {connection.device_id} "
+                f"to load {exposed} tools"
+            )
+            # Off the connection before closing: the close leads to
+            # _teardown, which would otherwise cancel this very task.
+            connection.ha_tools_task = None
+            self._last_recycle[device_id] = time.monotonic()
+            try:
+                await connection.websocket.close(code=1000)
+            except Exception as e:
+                logger.warning(f"⚠️ could not recycle {connection.device_id}'s connection: {e!r}")
+        finally:
+            if connection.ha_tools_task is asyncio.current_task():
+                connection.ha_tools_task = None
 
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
@@ -838,7 +1224,10 @@ class Application:
         Args:
             service: The freshly created service.
         """
-        if not (self.turn_detection_type == "semantic_vad" and self.semantic_vad_create_response):
+        # Bana 0 turns create_response off but still needs the pre-seed, or
+        # the first context makes pipecat greet the room.
+        if not (self.turn_detection_type == "semantic_vad"
+                and (self.semantic_vad_create_response or self.bana0_stt)):
             return
         try:
             from pipecat.processors.aggregators.llm_context import LLMContext

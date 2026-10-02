@@ -34,6 +34,31 @@ def _max_context_messages() -> int:
     return max(0, value)
 
 
+def add_history_cap(payload: dict) -> None:
+    """Cap the conversation OpenAI re-bills on every response.
+
+    gpt-realtime sends the whole conversation with each response, and the
+    account allows 40k tokens/min. `truncation.token_limits.post_instructions`
+    bounds everything after instructions+tools; retention_ratio 0.8 drops an
+    extra 20% when it cuts, so the cache is busted once rather than every
+    turn. REALTIME_HISTORY_TOKENS=0 leaves OpenAI's default (the model's full
+    window). pipecat 0.0.97's SessionProperties has no `truncation` field,
+    hence the payload edit.
+    """
+    if payload.get("type") != "session.update":
+        return
+    try:
+        limit = int(os.environ.get("REALTIME_HISTORY_TOKENS", "2500"))
+    except ValueError:
+        limit = 2500
+    if limit > 0:
+        payload.setdefault("session", {})["truncation"] = {
+            "type": "retention_ratio",
+            "retention_ratio": 0.8,
+            "token_limits": {"post_instructions": limit},
+        }
+
+
 class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
     """OpenAIRealtimeLLMService with audio-truncation-on-interruption disabled.
 
@@ -62,9 +87,28 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         # reconnect cycle can set, read, and clear, not incidental scratch
         # space. See _reseed_context_after_reset / _handle_evt_session_updated.
         self._pending_reseed_messages = None
+        # Bana 0 (raawr US-016): called on every end of a user turn when the
+        # fast path is configured. None = today's behaviour, nothing extra.
+        self.on_user_turn_end = None
+        self.on_user_turn_start = None  # plain callable, run before pipecat's handling
+        self._turn_end_task = None
 
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
+
+    async def _handle_evt_speech_started(self, evt):  # type: ignore[override]
+        if self.on_user_turn_start is not None:
+            self.on_user_turn_start()
+        await super()._handle_evt_speech_started(evt)
+
+    async def _handle_evt_speech_stopped(self, evt):  # type: ignore[override]
+        await super()._handle_evt_speech_stopped(evt)
+        if self.on_user_turn_end is not None:
+            # A task: the receive loop must keep reading while bana 0 runs.
+            # Bana 0 arms the silence ack itself, and only on a miss.
+            self._turn_end_task = asyncio.get_running_loop().create_task(self.on_user_turn_end())
+        else:
+            self.arm_silence_ack()
 
     async def send_client_event(self, event):  # type: ignore[override]
         """Serialize GPT transcription models with their required `languages` field.
@@ -75,6 +119,7 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         """
         payload = event.model_dump(exclude_none=True)
         transform_gpt_transcription_language(payload)
+        add_history_cap(payload)
         await self._ws_send(payload)
 
     # Per-response cost accounting (fork). The API reports exact token usage in
@@ -115,6 +160,34 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         except Exception as e:
             logger.debug(f"usage accounting failed: {e!r}")
         await super()._handle_evt_response_done(evt)
+
+    # Said when a reply stays rate limited after one retry. Short on purpose:
+    # it goes out as its own tiny out-of-band response, so it fits under the
+    # tokens-per-minute limit the full-context reply just hit.
+    RATE_LIMIT_FALLBACK = (
+        "Säg exakt detta på svenska och inget annat: "
+        "\"Jag är överbelastad just nu, fråga mig igen om en liten stund.\""
+    )
+
+    async def retry_response(self):
+        """Ask for the reply again after a rate limit (ConnectionRecovery)."""
+        if self._current_assistant_response is not None:
+            return  # a reply is already under way; do not collide with it
+        await self._create_response()
+
+    async def say_rate_limited(self):
+        """Speak the honest fallback, out of band, without the conversation."""
+        if not self._websocket:
+            raise RuntimeError("no OpenAI socket to speak through")
+        await self._ws_send({
+            "type": "response.create",
+            "response": {
+                "conversation": "none",
+                "input": [],
+                "output_modalities": ["audio"],
+                "instructions": self.RATE_LIMIT_FALLBACK,
+            },
+        })
 
     async def reset_conversation(self):  # type: ignore[override]
         """Reconnect WITHOUT forcing a response on the reconnected session.

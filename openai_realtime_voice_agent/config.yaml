@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (Raawr)
-version: "0.20.0"
+version: "0.24.1"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -62,10 +62,13 @@ options:
   # default is start=high, which answers room noise and the speaker's own echo
   # (live 2026-09-09). low/low is the equivalent of vad_eagerness: low on the
   # OpenAI side. Raise start to "high" only in a very quiet room.
-  gemini_vad_start_sensitivity: "low"
+  gemini_vad_start_sensitivity: "high"
   gemini_vad_end_sensitivity: "low"
   gemini_vad_prefix_padding_ms: 300
   gemini_vad_silence_duration_ms: 800
+  # The add-on's own turn detection (default since 0.22.5): silence that ends
+  # your turn. 800 cut questions off at every pause (2026-10-02).
+  gemini_turn_silence_ms: 1200
   # Google's own "was that meant for me?" judgement. Needs a native-audio
   # model (models/gemini-2.5-flash-native-audio-latest) — gemini-3.1-flash-live
   # does not support it, and the add-on refuses the combination rather than
@@ -155,6 +158,10 @@ options:
 
   ha_api_url: ""
   comms_nyckel: ""
+  # Bana 0 (raawr US-016): the local Wyoming STT as host:port. When set, a
+  # plain home command goes to HA's own agent (via raawr-comms) first and the
+  # model answers only if HA did not handle it. Empty = off.
+  bana0_stt: ""
   mcp_tool_allowlist: ""
   # Direct OpenClaw/agent escalation endpoint: POST {"question"} -> {"answer"}.
   # When set, ask_openclaw is called directly (up to ~2.5 min) instead of via
@@ -190,6 +197,7 @@ schema:
   gemini_vad_end_sensitivity: "list(low|high)"
   gemini_vad_prefix_padding_ms: int(0,2000)
   gemini_vad_silence_duration_ms: int(0,5000)
+  gemini_turn_silence_ms: int(300,5000)
   gemini_proactive_audio: bool
   gemini_affective_dialog: bool
   provider_cooldown_minutes: int(1,1440)
@@ -229,6 +237,7 @@ schema:
   male_only_tools: str
   ha_api_url: str
   comms_nyckel: password
+  bana0_stt: str
   mcp_tool_allowlist: str
   openclaw_url: str
   announce_port: int(0,65535)

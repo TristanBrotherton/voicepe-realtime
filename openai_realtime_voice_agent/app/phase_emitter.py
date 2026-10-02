@@ -89,9 +89,79 @@ class TurnLiveness:
     step of a long tool chain refreshes the window.
     """
 
+    # How long before a tool started the model's own speech still counts as
+    # "it already said something" for the early acknowledgement.
+    RECENT_BOT_S = 2.0
+
     def __init__(self) -> None:
         self.in_flight = 0
         self.last_activity = 0.0
+        # For the early acknowledgement (tool_registration.py): has the model's
+        # own audio started, and has this turn already had its "jag kollar".
+        self.bot_speaking = False
+        self.bot_started_at = float("-inf")
+        self.bot_stopped_at = float("-inf")
+        self.acked = False
+        # For the silence acknowledgement: a new utterance, or a turn that
+        # ended (idle, force_idle) after the model was asked, calls it off.
+        self.user_started_at = float("-inf")
+        self.turn_over_at = float("-inf")
+        # The device's {"type":"wake"} (websocket_handler._on_device_wake). A
+        # turn with no wake since the last idle came through the follow-up
+        # window. 0.0, not -inf: the first turn of a connection counts as woken.
+        self.woke_at = 0.0
+
+    def woke(self) -> None:
+        self.woke_at = time.monotonic()
+
+    def from_wake(self) -> bool:
+        """This turn began with a wake word, not in a follow-up window."""
+        return self.woke_at > self.turn_over_at
+
+    def bot_started(self) -> None:
+        self.bot_speaking = True
+        self.bot_started_at = time.monotonic()
+
+    def bot_stopped(self) -> None:
+        self.bot_speaking = False
+        self.bot_stopped_at = time.monotonic()
+
+    def turn_over(self) -> None:
+        self.acked = False
+        self.turn_over_at = time.monotonic()
+
+    def user_started(self) -> None:
+        """A real utterance: a new turn, with its own acknowledgement."""
+        self.user_started_at = time.monotonic()
+        self.acked = False
+
+    def no_ack(self) -> None:
+        """This stop is not a turn the model answers (dangling VAD, dead turn)."""
+        self.acked = True
+
+    def model_spoke_since(self, t: float, recent: float = None) -> bool:
+        """The model's audio is playing, or played within `recent` s before `t`."""
+        t -= self.RECENT_BOT_S if recent is None else recent
+        return self.bot_speaking or self.bot_started_at > t or self.bot_stopped_at > t
+
+    def claim_silence_ack(self, asked_at: float) -> bool:
+        """True once per turn, when nothing happened since the model was asked.
+
+        Nothing: no audio from the model, no new utterance, the turn not
+        over -- and no acknowledgement yet (a slow tool may have had it).
+        """
+        if (self.acked or self.model_spoke_since(asked_at, 0.0)
+                or self.user_started_at > asked_at or self.turn_over_at > asked_at):
+            return False
+        self.acked = True
+        return True
+
+    def claim_ack(self, tool_started_at: float) -> bool:
+        """True once per turn, and never when the model is already talking."""
+        if self.acked or self.model_spoke_since(tool_started_at):
+            return False
+        self.acked = True
+        return True
 
     def tool_started(self) -> None:
         self.in_flight += 1
@@ -165,6 +235,9 @@ class PhaseEmitter(FrameProcessor):
         self._idle_task = None
         self._watchdog_task = None
         self._current = None  # last phase actually sent, to dedupe redundant emits
+        # When the phase last turned "idle": the device opens its follow-up
+        # mic then, with no wake (raawr D-72, see main._device_idle).
+        self.idle_since = 0.0
         # Set by force_idle(): the turn was declared dead, so a VAD stop event
         # that is still in flight must NOT re-emit `thinking` and re-stick the
         # device. Cleared on the next real activity (user/bot speech start).
@@ -252,6 +325,11 @@ class PhaseEmitter(FrameProcessor):
         _emit_idle_after_debounce."""
         self._on_turn_success = callback
 
+    @property
+    def phase(self):
+        """The last phase sent to the device (None before the first)."""
+        return self._current
+
     def note_wake(self) -> None:
         """Device woke (or a follow-up window closed without speech). Until the
         next real UserStartedSpeaking, any UserStoppedSpeaking is a dangling
@@ -293,6 +371,9 @@ class PhaseEmitter(FrameProcessor):
         # UserStartedSpeaking never coincides with queued TTS).
         if value == self._current and value != "listening":
             return
+        if value == "idle":
+            self.idle_since = time.monotonic()
+            self._liveness.turn_over()
         self._current = value
         logger.info(f"📞 phase -> {value}")  # TEMP instrumentation
         if self._send_phase is not None:
@@ -429,6 +510,7 @@ class PhaseEmitter(FrameProcessor):
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.
             self._speech_since_wake = True
+            self._liveness.user_started()
             if self._on_real_speech is not None:
                 self._on_real_speech()
             self._cancel_pending_idle()
@@ -451,15 +533,18 @@ class PhaseEmitter(FrameProcessor):
                 # thinking AND cancel the garbage response the server auto-creates
                 # for the (empty) committed turn.
                 logger.info("📞 'thinking' suppressed + kill armed — dangling VAD (no speech since wake)")
+                self._liveness.no_ack()
                 if self._on_dangling_stop is not None:
                     self._on_dangling_stop()
             elif self._suppress_thinking:
                 # A VAD stop raced a turn-death force_idle — stay idle.
                 logger.info("📞 phase 'thinking' suppressed (turn already declared dead)")
+                self._liveness.no_ack()
             else:
                 await self._emit("thinking")
                 self._arm_watchdog()
         elif isinstance(frame, BotStartedSpeakingFrame):
+            self._liveness.bot_started()
             self._suppress_thinking = False
             self._model_turn_open = True
             self._cancel_pending_idle()
@@ -468,6 +553,7 @@ class PhaseEmitter(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self.note_engine_turn_complete()
         elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._liveness.bot_stopped()
             # Don't go idle immediately — TTS comes in segments. Only emit idle
             # if the bot stays silent for the debounce window.
             self._cancel_pending_idle()

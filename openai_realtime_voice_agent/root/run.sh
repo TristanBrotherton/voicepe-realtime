@@ -13,6 +13,7 @@ GEMINI_VAD_START_SENSITIVITY=$(bashio::config 'gemini_vad_start_sensitivity')
 GEMINI_VAD_END_SENSITIVITY=$(bashio::config 'gemini_vad_end_sensitivity')
 GEMINI_VAD_PREFIX_PADDING_MS=$(bashio::config 'gemini_vad_prefix_padding_ms')
 GEMINI_VAD_SILENCE_DURATION_MS=$(bashio::config 'gemini_vad_silence_duration_ms')
+GEMINI_TURN_SILENCE_MS=$(bashio::config 'gemini_turn_silence_ms')
 GEMINI_PROACTIVE_AUDIO=$(bashio::config 'gemini_proactive_audio')
 GEMINI_AFFECTIVE_DIALOG=$(bashio::config 'gemini_affective_dialog')
 PROVIDER_COOLDOWN_MINUTES=$(bashio::config 'provider_cooldown_minutes')
@@ -53,6 +54,7 @@ NOISE_REDUCTION=$(bashio::config 'noise_reduction')
 # --- 🏠 Home Assistant ---
 HA_API_URL=$(bashio::config 'ha_api_url')
 COMMS_NYCKEL=$(bashio::config 'comms_nyckel')
+BANA0_STT=$(bashio::config 'bana0_stt')
 MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
 OPENCLAW_URL=$(bashio::config 'openclaw_url')
 ANNOUNCE_PORT=$(bashio::config 'announce_port')
@@ -84,6 +86,7 @@ export GEMINI_VAD_START_SENSITIVITY
 export GEMINI_VAD_END_SENSITIVITY
 export GEMINI_VAD_PREFIX_PADDING_MS
 export GEMINI_VAD_SILENCE_DURATION_MS
+export GEMINI_TURN_SILENCE_MS
 export GEMINI_PROACTIVE_AUDIO
 export GEMINI_AFFECTIVE_DIALOG
 export PROVIDER_COOLDOWN_MINUTES
@@ -114,6 +117,7 @@ export OUTPUT_LEAD_BUFFER_MS
 export NOISE_REDUCTION
 export HA_API_URL
 export COMMS_NYCKEL
+export BANA0_STT
 export MCP_TOOL_ALLOWLIST
 export OPENCLAW_URL
 export ANNOUNCE_PORT

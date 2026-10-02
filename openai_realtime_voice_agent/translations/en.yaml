@@ -173,6 +173,12 @@ configuration:
     description: >-
       The key raawr-comms handed this add-on (COMMS_KONTORET_NYCKEL in comms'
       environment). Not a Home Assistant token.
+  bana0_stt:
+    name: "🏠 Home Assistant · Fast path STT (bana 0)"
+    description: >-
+      host:port of a local Wyoming speech-to-text. When set, plain home
+      commands go to Home Assistant's own agent first and the model answers
+      only what HA did not handle. Empty = off.
   mcp_tool_allowlist:
     name: "🏠 Home Assistant · Tool allow-list"
     description: >-
@@ -304,11 +310,13 @@ configuration:
   gemini_vad_start_sensitivity:
     name: "🔀 Voice engine · Gemini: how easily a turn STARTS"
     description: >-
-      How little sound Gemini needs before it decides you are talking to it.
-      "low" needs clear speech and is the right value in a normal room —
-      Google's own default is "high", and on a speaker that hears its own
-      voice that means the assistant answers music, background talk and its
-      own echo. Only pick "high" in a quiet room where it keeps missing you.
+      Only used if the add-on's own turn detection (Silero) cannot load —
+      by default the add-on decides turns itself. How little sound Gemini
+      needs before it decides you are talking to it. "high" (the default) hears the person who just woke the device. "low"
+      measurably did not: on the office Voice PE it opened one turn for seven
+      things said to it, so the assistant sat silent until cancelled. Pick
+      "low" only if Gemini starts answering background noise inside the
+      follow-up window.
   gemini_vad_end_sensitivity:
     name: "🔀 Voice engine · Gemini: how easily a turn ENDS"
     description: >-
@@ -328,6 +336,12 @@ configuration:
       finished and answers. 800 lets you think for a moment. Lower it for
       snappier replies, raise it if it interrupts you while you are still
       talking.
+  gemini_turn_silence_ms:
+    name: "🔀 Voice engine · Gemini: pause that ends your turn (ms)"
+    description: >-
+      The add-on detects your speech itself and tells Gemini when your turn
+      is over. This is how long you may pause before it does. 1200 lets you
+      stop and think mid-question; lower it for snappier replies.
   gemini_proactive_audio:
     name: "🔀 Voice engine · Gemini: decide for itself when it was spoken to"
     description: >-

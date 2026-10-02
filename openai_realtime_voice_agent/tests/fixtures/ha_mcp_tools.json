@@ -1,0 +1,1116 @@
+[
+ {
+  "name": "assist_satellite__HassBroadcast",
+  "description": "Broadcast a message through the home",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "message": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "climate__HassClimateSetTemperature",
+  "description": "Sets the target temperature of a climate device or entity",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "temperature": {
+     "type": "number"
+    },
+    "area": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "homeassistant__GetLiveContext",
+  "description": "Provides real-time information about the CURRENT state, value, or mode of devices, sensors, entities, or areas. Use this tool for: 1. Answering questions about current conditions (e.g., 'Is the light on?'). 2. As the first step in conditional actions (e.g., 'If the weather is rainy, turn off sprinklers' requires checking the weather first). You may filter for devices by name, domain, and area, including combining those filters. Prefer filtering by domain when searching for multiple devices of the same type.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Filter entities by name or alias (case-insensitive)."
+    },
+    "domain": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      }
+     ],
+     "description": "Filter entities by domain (e.g. 'light', 'sensor'). Accepts a single domain or a list."
+    },
+    "area": {
+     "type": "string",
+     "description": "Filter entities by area name or alias (case-insensitive)."
+    }
+   }
+  }
+ },
+ {
+  "name": "intent__HassTurnOn",
+  "description": "Turns on/opens/presses a device or entity. For locks, this performs a 'lock' action. Use for requests like 'turn on', 'activate', 'enable', or 'lock'.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector",
+       "identify",
+       "restart",
+       "update",
+       "awning",
+       "blind",
+       "curtain",
+       "damper",
+       "door",
+       "garage",
+       "gate",
+       "shade",
+       "shutter",
+       "window",
+       "water",
+       "gas",
+       "outlet",
+       "switch"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "intent__HassTurnOff",
+  "description": "Turns off/closes a device or entity. For locks, this performs an 'unlock' action. Use for requests like 'turn off', 'deactivate', 'disable', or 'unlock'.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector",
+       "identify",
+       "restart",
+       "update",
+       "awning",
+       "blind",
+       "curtain",
+       "damper",
+       "door",
+       "garage",
+       "gate",
+       "shade",
+       "shutter",
+       "window",
+       "water",
+       "gas",
+       "outlet",
+       "switch"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "intent__HassSetPosition",
+  "description": "Sets the position of a device or entity",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "awning",
+       "blind",
+       "curtain",
+       "damper",
+       "door",
+       "garage",
+       "gate",
+       "shade",
+       "shutter",
+       "window",
+       "water",
+       "gas"
+      ]
+     }
+    },
+    "position": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 100
+    }
+   }
+  }
+ },
+ {
+  "name": "intent__HassStopMoving",
+  "description": "Stops a moving device or entity",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "awning",
+       "blind",
+       "curtain",
+       "damper",
+       "door",
+       "garage",
+       "gate",
+       "shade",
+       "shutter",
+       "window",
+       "water",
+       "gas"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "intent__HassCancelAllTimers",
+  "description": "Cancels all timers",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "area": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "intent_script__RaawrHubVisa",
+  "description": "Execute Home Assistant RaawrHubVisa intent",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "intent_script__RaawrHubAterstall",
+  "description": "Execute Home Assistant RaawrHubAterstall intent",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "intent_script__RaawrVolym",
+  "description": "Execute Home Assistant RaawrVolym intent",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "light__HassLightSet",
+  "description": "Sets the brightness percentage or color of a light",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "light"
+      ]
+     }
+    },
+    "color": {
+     "type": "string"
+    },
+    "temperature": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "brightness": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "The brightness percentage of the light between 0 and 100, where 0 is off and 100 is fully lit"
+    }
+   }
+  }
+ },
+ {
+  "name": "llm__GetDateTime",
+  "description": "Provides the current date and time.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "media_player__HassMediaUnpause",
+  "description": "Resumes a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaPause",
+  "description": "Pauses a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaNext",
+  "description": "Skips a media player to the next item",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaPrevious",
+  "description": "Replays the previous item for a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassSetVolume",
+  "description": "Sets the volume percentage of a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    },
+    "volume_level": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "The volume percentage of the media player"
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassSetVolumeRelative",
+  "description": "Increases or decreases the volume of a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "volume_step": {
+     "anyOf": [
+      {
+       "type": "string",
+       "enum": [
+        "down",
+        "up"
+       ]
+      },
+      {
+       "type": "integer",
+       "minimum": -100,
+       "maximum": 100
+      }
+     ]
+    },
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaPlayerMute",
+  "description": "Mutes a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    },
+    "is_volume_muted": {
+     "description": "Whether the media player should be muted or unmuted",
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaPlayerUnmute",
+  "description": "Unmutes a media player",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    },
+    "domain": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "media_player"
+      ]
+     }
+    },
+    "device_class": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "tv",
+       "speaker",
+       "receiver",
+       "projector"
+      ]
+     }
+    },
+    "is_volume_muted": {
+     "description": "Whether the media player should be muted or unmuted",
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "media_player__HassMediaSearchAndPlay",
+  "description": "Searches for media and plays the first result",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "search_query": {
+     "type": "string"
+    },
+    "media_class": {
+     "type": "string",
+     "enum": [
+      "album",
+      "app",
+      "artist",
+      "channel",
+      "composer",
+      "contributing_artist",
+      "directory",
+      "episode",
+      "game",
+      "genre",
+      "image",
+      "movie",
+      "music",
+      "playlist",
+      "podcast",
+      "season",
+      "track",
+      "tv_show",
+      "url",
+      "video"
+     ]
+    },
+    "name": {
+     "type": "string"
+    },
+    "area": {
+     "type": "string"
+    },
+    "floor": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "script__kalenderaktivitet",
+  "description": "Lägg in en AKTIVITET i kalendern — något som HÄNDER vid en tidpunkt och som man ska vara på plats för: möten, träning, matcher, tandläkare, resor, middagar, besök, hämtning och lämning. ANVÄND DEN HÄR så fort han säger när något ska ske, t.ex. \"match med laget på lördag 14:00\", \"tandläkare imorgon nio\", \"vi ska till Stockholm på torsdag\", \"middag med Kalle på fredag\". ANVÄND INTE för saker som ska HANDLAS — de ska på Inköpslistan. ANVÄND INTE för sådant han ska komma ihåg att GÖRA, t.ex. \"påminn mig att betala räkningen\" eller \"vi behöver köpa ny tvättmaskin\" — det är anteckning_med_tid respektive anteckningslistan. Kvittera med EN kort mening när det gått igenom.. Aliases: ['Aktivitet i kalendern']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "namn": {
+     "type": "string",
+     "description": "Vad som händer, UTAN tidsangivelse i texten. T.ex. \"Match med laget\", inte \"Match med laget på lördag\"."
+    },
+    "borjar": {
+     "type": "string",
+     "description": "Absolut starttid i exakt formatet YYYY-MM-DDTHH:MM:SS i lokal tid, t.ex. 2026-08-16T14:00:00. Skriv ALDRIG \"imorgon\" eller \"lördag\" här — räkna ut det absoluta datumet utifrån raden \"Idag:\" i systemprompten, som alltid är aktuell. Saknas klockslag, använd 09:00:00."
+    },
+    "langd_minuter": {
+     "type": "number",
+     "minimum": 5.0,
+     "maximum": 1440.0,
+     "description": "Hur länge det håller på. Utelämna när han inte sagt något — då blir det en timme. Sätt 1440 för något som pågår hela dagen."
+    },
+    "plats": {
+     "type": "string",
+     "description": "Var det äger rum, om han nämner det. Kallers utelämnas."
+    },
+    "kalender": {
+     "type": "string",
+     "enum": [
+      "calendar.familj",
+      "calendar.agaren_privat_mail_com"
+     ],
+     "description": "calendar.familj = gemensamma familjeaktiviteter (standard, använd den om inget annat sägs). calendar.agaren_privat_mail_com = bara hans egna."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__anteckning_med_tid",
+  "description": "Lägg till en PÅMINNELSE eller uppgift MED datum och tid på Ägarens anteckningslista — något han ska komma ihåg att GÖRA, t.ex. \"påminn mig att betala räkningen på fredag\" eller \"boka om tandläkartiden nästa vecka\". ANVÄND INTE för aktiviteter som HÄNDER vid en tidpunkt och som man ska vara på plats för — möte, match, träning, tandläkarbesök, resa, middag. De ska till kalendern med verktyget kalenderaktivitet. För påminnelser helt utan tidpunkt, använd HassListAddItem i stället.. Aliases: ['Anteckning med tid']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "namn": {
+     "type": "string",
+     "description": "Vad som ska hända, UTAN tidsangivelse i texten. T.ex. \"Match med laget\"."
+    },
+    "lista": {
+     "type": "string",
+     "enum": [
+      "todo.anteckningar",
+      "todo.inkopslista"
+     ],
+     "description": "Vilken lista posten ska på. todo.anteckningar = påminnelser och generella saker att komma ihåg, INKLUSIVE större inköp som \"vi behöver ny tvättmaskin\" (standard om inget annat sägs). todo.inkopslista = sådant som ska handlas hem, alltså mat, dryck och förbrukningsvaror."
+    },
+    "forfaller": {
+     "type": "string",
+     "description": "Absolut tidpunkt i exakt formatet YYYY-MM-DDTHH:MM:SS i lokal tid, t.ex. 2026-08-08T14:00:00. Skriv ALDRIG \"imorgon\" eller \"lördag\" här — räkna ut det absoluta datumet utifrån raden \"Idag:\" i systemprompten, som alltid är aktuell. Saknas klockslag, använd 09:00:00."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__delegera_till_raawr",
+  "description": "Skicka en uppgift till raawr som utför den i bakgrunden och ropar ut svaret här i huset när den är klar. Använd för ARBETE som ska tas fram och tar mer än några sekunder: efterforskning, sammanställningar, dokument som ska skrivas, kodändringar, längre utredningar. Använd det ALDRIG för en fråga du kan besvara själv — svaret dröjer en minut eller mer, så en delegerad fråga är sämre än ett direkt svar. NÄR DU HAR SKICKAT: kvittera med EN mening — att det är igång och att du hör av dig när det är klart. Lova ingen tidpunkt. Ställ ingen följdfråga och håll inte samtalet öppet: svaret ropas ut i rummet av sig självt när det är klart. Sen är du klar, prata inte vidare.. Aliases: ['Delegera till raawr']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "uppgift": {
+     "type": "string",
+     "description": "Hela uppgiften formulerad som en fullständig instruktion, med allt sammanhang som behövs. Mottagaren ser inte samtalet, bara den här texten."
+    },
+    "titel": {
+     "type": "string",
+     "description": "Kort rubrik på uppgiften, 2-4 ord i bestämd form. Den läses upp högt när jobbet är klart, i meningen \"Klart med ___. Det ligger i raawr.\" Skriv den så att den meningen låter naturlig. T.ex. \"ZFS-dokumentet\", \"Plex-utredningen\", \"sammanställningen om TCP och UDP\"."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__1557266572879",
+  "description": "Aliases: ['Homekit start']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1559850838286",
+  "description": "Aliases: ['Skicka hem Robot']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__skicka_till_mig",
+  "description": "Skickar text till Ägarens Telegram. For sadant han vill kunna kopiera eller trycka pa efterat. Ett svar pa en fraga sager du - det skickar du inte.\n⚠️ SKICKAR DU EN ADRESS: anvand faltet \"adress\", inte \"text\". Skriptet lagger da till Apple Maps-lanken sjalvt, i ratt form. Skriv aldrig kartlanken for hand - ?q= ser ratt ut men ger ett kartkort som visar LONDON oavsett adress (verifierat pa fyra meddelanden 2026-09-10). Faltet gor det ratt at dig.\n⚠️ REN TEXT. Ingen markdown, ingen HTML, inga * _ < >. Telegram avvisar HELA meddelandet om formateringen inte gar ihop och det forsvinner tyst. Nakna lankar blir tryckbara anda - skriv dem pa egen rad.\nCHAT-ID AR HARDKODAT (1234567890 = Ägaren). Avsiktligt: ett id till ar ett nytt skript, inte en parameter - annars kan en sprakmodell valja mottagare, och da kan den valja fel person. Se services/telegram-brygga.md.. Aliases: ['Skicka till mig i Telegram']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "text": {
+     "type": "string",
+     "description": "Ren text att skicka. Utelamnas om du bara skickar en adress."
+    },
+    "adress": {
+     "type": "string",
+     "description": "En gatuadress. Skriptet lagger till Apple Maps-lanken sjalvt - skriv BARA adressen, ingen lank."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__1559849518594",
+  "description": "Aliases: ['Städa Barn1s Rum']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1560157469881",
+  "description": "Aliases: ['Städa Kontor']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1559763419170",
+  "description": "Aliases: ['Städa Köket']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1560081785838",
+  "description": "Aliases: ['Städa Barn2s rum']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1560157376429",
+  "description": "Aliases: ['Städa Sovrummet']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1559848799861",
+  "description": "Aliases: ['Städa hallen']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1560157870173",
+  "description": "Aliases: ['Städa lekrummet']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1559849102426",
+  "description": "Aliases: ['Städa matplatsen']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__1559738227957",
+  "description": "Aliases: ['Städa vardagsrum']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__kalender_sok",
+  "description": "Hitta vad som redan står i kalendern. Kör ALLTID den här INNAN du ändrar eller tar bort något — id:na den ger är de enda som fungerar, och ett påhittat id avvisas. Använd den också när han frågar vad som är inbokat, vad som händer i helgen eller om han har något på en viss dag. Utan tidsspann söks de kommande fyra veckorna.. Aliases: ['Sök i kalendern']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "fritext": {
+     "type": "string",
+     "description": "Ord ur titeln, t.ex. \"tandläkare\". Utelämna för allt i spannet."
+    },
+    "fran": {
+     "type": "string",
+     "description": "Tidigaste dag, YYYY-MM-DD. Räkna ut datumet ur raden \"Idag:\" i systemprompten. Standard är idag."
+    },
+    "till": {
+     "type": "string",
+     "description": "Senaste dag, YYYY-MM-DD. Standard är fyra veckor fram."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__kalender_ta_bort",
+  "description": "Ta bort något ur kalendern. Kräver ett id från kalender_sok, så sök först. Går inte att ångra.. Aliases: ['Ta bort en kalenderhändelse']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "Id från kalender_sok, t.ex. k1. Hitta ALDRIG på ett."
+    }
+   }
+  }
+ },
+ {
+  "name": "script__vaderprognos",
+  "description": "Hämtar väderprognosen för de kommande dagarna från SMHI. Använd detta när någon frågar om vädret framåt i tiden - imorgon, i helgen, resten av veckan. För vädret just nu behövs inte detta verktyg, då räcker väderentiteten.. Aliases: ['Väderprognos']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "script__kalender_andra",
+  "description": "Flytta eller ändra något som REDAN står i kalendern — ny tid, ny titel eller ny plats. Kräver ett id från kalender_sok, så sök först. Skicka bara de fält som faktiskt ska ändras; resten lämnas orört och händelsen behåller sina gäster och påminnelser.. Aliases: ['Ändra en kalenderhändelse']",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "Id från kalender_sok, t.ex. k1. Hitta ALDRIG på ett."
+    },
+    "namn": {
+     "type": "string",
+     "description": "Bara om titeln ska ändras."
+    },
+    "borjar": {
+     "type": "string",
+     "description": "YYYY-MM-DDTHH:MM:SS i lokal tid, UTAN tidszon eller Z. Räkna ut datumet ur raden \"Idag:\" i systemprompten. Längden följer med om du utelämnar langd_minuter."
+    },
+    "langd_minuter": {
+     "type": "number",
+     "minimum": 5.0,
+     "maximum": 1440.0,
+     "description": "Minuter. Fungerar både ihop med borjar och ensam."
+    },
+    "plats": {
+     "type": "string",
+     "description": "Ny plats"
+    }
+   }
+  }
+ },
+ {
+  "name": "todo__get_items",
+  "description": "Query a to-do list to find out what items are on it. Use this to answer questions like 'What's on my task list?' or 'Read my grocery list'. Filters items by status (needs_action, completed, all).",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "todo_list": {
+     "type": "string",
+     "enum": [
+      "anteckningarna",
+      "att göra-listan",
+      "kom ihåg-listan",
+      "todolistan",
+      "inköpslistan",
+      "handlingslistan",
+      "handellistan",
+      "shoppinglistan",
+      "matlistan",
+      "affärslistan"
+     ]
+    },
+    "status": {
+     "type": "string",
+     "enum": [
+      "needs_action",
+      "completed",
+      "all"
+     ],
+     "description": "Filter returned items by status, by default returns incomplete items",
+     "default": "needs_action"
+    }
+   }
+  }
+ },
+ {
+  "name": "todo__HassListAddItem",
+  "description": "Add item to a todo list",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "item": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "todo__HassListCompleteItem",
+  "description": "Complete item on a todo list",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "item": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    }
+   }
+  }
+ },
+ {
+  "name": "todo__HassListRemoveItem",
+  "description": "Remove one or more items from a todo list",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "item": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    }
+   }
+  }
+ }
+]

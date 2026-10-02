@@ -110,6 +110,15 @@ class DeviceConnection:
     # WebSocketHandler._publish_provider_status itself once the publish is
     # actually done, so nothing keeps a finished task referenced forever.
     provider_status_task: Any = None
+    # Background retry of HA's tool list when HA was down as this session
+    # was built (Application._recover_ha_tools). Cancelled in
+    # WebSocketHandler._teardown so it never outlives the device.
+    ha_tools_task: Any = None
+    # Announcements playing on this device right now, and when the last one
+    # ended (Application._guarded_say). They have no phase and no wake, so
+    # without these the HA-recovery recycle could cut one off (raawr D-72).
+    says_playing: int = 0
+    last_busy: float = 0.0
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""

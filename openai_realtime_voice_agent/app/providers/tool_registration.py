@@ -9,9 +9,78 @@ Same for `GetLiveContext` and `vaderprognos`, all evening.
 Keeping it in one mixin is the point. A rule that has to be remembered twice
 is a rule that protects one engine.
 """
+import asyncio
+import json
 import logging
+import os
+import time
 
 logger = logging.getLogger(__name__)
+
+
+def _result_max_chars() -> int:
+    try:
+        return max(0, int(os.environ.get("TOOL_RESULT_MAX_CHARS", "6000")))
+    except ValueError:
+        return 6000
+
+
+def cap_tool_result(result, max_chars: int):
+    """Shorten a tool result that would flood the conversation.
+
+    Every later turn re-bills everything in the conversation. One unfiltered
+    GetLiveContext is the whole house, 16 kB / ~6,300 tokens: measured live
+    2026-10-02, a turn went 8,767 -> 15,026 input tokens and the next
+    sentence hit the 40k TPM limit. 6,000 chars still fits a whole-domain
+    query (all lights: 5.1 kB). The note tells the model how to get the rest.
+    """
+    if not max_chars or result is None:
+        return result
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return result
+    cut = text[:max_chars]
+    cut = cut[: max(cut.rfind("\n"), cut.rfind("\\n"), max_chars // 2)]
+    return (cut + f"\n[TRUNCATED: {len(text) - len(cut)} of {len(text)} characters cut. "
+            "Ask again with a narrower filter (name, area or domain).]")
+
+
+def _early_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_MS", "700")))
+    except ValueError:
+        return 700
+
+
+def _silence_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_SILENCE_MS", "1500")))
+    except ValueError:
+        return 1500
+
+
+def _followup_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_FOLLOWUP_MS", "3000")))
+    except ValueError:
+        return 3000
+
+
+def ack_delay_ms(wake_ms: int, liveness) -> int:
+    """How long to wait before "jag kollar" in this turn; 0 = never.
+
+    The owner, 2026-10-02 21:16: the ack is good on the first question after
+    the wake word, not on follow-ups in the same conversation, unless the wait
+    is really long. A follow-up turn (no wake since the last idle) waits
+    EARLY_ACK_FOLLOWUP_MS (3000, 0 = never) for both triggers.
+    """
+    if wake_ms <= 0 or liveness is None or liveness.from_wake():
+        return wake_ms
+    return _followup_ack_ms()
+
+
+def _is_error(result) -> bool:
+    return isinstance(result, dict) and "error" in result
 
 
 class ToolRegistrationMixin:
@@ -27,6 +96,45 @@ class ToolRegistrationMixin:
     speaker_probe = None
     male_only_tools: set = set()
     turn_liveness = None
+    # async (started, recent=None) -> None: speaks a short "jag kollar" on this connection's
+    # device. Set by main.py; None (tests, no device) means stay silent.
+    early_ack = None
+    _silence_ack_task = None
+
+    def arm_silence_ack(self) -> None:
+        """The model was just handed the user's turn; fill a long silence.
+
+        Called where each engine is asked to answer: Gemini's activityEnd,
+        OpenAI's speech_stopped (or bana 0's miss). Never on a bana 0 hit,
+        which never asks the model. Live 2026-10-02 15:19:44 Gemini took
+        3.7 s to its function call and 5.5 s to its first audio, and the
+        tool ack never fired because the tool itself took 0.2 s. If the
+        model has said nothing after EARLY_ACK_SILENCE_MS (1500, 0 = off),
+        the same early ack plays: once per turn, never over the model's own
+        audio or a new utterance, never in its history.
+        """
+        self.cancel_silence_ack()
+        ms = ack_delay_ms(_silence_ack_ms(), self.turn_liveness)
+        if self.early_ack is None or ms <= 0:
+            return
+        asked = time.monotonic()
+
+        async def ack_if_silent():
+            await asyncio.sleep(ms / 1000.0)
+            liveness = self.turn_liveness
+            if liveness is None or not liveness.claim_silence_ack(asked):
+                return
+            try:
+                await self.early_ack(asked, 0.0)
+            except Exception as e:
+                logger.warning(f"⚠️ silence ack failed: {e!r}")
+
+        self._silence_ack_task = asyncio.ensure_future(ack_if_silent())
+
+    def cancel_silence_ack(self) -> None:
+        if self._silence_ack_task is not None:
+            self._silence_ack_task.cancel()
+            self._silence_ack_task = None
 
     def register_function(self, function_name, handler, start_callback=None, *,
                           cancel_on_interruption: bool = True):  # type: ignore[override]
@@ -59,29 +167,84 @@ class ToolRegistrationMixin:
         inspects the signature to pick the calling convention).
         """
         async def liveness_tracked(params):
-            # Speaker gate (fork): tools listed in male_only_tools only execute
-            # when the last voice-type verdict is "male". Enforced HERE — below
-            # the model — so prompt tricks can't bypass it. Fails closed on
-            # uncertain/stale/absent verdicts. This is convenience gating on a
-            # voice-type heuristic, not biometric auth.
-            if self.male_only_tools and function_name in self.male_only_tools:
-                speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
-                if speaker != "male":
-                    owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
-                    logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
-                    await params.result_callback({
-                        "error": (
-                            f"Not available: this capability is reserved for {owner}, "
-                            f"and the current speaker's voice was not recognized as {owner}. "
-                            f"Relay this politely."
-                        )
-                    })
+            # One line per call, every engine, every tool (MCP included):
+            # `⏱ tool <name> <ms> ok|fel`, timed to the moment the result is
+            # handed back -- that is what the person in the room waits for.
+            started = time.monotonic()
+            logged = False
+            ack_speaking = False
+
+            def log_timing(status: str) -> None:
+                nonlocal logged
+                if not logged:
+                    logged = True
+                    ms = round((time.monotonic() - started) * 1000)
+                    logger.info(f"⏱ tool {function_name} {ms} {status}")
+
+            async def ack_if_slow():
+                # The owner, 2026-10-02: a smart agent says it has understood
+                # but needs to check, instead of going quiet. Fast tools (HA:
+                # 0.1-0.8 s) finish before this fires and stay silent.
+                nonlocal ack_speaking
+                await asyncio.sleep(ack_ms / 1000.0)
+                liveness = self.turn_liveness
+                if liveness is not None and not liveness.claim_ack(started):
                     return
+                ack_speaking = True
+                try:
+                    await self.early_ack(started)
+                except Exception as e:
+                    logger.warning(f"⚠️ early ack failed: {e!r}")
+
+            ack_task = None
+            ack_ms = ack_delay_ms(_early_ack_ms(), self.turn_liveness)
+            if self.early_ack is not None and ack_ms > 0:
+                ack_task = asyncio.ensure_future(ack_if_slow())
+
+            def stop_waiting_ack() -> None:
+                # Only a pending ack is dropped; one already speaking finishes
+                # its sentence (the device queues the reply after it).
+                if ack_task is not None and not ack_speaking:
+                    ack_task.cancel()
+
+            # Capped here, below every engine and every tool, MCP included.
+            original_callback = params.result_callback
+            max_chars = _result_max_chars()
+
+            async def capped_callback(result, *args, **kwargs):
+                stop_waiting_ack()
+                log_timing("fel" if _is_error(result) else "ok")
+                return await original_callback(cap_tool_result(result, max_chars), *args, **kwargs)
+
+            params.result_callback = capped_callback
             if self.turn_liveness is not None:
                 self.turn_liveness.tool_started()
             try:
+                # Speaker gate (fork): tools listed in male_only_tools only execute
+                # when the last voice-type verdict is "male". Enforced HERE — below
+                # the model — so prompt tricks can't bypass it. Fails closed on
+                # uncertain/stale/absent verdicts. This is convenience gating on a
+                # voice-type heuristic, not biometric auth.
+                if self.male_only_tools and function_name in self.male_only_tools:
+                    speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
+                    if speaker != "male":
+                        owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
+                        logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
+                        await params.result_callback({
+                            "error": (
+                                f"Not available: this capability is reserved for {owner}, "
+                                f"and the current speaker's voice was not recognized as {owner}. "
+                                f"Relay this politely."
+                            )
+                        })
+                        return
                 return await handler(params)
+            except BaseException:
+                log_timing("fel")
+                raise
             finally:
+                stop_waiting_ack()
+                log_timing("ok")
                 if self.turn_liveness is not None:
                     self.turn_liveness.tool_finished()
 
