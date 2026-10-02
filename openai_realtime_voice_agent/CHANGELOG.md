@@ -2,6 +2,26 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.5 (fork)
+
+- **Tillägget bestämmer själv var en tur börjar och slutar på Gemini.**
+  0.22.4 (START HIGH) provades live 13:42-13:45: "Var är klockan?" sades
+  vid -26 dBFS, samma nivå som OpenAI-turer som fungerat (röstprob
+  134234), och Gemini gav ingenting på en minut. Ljudet är rätt — Gemini
+  transkriberade det korrekt en gång samma morgon — men Googles
+  automatiska aktivitetsdetektering öppnar inga turer för den här
+  enheten. Nu stängs den av (`automatic_activity_detection.disabled`),
+  och en lokal Silero-VAD (modellen pipecat redan levererar, körd av
+  sherpa-onnx som redan finns för röstavtryck — inget nytt beroende)
+  skickar `activityStart` med 0,5 s förrulle när någon börjar tala och
+  `activityEnd` efter `gemini_vad_silence_duration_ms` tystnad. Enheten
+  signalerar bara väckningen, aldrig slut på tal; OpenAI avgör det också
+  på serversidan. Stoppord och följdfönstrets avklipp överger en öppen
+  aktivitet utan `activityEnd`, så den besvaras aldrig; `audioStreamEnd`
+  skickas inte i manuellt läge. Silero nollställs efter 5 s tystnad
+  (utan det döv efter ~20 s — uppmätt på 13:42-inspelningen). Går VAD:n
+  inte att ladda faller sessionen tillbaka på Googles detektering.
+
 ## 0.22.4 (fork)
 
 - **Gemini hör den som just väckte den** (gemini-snabb). Kontoret

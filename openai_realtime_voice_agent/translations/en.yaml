@@ -310,8 +310,9 @@ configuration:
   gemini_vad_start_sensitivity:
     name: "🔀 Voice engine · Gemini: how easily a turn STARTS"
     description: >-
-      How little sound Gemini needs before it decides you are talking to it.
-      "high" (the default) hears the person who just woke the device. "low"
+      Only used if the add-on's own turn detection (Silero) cannot load —
+      by default the add-on decides turns itself. How little sound Gemini
+      needs before it decides you are talking to it. "high" (the default) hears the person who just woke the device. "low"
       measurably did not: on the office Voice PE it opened one turn for seven
       things said to it, so the assistant sat silent until cancelled. Pick
       "low" only if Gemini starts answering background noise inside the
