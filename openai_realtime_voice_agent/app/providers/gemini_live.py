@@ -515,6 +515,40 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
             msg.server_content.model_turn.parts = [part]
             await super()._handle_msg_model_turn(msg)
 
+    # Set by create_service: a callable() -> the full system instruction,
+    # Idag block included. Called on every connect, so each new socket gets
+    # the current time and the last fetched weather and calendar.
+    instructions_provider = None
+    instructions_at = 0.0
+
+    async def _connect(self, session_resumption_handle=None):
+        """Render the instruction again, then connect as pipecat does.
+
+        Measured 2026-10-02 on the live key: a session resumed with its
+        handle and a NEW system instruction follows the new one, with the
+        conversation intact. That is how the Idag block is refreshed without
+        touching a live session.
+        """
+        if self.instructions_provider is not None and not self._session:
+            try:
+                self._system_instruction_from_init = self.instructions_provider()
+                self.instructions_at = time.monotonic()
+            except Exception as e:
+                logger.warning(f"⚠️ instruction not re-rendered, keeping the last ({e!r})")
+        await super()._connect(session_resumption_handle)
+
+    async def refresh_instructions(self) -> bool:
+        """Reconnect to pick up a new instruction, only between turns.
+
+        Not while he speaks, while bana 0 holds a turn, or while an answer
+        is awaited. The caller also checks the device is idle.
+        """
+        busy = self._activity_open or getattr(self, "_held", None) or self._reply_awaited_at
+        if busy or not self._session or self._disconnecting:
+            return False
+        await self._reconnect()
+        return True
+
     async def _handle_session_ready(self, session):
         """A new socket knows nothing of an activity the old one had open."""
         self._activity_open = False
@@ -659,6 +693,28 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     """
     model = options.model or DEFAULT_MODEL
     voice = options.voice or DEFAULT_VOICE
+    search = os.environ.get("GEMINI_GOOGLE_SEARCH", "false").strip().lower() == "true"
+    gemini_tools = []
+    if search:
+        # OFF by default. Google's own search would save our web_search round
+        # trip (Gemini -> OpenAI Responses -> back), and measured 2026-10-02
+        # on the live key and model it answers web questions grounded and
+        # costs no time on other turns (median first audio 1.63 s with it,
+        # 1.82 s without, 20 turns each). But with it in the session,
+        # "Vilken temperatur är det i kontoret?" -- a GetLiveContext call --
+        # killed the socket with 1011 Internal error 5 times out of 5, and
+        # never without it. A house question matters more than a web one.
+        tools = [t for t in tools if t.get("name") != "web_search"]
+    if tools:
+        # One wrapper deeper than it looks: the Live API takes a LIST OF
+        # TOOLS, each of which carries its function declarations. Handing it
+        # the bare declarations makes google-genai reject every one of them
+        # as an extra field, and the session never opens. pipecat's own
+        # adapter wraps them the same way -- see
+        # GeminiLLMAdapter.to_provider_tools_format.
+        gemini_tools.append({"function_declarations": to_gemini_tools(tools)})
+    if search:
+        gemini_tools.append({"google_search": {}})
     language = _resolve_language(options.language or "sv-SE")
     turns = LocalTurns.create(int(options.gemini_turn_silence_ms))
     vad = GeminiVADParams(disabled=True) if turns else _build_vad_params(options)
@@ -678,6 +734,7 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     logger.info(
         f"🔧 Gemini Live session: model={model} voice={voice} "
         f"lang={'(from prompt)' if drop_language else language} tools={len(tools)}"
+        f"{' +google_search' if search else ''}"
         f"{' thinking=off' if native else ''}"
     )
     if turns:
@@ -696,12 +753,7 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
         model=model,
         voice_id=voice,
         system_instruction=options.instructions,
-        # One wrapper deeper than it looks: the Live API takes a LIST OF TOOLS,
-        # each of which carries its function declarations. Handing it the bare
-        # declarations makes google-genai reject every one of them as an extra
-        # field, and the session never opens. pipecat's own adapter wraps them
-        # the same way -- see GeminiLLMAdapter.to_provider_tools_format.
-        tools=[{"function_declarations": to_gemini_tools(tools)}] if tools else None,
+        tools=gemini_tools or None,
         start_audio_paused=False,
         params=params,
         # Only passed when proactive audio asked for it; None otherwise leaves

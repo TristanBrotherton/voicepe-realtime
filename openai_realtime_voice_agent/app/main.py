@@ -12,7 +12,8 @@ from pipecat.pipeline.task import PipelineTask
 from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
-from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, pick_early_ack
+from app.idag import Idag
+from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, gemini_tts, pick_early_ack
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -236,7 +237,9 @@ class Application:
         # device_id -> monotonic time of the last HA-recovery recycle, so a
         # flapping HA cannot bounce a device again and again (raawr D-72).
         self._last_recycle: dict[str, float] = {}
-        
+        # Date, time, weather and the next events, at the end of the prompt.
+        self.idag = Idag()
+
     async def initialize(self) -> None:
         """Initialize all components."""
         # Get configuration from environment
@@ -556,7 +559,7 @@ class Application:
         # Bana 0 speaks HA's confirmation through the same guarded lane.
         self.websocket_handler.say = self._guarded_say
         self._last_early_ack = None
-        asyncio.ensure_future(self._warm_early_acks())
+        self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
             and self.websocket_handler.resolve_device(device_id) is not None
@@ -640,6 +643,11 @@ class Application:
         self.enable_web_search = enable_web_search
         self.web_search_model = web_search_model
 
+        # After the keys and voices above: the warm-up reads them.
+        asyncio.ensure_future(self._warm_early_acks())
+        if ha_api.configured():
+            asyncio.ensure_future(self._idag_loop())
+
         logger.info("✅ Application initialized - ready to accept WebSocket connections")
     
     def _update_session_activity(self):
@@ -663,7 +671,7 @@ class Application:
         """
         from app.providers import GEMINI, ProviderOptions
 
-        instructions = self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions()
+        instructions = self._instructions()
         if provider == GEMINI:
             return ProviderOptions(
                 api_key=self.gemini_api_key,
@@ -699,6 +707,47 @@ class Application:
             transcription_model=self.transcription_model,
             transcription_language=self.transcription_language,
         )
+
+    def _instructions(self) -> str:
+        """The system instruction, Idag block last (the time is rendered now)."""
+        return self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions() + self.idag.block()
+
+    async def _idag_loop(self) -> None:
+        """Keep the Idag block fresh: refetch, then let Gemini reconnect when quiet.
+
+        Every IDAG_REFRESH_SECONDS (600) the weather and calendar are
+        fetched again. A Gemini session gets the new block by reconnecting
+        (it renders its instruction on every connect; the resumption handle
+        keeps the conversation) -- only when its device has been idle, so a
+        turn is never cut. Nothing is pushed into a live session: a
+        mid-session session.update made OpenAI sessions deaf (D-70). OpenAI
+        sessions get the block when they are built, and nothing after.
+        """
+        from app.providers import GEMINI
+
+        every = _env_seconds("IDAG_REFRESH_SECONDS", 600.0)
+        tick = min(30.0, every)
+        follow_up_s = getattr(self.websocket_handler, "follow_up_ms", 0) / 1000.0
+        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0) + follow_up_s
+        fetched = float("-inf")
+        while True:
+            try:
+                if time.monotonic() - fetched >= every:
+                    await self.idag.refresh()
+                    fetched = time.monotonic()
+                for connection in list(self.websocket_handler.devices):
+                    service = connection.openai_service
+                    if connection.provider != GEMINI or service is None:
+                        continue
+                    if time.monotonic() - getattr(service, "instructions_at", 0.0) < every:
+                        continue
+                    if _device_idle(connection, quiet_s) and await service.refresh_instructions():
+                        logger.info(f"📅 Idag block refreshed for {connection.device_id} (reconnect)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"⚠️ Idag refresh failed: {e!r}")
+            await asyncio.sleep(tick)
 
     async def create_service(self, connection):
         """Create a voice-engine session for ONE device.
@@ -802,7 +851,7 @@ class Application:
                     mcp_tools_schema = None
                     logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
             
-            from app.providers import build_service
+            from app.providers import GEMINI, build_service
 
             # The engine is decided exactly ONCE per connection, by
             # WebSocketHandler.serve_connection, before the transport is even
@@ -823,7 +872,17 @@ class Application:
                 f"🔧 Creating {provider} session with {len(all_tools)} tools: "
                 f"{[tool.get('name', 'unknown') for tool in all_tools]}"
             )
+            if self.idag.fetched_at is None and ha_api.configured():
+                # First session after a start, before _idag_loop's first fetch.
+                try:
+                    await asyncio.wait_for(self.idag.refresh(), 3.0)
+                except Exception as e:
+                    logger.warning(f"⚠️ Idag: no weather/calendar for this session ({e!r})")
+                options = self.provider_options(provider)
             service = build_service(provider, options, all_tools)
+            if provider == GEMINI:
+                # Rendered again on every (re)connect: a fresh time and block.
+                service.instructions_provider = self._instructions
             service.speaker_probe = None
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
@@ -985,7 +1044,7 @@ class Application:
             register_openclaw_tool(service)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
-    async def _guarded_say(self, text, device_id=None, pace=True):
+    async def _guarded_say(self, text, device_id=None, pace=True, pcm=None):
         """The conductor's TTS lane, guarded so the device cannot hear itself.
 
         Used by the announce endpoint and bana 0. NOT by timers: a timer
@@ -1005,9 +1064,12 @@ class Application:
             connection.says_playing += 1
         tail = 1.2
         try:
+            clip = {} if pcm is None else {"pcm": pcm}
             if pace:
-                return await self.enrollment_conductor._say(text, device_id=device_id)
-            result = await self.enrollment_conductor._say(text, device_id=device_id, pace=False)
+                return await self.enrollment_conductor._say(text, device_id=device_id, **clip)
+            result = await self.enrollment_conductor._say(
+                text, device_id=device_id, pace=False, **clip
+            )
             # Sent at once, so it is still playing: keep the mic shut until it is done.
             tail += getattr(self.enrollment_conductor, "last_say_s", 0.0)
             return result
@@ -1029,22 +1091,53 @@ class Application:
         """
         text = pick_early_ack(self._last_early_ack)
         self._last_early_ack = text
-        await self.enrollment_conductor._tts(text)
+        pcm = await self._ack_clip(getattr(connection, "provider", ""), text)
         liveness = connection.turn_liveness
         if liveness is not None and liveness.model_spoke_since(tool_started_at, recent):
             logger.info("⏱ early ack dropped: the model is already talking")
             return
         logger.info(f"⏱ early ack: {text}")
-        await self._guarded_say(text, connection.device_id, pace=False)
+        await self._guarded_say(text, connection.device_id, pace=False, pcm=pcm)
+
+    async def _ack_clip(self, provider, text) -> bytes:
+        """The ack in the voice of the engine that answers (0.23.3).
+
+        Gemini: its own TTS with the session's prebuilt voice (Charon).
+        OpenAI: gpt-4o-mini-tts with the session's voice (cedar). A failed
+        render falls back to the conductor's old clip, once per phrase and
+        engine, and says so in the log.
+        """
+        from app.providers import GEMINI
+
+        clips = self._ack_clips
+        if (provider, text) in clips:
+            return clips[(provider, text)]
+        try:
+            if provider == GEMINI:
+                pcm = await gemini_tts(text, self.gemini_api_key, self.gemini_voice or "Charon")
+            else:
+                pcm = await self.enrollment_conductor._tts(text, voice=self.voice)
+        except Exception as e:
+            logger.warning(
+                f"⚠️ early ack '{text}' not rendered in {provider or 'openai'}'s voice "
+                f"({e!r}) — using the old clip"
+            )
+            pcm = await self.enrollment_conductor._tts(text)
+        clips[(provider, text)] = pcm
+        return pcm
 
     async def _warm_early_acks(self) -> None:
-        """Fetch every acknowledgement clip once, so the first slow tool is not slower."""
-        for text in EARLY_ACK_PHRASES:
-            try:
-                await self.enrollment_conductor._tts(text)
-            except Exception as e:
-                logger.warning(f"⚠️ early ack clip not cached: {e!r}")
-                return
+        """Render every ack once per configured engine, so the first slow tool is not slower."""
+        from app.providers import GEMINI, OPENAI
+
+        engines = [p for p, key in ((GEMINI, self.gemini_api_key), (OPENAI, self.openai_api_key)) if key]
+        for provider in engines:
+            for text in EARLY_ACK_PHRASES:
+                try:
+                    await self._ack_clip(provider, text)
+                except Exception as e:
+                    logger.warning(f"⚠️ early ack clip not cached: {e!r}")
+                    return
 
     async def _recover_ha_tools(self, connection, service) -> None:
         """Retry the HA tool fetch; once HA answers, recycle the connection.

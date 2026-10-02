@@ -2,6 +2,40 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.23.3 (fork)
+
+- **"Jag kollar" i svarets röst.** Ägaren 2026-10-02 18:12: kvittensen kom
+  i OpenAI:s röst, svaret i Geminis Charon -- två personer i rummet. Nu
+  renderas replikerna i den aktiva motorns röst: på Gemini med Geminis TTS
+  (`GEMINI_TTS_MODEL`, förval `gemini-2.5-flash-preview-tts`) och sessionens
+  `GEMINI_VOICE`, på OpenAI med `gpt-4o-mini-tts` och `OPENAI_VOICE`.
+  Förrenderas vid start för båda motorerna, cachas på disk, 24 kHz PCM16
+  som enheten spelar (omsamplas om Google svarar med annan takt). Misslyckas
+  en rendering används den gamla klippet, och loggen säger det. Geminis TTS
+  vägrar ibland den nakna frasen (tom kandidat, "Två sek, jag tittar." varje
+  gång); inramad som "Läs upp på svenska ...: <fras>" sägs den, och ramen
+  hörs inte (kontrollerat med STT). TTS-kvoten är 10 anrop/min.
+- **Raden "Idag:" finns nu i systemprompten.** Kalenderskripten har länge
+  bett modellen räkna datum "ur raden Idag: i systemprompten" -- en rad som
+  inte fanns. Blocket (`app/idag.py`, ~125 tokens): veckodag, datum och
+  klocka (Europe/Stockholm), SMHI-prognosen för idag, i morgon och i
+  övermorgon (`script__vaderprognos`) och de tre nästa kalenderhändelserna
+  (`script__kalender_sok`), hämtade genom comms MCP-dörr som modellens egna
+  anrop. Hämtas var `IDAG_REFRESH_SECONDS` (600) och före första sessionen;
+  en misslyckad hämtning behåller sista goda delen. Dagnamn räknas när
+  blocket skrivs, inte när det hämtades. Gemini: instruktionen renderas om
+  vid varje (åter)anslutning, och en session vars block är äldre än
+  intervallet återansluts (med resumption-handtaget, samtalet kvar) först
+  när enheten varit tyst -- aldrig mitt i en tur. Uppmätt mot live-nyckeln:
+  en återupptagen session följer en NY systeminstruktion. Ingen
+  session.update (D-70). OpenAI får blocket när sessionen byggs.
+- **Googles sökning på Gemini: byggd men AV** (`GEMINI_GOOGLE_SEARCH=true`
+  slår på, och tar då bort vår `web_search` ur Geminis lista). Uppmätt
+  2026-10-02: grundade webbsvar fungerar och vanliga turer blir inte
+  långsammare (median första ljud 1,63 s med, 1,82 s utan), men med
+  sökningen i sessionen dog "Vilken temperatur är det i kontoret?"
+  (GetLiveContext) med 1011 Internal error 5 av 5 gånger, aldrig utan.
+
 ## 0.23.2 (fork)
 
 - **"Jag kollar" även när modellen själv är långsam.** Live 2026-10-02

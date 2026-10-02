@@ -173,9 +173,11 @@ async def test_idle_ends_the_turn_for_acks():
 def _app(liveness):
     app = object.__new__(Application)
     app._last_early_ack = None
+    app._ack_clips = {}
+    app.voice = "cedar"
     app.enrollment_conductor = SimpleNamespace(_tts=AsyncMock(return_value=b"\0" * 4800))
     app._guarded_say = AsyncMock()
-    connection = SimpleNamespace(turn_liveness=liveness, device_id="kontoret")
+    connection = SimpleNamespace(turn_liveness=liveness, device_id="kontoret", provider=OPENAI)
     return app, connection
 
 
@@ -187,7 +189,7 @@ async def test_ack_goes_out_of_band_on_the_guarded_lane_at_once():
     app._guarded_say.assert_awaited_once()
     text, device = app._guarded_say.await_args.args
     assert text in EARLY_ACK_PHRASES and device == "kontoret"
-    assert app._guarded_say.await_args.kwargs == {"pace": False}
+    assert app._guarded_say.await_args.kwargs == {"pace": False, "pcm": b"\0" * 4800}
 
 
 @pytest.mark.asyncio
@@ -196,9 +198,57 @@ async def test_ack_dropped_if_the_model_started_while_the_clip_was_fetched():
     liveness = TurnLiveness()
     app, connection = _app(liveness)
     started = time.monotonic()
-    app.enrollment_conductor._tts.side_effect = lambda text: liveness.bot_started()
+    app.enrollment_conductor._tts.side_effect = lambda text, **kw: liveness.bot_started()
     await app._early_ack(connection, started)
     app._guarded_say.assert_not_awaited()
+
+
+# --- 2b. the ack in the answer's voice (0.23.3) -----------------------------
+# Owner 2026-10-02 18:12: "Vänta, jag kollar" came in OpenAI's voice, the
+# answer in Gemini's Charon -- two people in the room.
+
+@pytest.mark.asyncio
+async def test_ack_voice_follows_the_engine(monkeypatch):
+    import time
+    gemini = AsyncMock(return_value=b"G" * 4800)
+    monkeypatch.setattr("app.main.gemini_tts", gemini)
+    app, connection = _app(TurnLiveness())
+    app.gemini_api_key, app.gemini_voice = "AIza-test", "Charon"
+
+    connection.provider = GEMINI
+    await app._early_ack(connection, time.monotonic())
+    assert gemini.await_args.args[1:] == ("AIza-test", "Charon")
+    assert app._guarded_say.await_args.kwargs["pcm"] == b"G" * 4800
+    app.enrollment_conductor._tts.assert_not_awaited()
+
+    connection.provider = OPENAI
+    await app._early_ack(connection, time.monotonic())
+    assert app.enrollment_conductor._tts.await_args.kwargs == {"voice": "cedar"}
+
+
+@pytest.mark.asyncio
+async def test_failed_render_falls_back_to_the_old_clip_and_says_so(monkeypatch, caplog):
+    import time
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr("app.main.gemini_tts", AsyncMock(side_effect=RuntimeError("429")))
+    app, connection = _app(TurnLiveness())
+    app.gemini_api_key, app.gemini_voice = "AIza-test", "Charon"
+    connection.provider = GEMINI
+    await app._early_ack(connection, time.monotonic())
+    app.enrollment_conductor._tts.assert_awaited_once()
+    assert app.enrollment_conductor._tts.await_args.kwargs == {}  # the conductor's own voice
+    assert app._guarded_say.await_args.kwargs["pcm"] == b"\0" * 4800
+    assert any("using the old clip" in r.getMessage() for r in caplog.records)
+
+
+def test_gemini_clip_is_resampled_to_what_the_device_plays():
+    import numpy as np
+    from app.early_ack import to_clip_rate
+
+    one_second_at_16k = np.zeros(16000, dtype=np.int16).tobytes()
+    assert len(to_clip_rate(one_second_at_16k, "audio/L16;codec=pcm;rate=16000")) == 48000
+    same = b"\1\0" * 100
+    assert to_clip_rate(same, "audio/L16;codec=pcm;rate=24000") is same
 
 
 def test_phrases_vary_and_never_ask():
