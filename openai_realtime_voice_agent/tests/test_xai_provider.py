@@ -59,7 +59,7 @@ def test_xai_is_an_openai_protocol_engine():
 
 
 def test_build_points_pipecat_at_xai():
-    service = build_service(XAI, _options(), [])
+    service = build_service(XAI, _options(xai_turn_detection="server"), [])
     assert isinstance(service, XaiRealtimeLLMService)
     assert service.base_url == f"{XAI_REALTIME_URL}?model=grok-voice-latest"
     td = service._session_properties.audio.input.turn_detection
@@ -113,7 +113,7 @@ def test_audio_delta_alias_is_renamed():
 def test_session_update_is_rewritten_into_xai_shape():
     tools = [{"type": "function", "name": "web_search", "parameters": {}},
              {"type": "function", "name": "intent__HassTurnOn", "parameters": {}}]
-    service = build_service(XAI, _options(semantic_vad_create_response=False), tools)
+    service = build_service(XAI, _options(semantic_vad_create_response=False, xai_turn_detection="server"), tools)
     payload = E.SessionUpdateEvent(session=service._session_properties).model_dump(exclude_none=True)
     xai_session(payload, service._language, service._server_search, service._xai_create_response)
     session = payload["session"]

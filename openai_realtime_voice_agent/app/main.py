@@ -221,6 +221,10 @@ class Application:
 
     # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
     gemini_turn_silence_ms = 1200
+    # Same on xAI (0.25.3): XAI_TURN_SILENCE_MS; XAI_TURN_DETECTION=server
+    # gives the turn end back to xAI's server_vad.
+    xai_turn_detection = "local"
+    xai_turn_silence_ms = 1200
 
     def __init__(self):
         """Initialize application."""
@@ -598,6 +602,11 @@ class Application:
         self.xai_api_key = os.environ.get("XAI_API_KEY", "").strip()
         self.xai_model = os.environ.get("XAI_MODEL", "").strip() or "grok-voice-latest"
         self.xai_voice = os.environ.get("XAI_VOICE", "").strip() or "rex"
+        self.xai_turn_detection = os.environ.get("XAI_TURN_DETECTION", "").strip().lower() or "local"
+        try:
+            self.xai_turn_silence_ms = int(os.environ.get("XAI_TURN_SILENCE_MS", "1200"))
+        except ValueError:
+            self.xai_turn_silence_ms = 1200
         # Gemini's own turn detection: easy to start a turn (START LOW never
         # opened one for most commands, 2026-10-02 -- see ProviderOptions),
         # slow to end one.
@@ -712,6 +721,8 @@ class Application:
                 # Bana 0 on: the agent sends response.create itself, on a miss.
                 semantic_vad_create_response=not self.bana0_stt,
                 transcription_language=self.transcription_language or "sv",
+                xai_turn_detection=self.xai_turn_detection,
+                xai_turn_silence_ms=self.xai_turn_silence_ms,
             )
         return ProviderOptions(
             api_key=self.openai_api_key,

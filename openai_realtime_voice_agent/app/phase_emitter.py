@@ -132,8 +132,18 @@ class TurnLiveness:
         self.acked = False
         self.turn_over_at = time.monotonic()
 
-    def user_started(self) -> None:
-        """A real utterance: a new turn, with its own acknowledgement."""
+    def user_started(self, emulated: bool = False) -> None:
+        """A real utterance: a new turn, with its own acknowledgement.
+
+        An emulated start is pipecat turning a transcript into "user started
+        speaking". On xAI and OpenAI the transcript of the turn just asked
+        arrives ~1 s after it ended (xai 2026-10-02 20:29:56.2 -> 57.0), so it
+        called off every silence ack before its 1.5 s were up. It counts only
+        when no real start has opened this turn (Gemini on Google's own VAD,
+        where the transcript is the only start there is).
+        """
+        if emulated and self.user_started_at > self.turn_over_at:
+            return
         self.user_started_at = time.monotonic()
         self.acked = False
         self.tool_counts = {}
@@ -513,7 +523,7 @@ class PhaseEmitter(FrameProcessor):
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.
             self._speech_since_wake = True
-            self._liveness.user_started()
+            self._liveness.user_started(getattr(frame, "emulated", False))
             if self._on_real_speech is not None:
                 self._on_real_speech()
             self._cancel_pending_idle()

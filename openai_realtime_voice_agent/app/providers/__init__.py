@@ -79,6 +79,11 @@ class ProviderOptions:
     # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
     # which is Google's own VAD and only used when local detection is off.
     gemini_turn_silence_ms: int = 1200
+    # xAI: "local" (default since 0.25.3) = the same local Silero turn end as
+    # Gemini, with xai_turn_silence_ms; "server" = xAI's server_vad, which
+    # ended turns 5-13 s late in a room with music (2026-10-02).
+    xai_turn_detection: str = "local"
+    xai_turn_silence_ms: int = 1200
     # "Proactive audio": Google's own answer to a speaker that hears the room.
     # The model listens to everything but decides for itself whether the audio
     # was addressed to it, and stays silent when it was not (silence is not
@@ -124,8 +129,8 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
         provider: "openai" or "gemini".
         service: That engine's live service object.
         keep_speech: The follow-up window closed (not a stop word). Gemini's
-            local VAD then answers speech already under way instead of
-            dropping it; OpenAI's server VAD has no such view, unchanged.
+            and xAI's local VAD then answer speech already under way instead
+            of dropping it; OpenAI's server VAD has no such view, unchanged.
 
     Returns:
         The name of what was sent, for the caller's log line.
@@ -135,13 +140,13 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
         event that already logs and swallows, and a silent failure here would
         hide the exact thing this function exists to guarantee.
     """
-    if supports_client_events(provider):
+    if supports_client_events(provider) and getattr(type(service), "end_audio_stream", None) is None:
         from pipecat.services.openai.realtime import events as openai_rt_events
 
         await service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
         return "input_audio_buffer.clear"
-    await service.end_audio_stream(keep_speech=keep_speech)
-    return "audioStreamEnd"
+    # Gemini, and xAI (whose local turns answer a cut-off utterance too).
+    return await service.end_audio_stream(keep_speech=keep_speech) or "audioStreamEnd"
 
 
 async def bana0_hit(provider: str, service, text: str) -> None:

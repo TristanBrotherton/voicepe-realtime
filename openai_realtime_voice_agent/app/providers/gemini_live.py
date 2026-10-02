@@ -33,6 +33,7 @@ from pipecat.services.google.gemini_live.llm import (
 )
 from pipecat.transcriptions.language import Language
 
+from app.providers.local_turns import LocalTurns, LocalTurnsMixin
 from app.providers.tool_registration import ToolRegistrationMixin
 
 logger = logging.getLogger(__name__)
@@ -188,81 +189,6 @@ def _resolve_language(language: str) -> Language:
         return FALLBACK_LANGUAGE
 
 
-class LocalTurns:
-    """Decide where a user turn starts and ends, here, from the mic audio.
-
-    Google's automatic activity detection does not open turns for this
-    device. Live 2026-10-02 13:42-13:45, START_SENSITIVITY_HIGH, speech at
-    -26 dBFS (the level of OpenAI turns that worked): "Var är klockan?" said
-    into the device, then 60 s of nothing from the engine. The audio itself
-    is fine -- Gemini transcribed it correctly once that morning -- so the
-    turn boundaries are taken over and handed to Google explicitly
-    (activityStart / activityEnd), which is what its manual mode is for.
-
-    The device signals only the wake; nothing marks the END of speech, on
-    either engine (OpenAI decides that server-side too). So a local VAD is
-    needed: the Silero model pipecat already ships, run by sherpa-onnx, which
-    this add-on already installs for voice prints. No new dependency.
-    """
-
-    # Silero goes deaf after ~20 s of non-speech unless its state is reset;
-    # pipecat's own SileroVADAnalyzer resets every 5 s for the same reason.
-    # Measured on the 13:42 recording: without it the command at 144 s was
-    # never detected.
-    RESET_AFTER_QUIET_S = 5.0
-
-    def __init__(self, vad, sample_rate: int = 16000):
-        self._vad = vad
-        self._rate = sample_rate
-        self._speaking = False
-        self._quiet_samples = 0
-
-    @classmethod
-    def create(cls, silence_ms: int, sample_rate: int = 16000) -> Optional["LocalTurns"]:
-        """Build one, or None (logged) when the model or library is missing."""
-        try:
-            import pipecat
-            import sherpa_onnx
-
-            config = sherpa_onnx.VadModelConfig()
-            config.silero_vad.model = os.path.join(
-                os.path.dirname(pipecat.__file__), "audio", "vad", "data", "silero_vad.onnx"
-            )
-            config.silero_vad.threshold = 0.5
-            config.silero_vad.min_speech_duration = 0.25
-            config.silero_vad.min_silence_duration = max(0.2, silence_ms / 1000)
-            config.sample_rate = sample_rate
-            vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=30)
-        except Exception as e:
-            logger.error(f"❌ no local turn detection ({e!r}) — Gemini keeps its own")
-            return None
-        return cls(vad, sample_rate)
-
-    def feed(self, pcm16: bytes) -> Optional[str]:
-        """Feed device mic audio (PCM16 mono). Returns "start", "end" or None."""
-        import numpy as np
-
-        samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        self._vad.accept_waveform(samples)
-        while not self._vad.empty():
-            self._vad.pop()  # only the state is used, never the segments
-        speaking = bool(self._vad.is_speech_detected())
-        event = None
-        if speaking != self._speaking:
-            event = "start" if speaking else "end"
-            self._speaking = speaking
-        self._quiet_samples = 0 if speaking else self._quiet_samples + len(samples)
-        if self._quiet_samples >= self.RESET_AFTER_QUIET_S * self._rate:
-            self._vad.reset()
-            self._quiet_samples = 0
-        return event
-
-    def reset(self) -> None:
-        self._vad.reset()
-        self._speaking = False
-        self._quiet_samples = 0
-
-
 def _build_vad_params(options) -> GeminiVADParams:
     """Turn the add-on's turn-detection knobs into Gemini's VAD config.
 
@@ -297,7 +223,7 @@ def _build_vad_params(options) -> GeminiVADParams:
     )
 
 
-class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
+class ResilientGeminiLiveService(LocalTurnsMixin, ToolRegistrationMixin, GeminiLiveLLMService):
     """Gemini Live that does not mistake a quiet house for a broken engine.
 
     The Voice PE is push-to-talk: it streams the microphone only during a turn
@@ -393,9 +319,6 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
     # Google's automatic activity detection, the pre-0.22.5 behaviour.
     _turns: Optional[LocalTurns] = None
     _activity_open = False
-    # Audio from before the local VAD said "speech": Silero needs ~0.3 s to be
-    # sure, and the first syllable must still reach the model.
-    PREROLL_S = 0.5
 
     # Bana 0 (raawr US-016), same hooks as the OpenAI service. With
     # on_user_turn_end set, a turn's audio is HELD here instead of streamed:
@@ -442,13 +365,9 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
             return
         if not self._activity_open:
             if event != "start":
-                preroll = getattr(self, "_preroll", bytearray())
-                preroll += frame.audio
-                keep = int(self.PREROLL_S * frame.sample_rate) * 2
-                self._preroll = preroll[-keep:]
+                self._keep_preroll(frame)
                 return
-            preroll = bytes(getattr(self, "_preroll", b""))
-            self._preroll = bytearray()
+            preroll = self._take_preroll()
             # Phase "listening" now, from our own VAD. The device closes its
             # follow-up window unless it hears "listening" in time, and on
             # Gemini that used to come only from the input transcript --

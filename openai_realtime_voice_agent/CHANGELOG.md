@@ -2,6 +2,30 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.25.3 (fork)
+
+- **xai: turslutet avgörs lokalt (Silero), inte av xAI:s server_vad.**
+  Live 2026-10-02 20:29:42: "Vad är det för väder i helgen?" nådde
+  "thinking" först 13 s efter väckningen, senare turer 5-9 s; musik och
+  rumsljud höll server_vad öppen. Sessionen får nu `turn_detection: null`;
+  samma lokala Silero som Gemini (flyttad till `app/providers/local_turns.py`,
+  delad av båda) avgör slutet, och då skickas `input_audio_buffer.commit`
+  och `response.create` -- eller, med bana 0 på, får bana 0 avgöra först
+  (som på OpenAI). Ljud före talet hålls som pre-roll (0,5 s); följdfönster
+  som stängs mitt i en mening besvaras i stället för att tappas. Ny env:
+  `XAI_TURN_SILENCE_MS` (förval 1200), `XAI_TURN_DETECTION=server` ger
+  tillbaka det gamla.
+- **"Jag kollar" kan nu höras på xai.** Tystnadskvittot startar vid
+  turslutet, som kom 13 s sent. Och pipecat gör användarens transkript
+  (ca 1 s efter turslutet, 20:29:56.2 -> 57.0) till ett emulerat "user
+  started speaking", som `TurnLiveness` tog för en ny yttring och som
+  avblåste kvittot före sina 1,5 s, varje tur, även på OpenAI. Ett emulerat
+  start räknas nu bara när inget riktigt start öppnat turen.
+- **xAI:s tomgångsstängning efter 900 s** ("Conversation timed out ... due to
+  inactivity", server_error/timeout) är ingen hicka längre: socketen stängs,
+  läsaren slutar och ConnectionRecovery återansluter utan att räkna det mot
+  motorn (förut "xai hiccup (1/2)" efter en tyst kvart).
+
 ## 0.25.1 (fork)
 
 - **Spärr mot verktygsloopar, alla motorer.** Samma verktyg körs högst 3
