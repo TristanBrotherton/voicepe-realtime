@@ -13,7 +13,7 @@ from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
-from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, gemini_tts, pick_early_ack, xai_tts
+from app.early_ack import EARLY_ACK_PHRASES, gemini_tts, pick_early_ack, xai_tts
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -746,7 +746,9 @@ class Application:
 
     def _instructions(self) -> str:
         """The system instruction, Idag block last (the time is rendered now)."""
-        return self.instructions + EARLY_ACK_INSTRUCTION + memory_instructions() + self.idag.block()
+        # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
+        # jokes included (owner 2026-10-02 23:07). The deterministic ack covers it.
+        return self.instructions + memory_instructions() + self.idag.block()
 
     async def _idag_loop(self) -> None:
         """Keep the Idag block fresh: refetch, then let Gemini reconnect when quiet.

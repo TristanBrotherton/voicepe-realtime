@@ -263,7 +263,9 @@ EXPRESSIVE_TAGS_NOTE = (
     "det sitter naturligt: [chuckle] eller [laugh] när något är roligt, [sigh] "
     "vid trista besked, [breath] före ett längre svar, [hum-tune] när du väntar "
     "på något, [tsk] när något krånglar. Högst en tagg per svar, aldrig i en "
-    "ren kvittens som 'tänt'."
+    "ren kvittens som 'tänt'. Skriv taggen precis där ljudet ska höras, "
+    "till exempel: 'Och då sa björnen [chuckle] att han var vegetarian.' Ett "
+    "skämt ska ha ett [chuckle] eller [laugh] i slutet."
 )
 
 
