@@ -44,15 +44,11 @@ def get_follow_up_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "request_follow_up",
         "description": (
-            "Keep the microphone open after this reply so the user can answer "
-            "you without saying the wake word again. Call this in the SAME turn "
-            "as a reply that ends in a question you genuinely need answered — "
-            "which device they meant, which of several rooms, yes or no before "
-            "you do something. Do NOT call it after a finished answer, a "
-            "confirmation, or a goodbye: the microphone would then sit open in "
-            "an empty room, pick up the television and your own echo, and "
-            "answer them. Asking nothing and not calling this is the normal "
-            "end of a conversation."
+            "Keep the mic open after this reply so the user can answer without "
+            "the wake word. Call it in the SAME turn as a reply ending in a "
+            "question you need answered (which device, which room, yes or no). "
+            "Do NOT call it after a finished answer, confirmation or goodbye: "
+            "the open mic hears the TV and your own echo."
         ),
         "parameters": {"type": "object", "properties": {}},
     }

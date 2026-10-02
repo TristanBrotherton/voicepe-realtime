@@ -34,6 +34,31 @@ def _max_context_messages() -> int:
     return max(0, value)
 
 
+def add_history_cap(payload: dict) -> None:
+    """Cap the conversation OpenAI re-bills on every response.
+
+    gpt-realtime sends the whole conversation with each response, and the
+    account allows 40k tokens/min. `truncation.token_limits.post_instructions`
+    bounds everything after instructions+tools; retention_ratio 0.8 drops an
+    extra 20% when it cuts, so the cache is busted once rather than every
+    turn. REALTIME_HISTORY_TOKENS=0 leaves OpenAI's default (the model's full
+    window). pipecat 0.0.97's SessionProperties has no `truncation` field,
+    hence the payload edit.
+    """
+    if payload.get("type") != "session.update":
+        return
+    try:
+        limit = int(os.environ.get("REALTIME_HISTORY_TOKENS", "2500"))
+    except ValueError:
+        limit = 2500
+    if limit > 0:
+        payload.setdefault("session", {})["truncation"] = {
+            "type": "retention_ratio",
+            "retention_ratio": 0.8,
+            "token_limits": {"post_instructions": limit},
+        }
+
+
 class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
     """OpenAIRealtimeLLMService with audio-truncation-on-interruption disabled.
 
@@ -91,6 +116,7 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         """
         payload = event.model_dump(exclude_none=True)
         transform_gpt_transcription_language(payload)
+        add_history_cap(payload)
         await self._ws_send(payload)
 
     # Per-response cost accounting (fork). The API reports exact token usage in

@@ -143,10 +143,8 @@ def get_false_alarm_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "mark_false_wake",
         "description": (
-            "Mark the most recent wake as a FALSE trigger. Use when the user says "
-            "the device woke by mistake — e.g. 'that was a false alarm', 'nobody "
-            "called you', 'you weren't being spoken to'. Confirms in one short "
-            "sentence; no apology beyond that."
+            "Mark the last wake as false when the user says nobody called you. "
+            "Confirm in one short sentence."
         ),
         "parameters": {"type": "object", "properties": {}},
     }
@@ -189,15 +187,10 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "voice_enrollment",
         "description": (
-            "Start or stop a guided voice-training (enrollment) recording session "
-            "for a household member. Use when someone asks to train, teach, or "
-            "enroll their voice (e.g. 'teach the assistant my voice', 'voice "
-            "training', 'continue voice training'). Call start IMMEDIATELY and "
-            "WITHOUT a person name — the system identifies the speaker by voice "
-            "automatically (never ask who is enrolling unless the tool says it "
-            "could not identify them, or they are enrolling someone else). Then "
-            "follow the returned protocol exactly. Recording captures everything "
-            "the microphone hears until stopped."
+            "Guided voice training (enrollment) when someone asks to train or "
+            "teach you their voice. Call start IMMEDIATELY without a person: "
+            "the speaker is identified by voice. Then follow the returned "
+            "protocol exactly."
         ),
         "parameters": {
             "type": "object",
@@ -205,16 +198,11 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop", "status"],
-                    "description": "start a session, stop the current one, or check status",
+                    "description": "start, stop or status",
                 },
                 "person": {
                     "type": "string",
-                    "description": (
-                        "First name of the person enrolling. OPTIONAL: leave it out "
-                        "and the system uses the voice-identified speaker "
-                        "automatically. Only provide it when enrolling someone "
-                        "other than the current speaker."
-                    ),
+                    "description": "Only when enrolling someone other than the speaker.",
                 },
             },
             "required": ["action"],

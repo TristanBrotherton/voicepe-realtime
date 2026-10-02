@@ -9,9 +9,38 @@ Same for `GetLiveContext` and `vaderprognos`, all evening.
 Keeping it in one mixin is the point. A rule that has to be remembered twice
 is a rule that protects one engine.
 """
+import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _result_max_chars() -> int:
+    try:
+        return max(0, int(os.environ.get("TOOL_RESULT_MAX_CHARS", "6000")))
+    except ValueError:
+        return 6000
+
+
+def cap_tool_result(result, max_chars: int):
+    """Shorten a tool result that would flood the conversation.
+
+    Every later turn re-bills everything in the conversation. One unfiltered
+    GetLiveContext is the whole house, 16 kB / ~6,300 tokens: measured live
+    2026-10-02, a turn went 8,767 -> 15,026 input tokens and the next
+    sentence hit the 40k TPM limit. 6,000 chars still fits a whole-domain
+    query (all lights: 5.1 kB). The note tells the model how to get the rest.
+    """
+    if not max_chars or result is None:
+        return result
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return result
+    cut = text[:max_chars]
+    cut = cut[: max(cut.rfind("\n"), cut.rfind("\\n"), max_chars // 2)]
+    return (cut + f"\n[TRUNCATED: {len(text) - len(cut)} of {len(text)} characters cut. "
+            "Ask again with a narrower filter (name, area or domain).]")
 
 
 class ToolRegistrationMixin:
@@ -77,6 +106,14 @@ class ToolRegistrationMixin:
                         )
                     })
                     return
+            # Capped here, below every engine and every tool, MCP included.
+            original_callback = params.result_callback
+            max_chars = _result_max_chars()
+
+            async def capped_callback(result, *args, **kwargs):
+                return await original_callback(cap_tool_result(result, max_chars), *args, **kwargs)
+
+            params.result_callback = capped_callback
             if self.turn_liveness is not None:
                 self.turn_liveness.tool_started()
             try:

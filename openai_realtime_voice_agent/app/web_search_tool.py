@@ -29,21 +29,15 @@ def get_web_search_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "web_search",
         "description": (
-            "Search the public internet for current, real-time, or factual "
-            "information the assistant does not already know — for example the "
-            "weather, news, sports scores, opening hours, prices, travel info, or "
-            "recent events. Do NOT use this for controlling the smart home — use "
-            "the Hass* tools for lights, switches, climate, etc."
+            "Search the internet for current facts you do not know: news, "
+            "scores, opening hours, prices, recent events. Not for the house."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": (
-                        "The search query, phrased as a clear natural-language "
-                        "question in the user's language."
-                    ),
+                    "description": "A clear question in the user's language.",
                 }
             },
             "required": ["query"],

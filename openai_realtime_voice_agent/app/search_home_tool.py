@@ -51,13 +51,10 @@ def get_search_home_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "search_home",
         "description": (
-            "Search the house by keyword and get back matching things with their "
-            "current values. Use this whenever you do not know the exact name of "
-            "something, or when a Hass* tool says it cannot find a device. "
-            "Searches both technical ids and friendly names, so a car registered "
-            "as 'Rocket' is found by 'rocket', and a washing machine by "
-            "'washing'. Always try this before telling the user something does "
-            "not exist. Read-only: to change something, use the Hass* tools."
+            "Find things in the house by keyword (ids and names) with their "
+            "current values. Use when you do not know the exact name, or a "
+            "Hass* tool cannot find a device, and always before saying "
+            "something does not exist. Read-only."
         ),
         "parameters": {
             "type": "object",
@@ -65,9 +62,8 @@ def get_search_home_tool_definition() -> Dict[str, Any]:
                 "query": {
                     "type": "string",
                     "description": (
-                        "One or more keywords, e.g. 'rocket battery', 'washing "
-                        "machine', 'bedroom temperature'. Every word must appear "
-                        "in the id or the name, so fewer words find more."
+                        "Keywords, e.g. 'rocket battery'. Every word must "
+                        "match, so fewer words find more."
                     ),
                 },
                 "limit": {

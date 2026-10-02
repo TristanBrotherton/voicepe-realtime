@@ -72,40 +72,27 @@ def get_play_media_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "play_media",
         "description": (
-            "Play music, a radio station, a playlist, a podcast or an audiobook "
-            "on a speaker in the house. Use this instead of "
-            "HassMediaSearchAndPlay for anything the user wants to listen to. "
-            "It searches the house library, Spotify, radio and podcasts at "
-            "once, and it can be told what kind of thing to look for -- so "
-            "asking for a radio station returns the station, not a song with "
-            "the same name. Always set media_type when you can tell what the "
-            "user means: 'P3' and 'BBC' are radio, 'Kent' and 'Queen' are "
-            "artists, 'Abbey Road' is an album."
+            "Play music, radio, a playlist, podcast or audiobook on a speaker. "
+            "Set media_type whenever you can tell: 'P3' and 'BBC' are radio, "
+            "'Kent' an artist, 'Abbey Road' an album."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": (
-                        "What to play, as the user said it: 'P3', 'Kent', "
-                        "'Bohemian Rhapsody', 'something chill'."
-                    ),
+                    "description": "What to play, as the user said it.",
                 },
                 "media_type": {
                     "type": "string",
                     "enum": MEDIA_TYPES,
-                    "description": (
-                        "The kind of thing to play. Leave it out only when the "
-                        "user was genuinely vague."
-                    ),
+                    "description": "Leave out only when the user was vague.",
                 },
                 "player": {
                     "type": "string",
                     "description": (
-                        "Which speaker, by room name: 'kontoret', 'köket', "
-                        "'hela huset'. Leave out to play in the room the user "
-                        "is speaking in."
+                        "Room name, or 'hela huset'. Leave out for the room "
+                        "the user is in."
                     ),
                 },
             },
