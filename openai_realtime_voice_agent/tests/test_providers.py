@@ -80,7 +80,8 @@ def test_the_openai_service_carries_every_field_that_moved():
     service = build_service("openai", options, TOOLS)
     props = service._session_properties
 
-    assert props.tools == TOOLS
+    from app.early_ack import with_ack_hint
+    assert props.tools == with_ack_hint(TOOLS)  # slow tools say what they do (0.25.6)
     assert props.instructions.startswith("Du är Björn.")
     # A missing wire-up would leave this at pydantic's default (None), not 777.
     assert props.max_output_tokens == 777

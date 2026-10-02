@@ -13,7 +13,7 @@ from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
-from app.early_ack import EARLY_ACK_PHRASES, gemini_tts, pick_early_ack, xai_tts
+from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, xai_tts
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -567,7 +567,6 @@ class Application:
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
         # Bana 0 speaks HA's confirmation through the same guarded lane.
         self.websocket_handler.say = self._guarded_say
-        self._last_early_ack = None
         self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
@@ -747,7 +746,8 @@ class Application:
     def _instructions(self) -> str:
         """The system instruction, Idag block last (the time is rendered now)."""
         # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
-        # jokes included (owner 2026-10-02 23:07). The deterministic ack covers it.
+        # jokes included (owner 2026-10-02 23:07). The slow tools' descriptions
+        # carry it instead (early_ack.with_ack_hint, 0.25.6).
         return self.instructions + memory_instructions() + self.idag.block()
 
     async def _idag_loop(self) -> None:
@@ -925,7 +925,7 @@ class Application:
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
-            service.early_ack = lambda started, recent=None, c=connection: self._early_ack(c, started, recent)
+            service.early_ack = lambda started, recent=None, tool=None, c=connection: self._early_ack(c, started, recent, tool)
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -1118,8 +1118,11 @@ class Application:
                 connection.says_playing -= 1
                 connection.last_busy = time.monotonic()
 
-    async def _early_ack(self, connection, tool_started_at, recent=None) -> None:
-        """Say a short "jag kollar" while a slow tool or a silent model runs (tool_registration.py).
+    async def _early_ack(self, connection, tool_started_at, recent=None, tool=None) -> None:
+        """Say what is going on while a slow tool or a silent model runs (tool_registration.py).
+
+        The phrase names the tool's job (early_ack.ack_phrase, 0.25.6); the
+        silence trigger has no tool and says the fallback.
 
         Out of band, through the guarded TTS lane: it never enters the
         model's history and the mic stays shut while it plays. The clip is
@@ -1127,11 +1130,11 @@ class Application:
         checked once more, so an answer that started meanwhile is not talked
         over.
         """
-        text = pick_early_ack(self._last_early_ack)
-        self._last_early_ack = text
+        text = ack_phrase(tool)
         pcm = await self._ack_clip(getattr(connection, "provider", ""), text)
         liveness = connection.turn_liveness
-        if liveness is not None and liveness.model_spoke_since(tool_started_at, recent):
+        if liveness is not None and (liveness.model_spoke_since(tool_started_at, recent)
+                                     or liveness.spoke_this_turn()):
             logger.info("⏱ early ack dropped: the model is already talking")
             return
         logger.info(f"⏱ early ack: {text}")

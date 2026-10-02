@@ -169,9 +169,17 @@ class TurnLiveness:
         self.acked = True
         return True
 
+    def spoke_this_turn(self) -> bool:
+        """The model's audio started since this turn opened (wake, utterance or idle).
+
+        The model may say what it is about to do before a slow tool (0.25.6,
+        early_ack.SLOW_TOOL_HINT); then no clip, however long ago it said it.
+        """
+        return self.bot_started_at > max(self.user_started_at, self.turn_over_at, self.woke_at)
+
     def claim_ack(self, tool_started_at: float) -> bool:
-        """True once per turn, and never when the model is already talking."""
-        if self.acked or self.model_spoke_since(tool_started_at):
+        """True once per turn, and never when the model has spoken this turn."""
+        if self.acked or self.model_spoke_since(tool_started_at) or self.spoke_this_turn():
             return False
         self.acked = True
         return True

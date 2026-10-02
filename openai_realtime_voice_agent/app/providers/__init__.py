@@ -192,6 +192,10 @@ def build_service(provider: str, options: ProviderOptions, tools: List[Dict[str,
     Returns:
         A pipecat LLMService.
     """
+    # The one place every engine's tools pass: slow tools learn to say what
+    # they are about to do (early_ack.with_ack_hint, 0.25.6).
+    from app.early_ack import with_ack_hint
+    tools = with_ack_hint(tools)
     if _known(provider) == OPENAI:
         from app.providers import openai_realtime
         return openai_realtime.build(options, tools)

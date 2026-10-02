@@ -2,6 +2,30 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.25.6 (fork)
+
+- **"Jag kollar" säger vad agenten gör.** Ägaren 2026-10-02 23:12: de fasta
+  klippen låter mekaniska. Två lager:
+  1. Modellen säger det själv, med egna ord. De LÅNGSAMMA verktygens
+     beskrivningar (web_search, search_home, play_media, delegera_till_raawr,
+     kalender*, ask_openclaw) får en rad om det, på ett ställe:
+     `early_ack.with_ack_hint` i `providers.build_service`, alla motorer.
+     Verktygslagret, inte systemprompten (0.23.1:s promptrad gav "Jag
+     kollar." före varje svar). Snabba verktyg (lampor, GetLiveContext,
+     GetDateTime) får inget. På xai är webbsökningen serversidig och har
+     ingen beskrivning vi styr.
+  2. Skyddsnätet: klippet väljs per verktyg (`ack_phrase`): vädret, nätet,
+     kalendern, "Jag letar fram det.", "Jag ber Raawr ta det.", annars
+     "Ett ögonblick." (även tystnadskvittot). Förrenderas vid start som
+     förut. Spelas bara om modellen inte sagt något ALLS den här turen
+     (`TurnLiveness.spoke_this_turn`), inte bara de senaste 2 s.
+- **Loopvakten räknar identiska anrop** (granskning av PR #3): samma verktyg
+  med samma normaliserade argument, högst 3 per tur; totaltaket 8 -> 12.
+  "Tänd kontoret, köket, hallen och sovrummet" är fyra HassTurnOn och alla
+  fyra körs nu.
+- Testet för xai:s `_create_response` bygger tjänsten på riktigt (via
+  `__init__`), så det fäller 0.25.1-felet.
+
 ## 0.25.3 (fork)
 
 - **xai: turslutet avgörs lokalt (Silero), inte av xAI:s server_vad.**
