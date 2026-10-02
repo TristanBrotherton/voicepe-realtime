@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (Raawr)
-version: "0.22.3"
+version: "0.22.4"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -62,7 +62,7 @@ options:
   # default is start=high, which answers room noise and the speaker's own echo
   # (live 2026-09-09). low/low is the equivalent of vad_eagerness: low on the
   # OpenAI side. Raise start to "high" only in a very quiet room.
-  gemini_vad_start_sensitivity: "low"
+  gemini_vad_start_sensitivity: "high"
   gemini_vad_end_sensitivity: "low"
   gemini_vad_prefix_padding_ms: 300
   gemini_vad_silence_duration_ms: 800

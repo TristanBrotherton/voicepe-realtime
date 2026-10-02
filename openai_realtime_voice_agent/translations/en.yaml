@@ -311,10 +311,11 @@ configuration:
     name: "🔀 Voice engine · Gemini: how easily a turn STARTS"
     description: >-
       How little sound Gemini needs before it decides you are talking to it.
-      "low" needs clear speech and is the right value in a normal room —
-      Google's own default is "high", and on a speaker that hears its own
-      voice that means the assistant answers music, background talk and its
-      own echo. Only pick "high" in a quiet room where it keeps missing you.
+      "high" (the default) hears the person who just woke the device. "low"
+      measurably did not: on the office Voice PE it opened one turn for seven
+      things said to it, so the assistant sat silent until cancelled. Pick
+      "low" only if Gemini starts answering background noise inside the
+      follow-up window.
   gemini_vad_end_sensitivity:
     name: "🔀 Voice engine · Gemini: how easily a turn ENDS"
     description: >-

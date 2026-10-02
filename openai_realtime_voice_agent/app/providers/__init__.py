@@ -61,9 +61,13 @@ class ProviderOptions:
     # Left unset, Google runs it at START_SENSITIVITY_HIGH, which treats room
     # noise, the speaker's own echo and half-words as a user turn -- observed
     # live 2026-09-09 as answers to "Och?", "Ja." and one Portuguese sentence
-    # nobody said. LOW is the equivalent of the OpenAI side's
-    # vad_eagerness="low": harder to start a turn, slower to call it finished.
-    gemini_vad_start_sensitivity: str = "low"
+    # nobody said. That is why START was LOW from 2026-09-09 -- and on
+    # 2026-10-02 LOW turned out to be a deaf assistant: one turn opened for
+    # seven things said, the first answered 22 s late from cached audio, the
+    # rest never. The device only streams after a wake or in a follow-up
+    # window, with the mic shut while the assistant speaks, so START is HIGH:
+    # hearing the person who just woke it matters more than ignoring the room.
+    gemini_vad_start_sensitivity: str = "high"
     gemini_vad_end_sensitivity: str = "low"
     gemini_vad_prefix_padding_ms: int = 300
     gemini_vad_silence_duration_ms: int = 800

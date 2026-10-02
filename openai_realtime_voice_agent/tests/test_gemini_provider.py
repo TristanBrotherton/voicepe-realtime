@@ -147,12 +147,11 @@ def test_the_session_always_carries_turn_detection_settings():
     echo and half-words nobody said -- "Och?", "Ja.", "Ne?", and one whole
     sentence in Portuguese. pipecat only attaches the config when at least one
     field is set, so every field is sent."""
-    from google.genai.types import EndSensitivity, StartSensitivity
+    from google.genai.types import EndSensitivity
 
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     vad = service._vad_params
     assert vad is not None
-    assert vad.start_sensitivity == StartSensitivity.START_SENSITIVITY_LOW
     assert vad.end_sensitivity == EndSensitivity.END_SENSITIVITY_LOW
     assert vad.prefix_padding_ms == 300
     assert vad.silence_duration_ms == 800
@@ -178,17 +177,33 @@ def test_the_sensitivities_follow_the_add_on_settings():
     assert vad.silence_duration_ms == 400
 
 
-def test_an_unreadable_sensitivity_falls_back_to_low_not_to_googles_default():
-    """A typo in add-on config must not silently hand the room back to
-    Google's HIGH default -- that is the exact failure this setting exists to
-    prevent, and it is inaudible until the assistant starts answering the
-    television."""
+def test_a_turn_starts_easily_by_default():
+    """Live 2026-10-02 12:52-12:54, office, START_SENSITIVITY_LOW: Gemini
+    opened ONE user turn for seven things said to it. The mic audio reached
+    Google intact (every frame -- checked against a local fake server through
+    1008 reconnects and audioStreamEnd), yet "Hallo!" and "Vad är klockan?",
+    said loudly into the device, never produced an input transcription, and
+    "Vad händer, frågar jag" was answered 22 s after it was spoken, from
+    cached audio, once later room sounds finally tripped the start detector.
+    The Voice PE only streams after a wake or inside a follow-up window, and
+    the mic is closed while the assistant speaks (barge_in: false), so the
+    start detector does not have to defend against the room all day -- it has
+    to hear the person who just woke it."""
+    from google.genai.types import StartSensitivity
+
+    service = build_service("gemini", _options(), OPENAI_SHAPE)
+    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_HIGH
+
+
+def test_an_unreadable_start_sensitivity_falls_back_to_the_default():
+    """A typo must not quietly pick LOW: on this device that is a deaf
+    assistant (see test_a_turn_starts_easily_by_default)."""
     from google.genai.types import StartSensitivity
 
     service = build_service(
         "gemini", _options(gemini_vad_start_sensitivity="lowish"), OPENAI_SHAPE
     )
-    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_LOW
+    assert service._vad_params.start_sensitivity == StartSensitivity.START_SENSITIVITY_HIGH
 
 
 def test_a_negative_padding_is_clamped_rather_than_sent():

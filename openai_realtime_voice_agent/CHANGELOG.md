@@ -2,6 +2,23 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.22.4 (fork)
+
+- **Gemini hör den som just väckte den** (gemini-snabb). Kontoret
+  2026-10-02 12:52-12:54, Gemini efter failover, START_SENSITIVITY_LOW:
+  sju saker sades till enheten, Gemini öppnade en enda tur. "Vad händer,
+  frågar jag" besvarades 22 s efter att det sades, ur cachat ljud; "Hallo!"
+  och "Vad är klockan?", högt och tydligt, gav inte ens en transkription,
+  och följdfönstrets och stoppknappens audioStreamEnd kastade sedan det
+  cachade ljudet. Ljudet nådde Google helt (provat mot en lokal falsk
+  Live-server genom 1008-återanslutningar och audioStreamEnd), så det var
+  startdetektorn. Standard för `gemini_vad_start_sensitivity` är nu
+  `high`, även vid felstavat värde. Mikrofonen strömmar bara efter
+  väckning eller i följdfönstret och är stängd medan assistenten talar,
+  så LOW:s skydd mot rummet kostade mer än det gav. **Driftsteg:**
+  `/etc/raawr-rostagent.env` sätter uttryckligen `low` och måste ändras
+  till `high`, annars ändrar uppdateringen ingenting i kontoret.
+
 ## 0.22.3 (fork)
 
 - **Omkopplingen efter en HA-omstart klipper inte längre utrop eller

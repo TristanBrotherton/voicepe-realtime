@@ -516,11 +516,11 @@ class Application:
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         self.gemini_model = os.environ.get("GEMINI_MODEL", "").strip()
         self.gemini_voice = os.environ.get("GEMINI_VOICE", "").strip()
-        # Gemini's own turn detection. Defaults match the OpenAI side's
-        # vad_eagerness="low": hard to start a turn, slow to end one. Left
-        # unconfigured, Google runs at HIGH and the assistant answers the room.
+        # Gemini's own turn detection: easy to start a turn (START LOW never
+        # opened one for most commands, 2026-10-02 -- see ProviderOptions),
+        # slow to end one.
         self.gemini_vad_start_sensitivity = (
-            os.environ.get("GEMINI_VAD_START_SENSITIVITY", "").strip() or "low"
+            os.environ.get("GEMINI_VAD_START_SENSITIVITY", "").strip() or "high"
         )
         self.gemini_vad_end_sensitivity = (
             os.environ.get("GEMINI_VAD_END_SENSITIVITY", "").strip() or "low"

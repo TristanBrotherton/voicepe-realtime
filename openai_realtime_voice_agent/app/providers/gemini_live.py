@@ -165,10 +165,11 @@ def _build_vad_params(options) -> GeminiVADParams:
     Every field is always sent. pipecat only attaches
     ``realtime_input_config`` when at least one field is set, and a
     half-filled config would leave the rest at Google's defaults -- which is
-    the state this function exists to get away from. An unknown string falls
-    back to LOW rather than to Google's HIGH default: the failure mode of
-    "slightly too hard to trigger" is a missed word, the failure mode of the
-    default is the assistant talking to the room.
+    the state this function exists to get away from. An unknown END string
+    falls back to LOW (a cut-off sentence is worse than a slower reply). An
+    unknown START string falls back to HIGH: measured 2026-10-02, START LOW
+    on this device is not "a missed word" but a turn that never opens --
+    see ProviderOptions.gemini_vad_start_sensitivity.
 
     Args:
         options: The ProviderOptions carrying the four gemini_vad_* knobs.
@@ -176,11 +177,11 @@ def _build_vad_params(options) -> GeminiVADParams:
     Returns:
         A fully populated GeminiVADParams.
     """
-    start = (options.gemini_vad_start_sensitivity or "low").strip().lower()
+    start = (options.gemini_vad_start_sensitivity or "high").strip().lower()
     end = (options.gemini_vad_end_sensitivity or "low").strip().lower()
     if start not in _START_SENSITIVITY:
-        logger.warning(f"⚠️ Unknown gemini_vad_start_sensitivity {start!r}; using 'low'")
-        start = "low"
+        logger.warning(f"⚠️ Unknown gemini_vad_start_sensitivity {start!r}; using 'high'")
+        start = "high"
     if end not in _END_SENSITIVITY:
         logger.warning(f"⚠️ Unknown gemini_vad_end_sensitivity {end!r}; using 'low'")
         end = "low"
