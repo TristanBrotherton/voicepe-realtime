@@ -9,7 +9,7 @@ import dotenv
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
-from app import ha_api
+from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.early_ack import EARLY_ACK_INSTRUCTION, EARLY_ACK_PHRASES, pick_early_ack
@@ -828,7 +828,7 @@ class Application:
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
-            service.early_ack = lambda started, c=connection: self._early_ack(c, started)
+            service.early_ack = lambda started, recent=None, c=connection: self._early_ack(c, started, recent)
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -933,26 +933,18 @@ class Application:
     def _ha_tool_definitions(self, mcp_tools_schema) -> list:
         """The HA tools the model gets to see, in OpenAI Realtime shape.
 
-        Applies the optional allow-list so the realtime session isn't flooded
-        with ha-mcp's 80+ tools, and drops HA tools our own tools replace.
+        Only what tool_selection lets through (allow-list, deny-list), so the
+        session is not flooded with every intent HA exposes.
         """
         tools = []
         for function_schema in mcp_tools_schema.standard_tools:
             name = function_schema.name
-            if self.mcp_tool_allowlist and name not in self.mcp_tool_allowlist:
+            # Allow/deny for what the model is offered: app/tool_selection.py.
+            if not tool_selection.shown(name, self.mcp_tool_allowlist):
                 continue
-            # Comms hands tools out as `<domain>__<name>`
-            # (media_player__HassMediaSearchAndPlay), HA itself bare. Matching
-            # the full name let both duplicates below through in production.
+            # Comms hands tools out as `<domain>__<name>`, HA itself bare.
             base = name.rsplit("__", 1)[-1]
             if openclaw_url() and base == "ask_openclaw":
-                continue
-            # Our play_media does the same job and can be told what kind of
-            # thing to look for. Leaving both in place means the model
-            # sometimes picks the one that answers "play P3" with a Spotify
-            # track. See play_media_tool. HassCancelAllTimers cancels HA's
-            # timers; the house's timers are our own set_timer/cancel_timer.
-            if base in ("HassMediaSearchAndPlay", "HassCancelAllTimers"):
                 continue
             description = function_schema.description
             if base == "GetLiveContext":
@@ -1026,8 +1018,8 @@ class Application:
                 connection.says_playing -= 1
                 connection.last_busy = time.monotonic()
 
-    async def _early_ack(self, connection, tool_started_at) -> None:
-        """Say a short "jag kollar" while a slow tool runs (tool_registration.py).
+    async def _early_ack(self, connection, tool_started_at, recent=None) -> None:
+        """Say a short "jag kollar" while a slow tool or a silent model runs (tool_registration.py).
 
         Out of band, through the guarded TTS lane: it never enters the
         model's history and the mic stays shut while it plays. The clip is
@@ -1039,7 +1031,7 @@ class Application:
         self._last_early_ack = text
         await self.enrollment_conductor._tts(text)
         liveness = connection.turn_liveness
-        if liveness is not None and liveness.model_spoke_since(tool_started_at):
+        if liveness is not None and liveness.model_spoke_since(tool_started_at, recent):
             logger.info("⏱ early ack dropped: the model is already talking")
             return
         logger.info(f"⏱ early ack: {text}")

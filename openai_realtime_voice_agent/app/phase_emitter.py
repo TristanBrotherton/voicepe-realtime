@@ -102,6 +102,10 @@ class TurnLiveness:
         self.bot_started_at = float("-inf")
         self.bot_stopped_at = float("-inf")
         self.acked = False
+        # For the silence acknowledgement: a new utterance, or a turn that
+        # ended (idle, force_idle) after the model was asked, calls it off.
+        self.user_started_at = float("-inf")
+        self.turn_over_at = float("-inf")
 
     def bot_started(self) -> None:
         self.bot_speaking = True
@@ -113,11 +117,33 @@ class TurnLiveness:
 
     def turn_over(self) -> None:
         self.acked = False
+        self.turn_over_at = time.monotonic()
 
-    def model_spoke_since(self, t: float) -> bool:
-        """The model's audio is playing, or played recently before `t`."""
-        recent = t - self.RECENT_BOT_S
-        return self.bot_speaking or self.bot_started_at > recent or self.bot_stopped_at > recent
+    def user_started(self) -> None:
+        """A real utterance: a new turn, with its own acknowledgement."""
+        self.user_started_at = time.monotonic()
+        self.acked = False
+
+    def no_ack(self) -> None:
+        """This stop is not a turn the model answers (dangling VAD, dead turn)."""
+        self.acked = True
+
+    def model_spoke_since(self, t: float, recent: float = None) -> bool:
+        """The model's audio is playing, or played within `recent` s before `t`."""
+        t -= self.RECENT_BOT_S if recent is None else recent
+        return self.bot_speaking or self.bot_started_at > t or self.bot_stopped_at > t
+
+    def claim_silence_ack(self, asked_at: float) -> bool:
+        """True once per turn, when nothing happened since the model was asked.
+
+        Nothing: no audio from the model, no new utterance, the turn not
+        over -- and no acknowledgement yet (a slow tool may have had it).
+        """
+        if (self.acked or self.model_spoke_since(asked_at, 0.0)
+                or self.user_started_at > asked_at or self.turn_over_at > asked_at):
+            return False
+        self.acked = True
+        return True
 
     def claim_ack(self, tool_started_at: float) -> bool:
         """True once per turn, and never when the model is already talking."""
@@ -473,6 +499,7 @@ class PhaseEmitter(FrameProcessor):
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.
             self._speech_since_wake = True
+            self._liveness.user_started()
             if self._on_real_speech is not None:
                 self._on_real_speech()
             self._cancel_pending_idle()
@@ -495,11 +522,13 @@ class PhaseEmitter(FrameProcessor):
                 # thinking AND cancel the garbage response the server auto-creates
                 # for the (empty) committed turn.
                 logger.info("📞 'thinking' suppressed + kill armed — dangling VAD (no speech since wake)")
+                self._liveness.no_ack()
                 if self._on_dangling_stop is not None:
                     self._on_dangling_stop()
             elif self._suppress_thinking:
                 # A VAD stop raced a turn-death force_idle — stay idle.
                 logger.info("📞 phase 'thinking' suppressed (turn already declared dead)")
+                self._liveness.no_ack()
             else:
                 await self._emit("thinking")
                 self._arm_watchdog()

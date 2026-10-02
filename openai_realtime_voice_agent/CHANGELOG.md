@@ -2,6 +2,30 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.23.2 (fork)
+
+- **"Jag kollar" även när modellen själv är långsam.** Live 2026-10-02
+  15:19:44, Gemini, "vad blir det för väder i helgen": activityEnd 44.05,
+  funktionsanrop 47.97, verktyget klart 48.18 (0,2 s), första ljud 49.99.
+  Sex sekunders tystnad, 5,5 av dem Gemini, och 0.23.1:s kvittens tände
+  aldrig eftersom verktyget var snabbt. Nu: har modellen inte gett något
+  ljud `EARLY_ACK_SILENCE_MS` (1500, 0 = av) efter att den fått turen
+  (Geminis activityEnd; OpenAI:s speech_stopped, eller bana 0:s miss) sägs
+  samma korta replik. Samma regler som 0.23.1: en gång per tur (delad med
+  verktygskvittensen), aldrig över modellens ljud eller ett nytt yttrande,
+  aldrig i historiken. En bana 0-träff frågar aldrig modellen och kvitteras
+  aldrig; en hängande VAD-stopp på OpenAI inte heller.
+- **Smalare verktygslista, båda motorerna: 57 → 40.** Gemini läser alla
+  deklarationer före sitt första anrop. Gömda (ingen anropad 1-2 okt):
+  `HassBroadcast`, `HassClimateSetTemperature`, `HassSetPosition`,
+  `HassStopMoving`, `RaawrHubVisa`, `RaawrHubAterstall`, och elva gamla
+  numrerade skript (Homekit start, Skicka hem Hugo, nio Städa-rum; de nås
+  fortfarande via `HassTurnOn` med skriptets namn). Deklarationerna
+  24 885 → 21 175 byte. Listan bor på ett ställe, `app/tool_selection.py`;
+  `TOOL_DENY` (kommaseparerad) ersätter den, `-` gömmer inget.
+  `MCP_TOOL_ALLOWLIST` gäller som förut, nu genom samma funktion.
+  Effekten på Geminis tid till första anrop är inte uppmätt.
+
 ## 0.23.1 (fork)
 
 - **Ett tidigt "jag kollar" när ett verktyg dröjer.** Ägaren 2026-10-02:

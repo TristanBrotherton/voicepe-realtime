@@ -450,6 +450,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         self._reply_awaited_at = time.monotonic()
         logger.debug("🎙️ local VAD: silence → activityEnd")
         await self._send_activity(activity_end=ActivityEnd())
+        self.arm_silence_ack()
 
     def _decide_turn(self) -> None:
         """Run bana 0's decision once per held turn, off the audio path."""
@@ -489,6 +490,7 @@ class ResilientGeminiLiveService(ToolRegistrationMixin, GeminiLiveLLMService):
         self._held = None
         self._activity_open = False
         self._preroll = bytearray()
+        self.cancel_silence_ack()
         if self._turns is not None:
             self._turns.reset()
 

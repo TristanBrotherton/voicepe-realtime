@@ -105,7 +105,10 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         await super()._handle_evt_speech_stopped(evt)
         if self.on_user_turn_end is not None:
             # A task: the receive loop must keep reading while bana 0 runs.
+            # Bana 0 arms the silence ack itself, and only on a miss.
             self._turn_end_task = asyncio.get_running_loop().create_task(self.on_user_turn_end())
+        else:
+            self.arm_silence_ack()
 
     async def send_client_event(self, event):  # type: ignore[override]
         """Serialize GPT transcription models with their required `languages` field.

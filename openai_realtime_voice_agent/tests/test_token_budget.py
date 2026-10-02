@@ -112,6 +112,39 @@ async def test_house_keeps_what_it_uses(monkeypatch):
     assert set(pause["parameters"]["properties"]) == {"name", "area", "floor"}
 
 
+# Gemini reads every declaration before its first function call (live
+# 2026-10-02 15:19:44: 57 tools, 3.7 s from released audio to the call).
+# 0.23.2 cut 57 -> 40. Raise these only with a measurement that says why.
+TOOL_COUNT_BUDGET = 40
+GEMINI_DECLARATION_BYTES_BUDGET = 22000
+
+
+@pytest.mark.asyncio
+async def test_tool_set_stays_lean(monkeypatch):
+    from app.providers.gemini_live import to_gemini_tools
+
+    monkeypatch.delenv("TOOL_DENY", raising=False)
+    _, tools = await _session_payload(monkeypatch)
+    size = len(json.dumps(to_gemini_tools(tools), ensure_ascii=False).encode())
+    print(f"tools={len(tools)} gemini_declaration_bytes={size} tokens={_tokens(json.dumps(tools, ensure_ascii=False))}")
+    assert len(tools) <= TOOL_COUNT_BUDGET, sorted(t["name"] for t in tools)
+    assert size <= GEMINI_DECLARATION_BYTES_BUDGET, size
+    names = {t["name"] for t in tools}
+    for gone in ("climate__HassClimateSetTemperature", "assist_satellite__HassBroadcast",
+                 "intent__HassSetPosition", "script__1559763419170"):
+        assert gone not in names, gone
+
+
+@pytest.mark.asyncio
+async def test_tool_deny_is_one_setting(monkeypatch):
+    monkeypatch.setenv("TOOL_DENY", "-")
+    _, everything = await _session_payload(monkeypatch)
+    monkeypatch.setenv("TOOL_DENY", "HassTurnOff,script__vaderprognos")
+    _, trimmed = await _session_payload(monkeypatch)
+    gone = {t["name"] for t in everything} - {t["name"] for t in trimmed}
+    assert gone == {"intent__HassTurnOff", "script__vaderprognos"}
+
+
 def test_a_whole_house_dump_is_cut_and_says_how_to_narrow_it():
     house = "\n".join(f"- names: Lampa {i}\n  domain: light\n  state: 'off'" for i in range(1000))
     capped = cap_tool_result(house, 6000)

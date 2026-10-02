@@ -52,6 +52,13 @@ def _early_ack_ms() -> int:
         return 700
 
 
+def _silence_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_SILENCE_MS", "1500")))
+    except ValueError:
+        return 1500
+
+
 def _is_error(result) -> bool:
     return isinstance(result, dict) and "error" in result
 
@@ -69,9 +76,45 @@ class ToolRegistrationMixin:
     speaker_probe = None
     male_only_tools: set = set()
     turn_liveness = None
-    # async () -> None: speaks a short "jag kollar" on this connection's
+    # async (started, recent=None) -> None: speaks a short "jag kollar" on this connection's
     # device. Set by main.py; None (tests, no device) means stay silent.
     early_ack = None
+    _silence_ack_task = None
+
+    def arm_silence_ack(self) -> None:
+        """The model was just handed the user's turn; fill a long silence.
+
+        Called where each engine is asked to answer: Gemini's activityEnd,
+        OpenAI's speech_stopped (or bana 0's miss). Never on a bana 0 hit,
+        which never asks the model. Live 2026-10-02 15:19:44 Gemini took
+        3.7 s to its function call and 5.5 s to its first audio, and the
+        tool ack never fired because the tool itself took 0.2 s. If the
+        model has said nothing after EARLY_ACK_SILENCE_MS (1500, 0 = off),
+        the same early ack plays: once per turn, never over the model's own
+        audio or a new utterance, never in its history.
+        """
+        self.cancel_silence_ack()
+        ms = _silence_ack_ms()
+        if self.early_ack is None or ms <= 0:
+            return
+        asked = time.monotonic()
+
+        async def ack_if_silent():
+            await asyncio.sleep(ms / 1000.0)
+            liveness = self.turn_liveness
+            if liveness is None or not liveness.claim_silence_ack(asked):
+                return
+            try:
+                await self.early_ack(asked, 0.0)
+            except Exception as e:
+                logger.warning(f"⚠️ silence ack failed: {e!r}")
+
+        self._silence_ack_task = asyncio.ensure_future(ack_if_silent())
+
+    def cancel_silence_ack(self) -> None:
+        if self._silence_ack_task is not None:
+            self._silence_ack_task.cancel()
+            self._silence_ack_task = None
 
     def register_function(self, function_name, handler, start_callback=None, *,
                           cancel_on_interruption: bool = True):  # type: ignore[override]

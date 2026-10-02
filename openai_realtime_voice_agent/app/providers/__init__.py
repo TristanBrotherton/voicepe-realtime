@@ -162,8 +162,9 @@ async def bana0_miss(provider: str, service) -> None:
 
     if _known(provider) == OPENAI:
         await bana0.be_om_svar(service)
+        service.arm_silence_ack()
     else:
-        await service.answer_turn()
+        await service.answer_turn()  # arms the silence ack at its activityEnd
 
 
 def supports_client_events(provider: str) -> bool:
