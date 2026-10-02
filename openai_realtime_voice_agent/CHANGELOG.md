@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.25.1 (fork)
+
+- **Spärr mot verktygsloopar, alla motorer.** Samma verktyg körs högst 3
+  gånger per användartur, alla verktyg tillsammans högst 8. Därefter anropas
+  inte HA; modellen får svaret "Stopp: du har redan anropat X N gånger i den
+  här turen. Svara nu med det du vet, eller säg ärligt att du inte hittar
+  det." och loggen får `⏱ tool-loop stopp <namn> <antal>`. Räknas i
+  `TurnLiveness`, nollas vid varje ny yttring (`user_started`), kontrolleras
+  i `ToolRegistrationMixin` under varje motor. Skäl: Grok anropade
+  GetLiveContext upp till 48 gånger i en tur när svaret saknades (0.25.0-proben).
+
 ## 0.25.0 (fork)
 
 - **xAI Grok Voice som tredje motor: `VOICE_PROVIDER=xai`.** Ny

@@ -110,6 +110,8 @@ class TurnLiveness:
         # turn with no wake since the last idle came through the follow-up
         # window. 0.0, not -inf: the first turn of a connection counts as woken.
         self.woke_at = 0.0
+        # Tool runs this user turn, per tool name (loop guard, 0.25.1).
+        self.tool_counts = {}
 
     def woke(self) -> None:
         self.woke_at = time.monotonic()
@@ -134,6 +136,7 @@ class TurnLiveness:
         """A real utterance: a new turn, with its own acknowledgement."""
         self.user_started_at = time.monotonic()
         self.acked = False
+        self.tool_counts = {}
 
     def no_ack(self) -> None:
         """This stop is not a turn the model answers (dangling VAD, dead turn)."""

@@ -79,6 +79,29 @@ def ack_delay_ms(wake_ms: int, liveness) -> int:
     return _followup_ack_ms()
 
 
+# Loop guard (0.25.1), every engine: Grok called GetLiveContext up to 48
+# times in one turn with made-up arguments when the answer was not there
+# (probe 2026-10-02). Past the limit HA is not called; the model is told to
+# answer with what it has.
+MAX_SAME_TOOL_PER_TURN = 3
+MAX_TOOLS_PER_TURN = 8
+
+
+def loop_stop(liveness, function_name):
+    """Count this run; return the stop text if it is over the turn's limit."""
+    if liveness is None:
+        return None
+    counts = liveness.tool_counts
+    same, total = counts.get(function_name, 0), sum(counts.values())
+    if same >= MAX_SAME_TOOL_PER_TURN or total >= MAX_TOOLS_PER_TURN:
+        logger.info(f"⏱ tool-loop stopp {function_name} {same + 1}")
+        what, n = (function_name, same) if same >= MAX_SAME_TOOL_PER_TURN else ("verktyg", total)
+        return (f"Stopp: du har redan anropat {what} {n} gånger i den här turen. "
+                "Svara nu med det du vet, eller säg ärligt att du inte hittar det.")
+    counts[function_name] = same + 1
+    return None
+
+
 def _is_error(result) -> bool:
     return isinstance(result, dict) and "error" in result
 
@@ -220,6 +243,10 @@ class ToolRegistrationMixin:
             if self.turn_liveness is not None:
                 self.turn_liveness.tool_started()
             try:
+                stop = loop_stop(self.turn_liveness, function_name)
+                if stop is not None:
+                    await params.result_callback({"result": stop})
+                    return
                 # Speaker gate (fork): tools listed in male_only_tools only execute
                 # when the last voice-type verdict is "male". Enforced HERE — below
                 # the model — so prompt tricks can't bypass it. Fails closed on
