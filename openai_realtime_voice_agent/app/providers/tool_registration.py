@@ -59,6 +59,26 @@ def _silence_ack_ms() -> int:
         return 1500
 
 
+def _followup_ack_ms() -> int:
+    try:
+        return max(0, int(os.environ.get("EARLY_ACK_FOLLOWUP_MS", "3000")))
+    except ValueError:
+        return 3000
+
+
+def ack_delay_ms(wake_ms: int, liveness) -> int:
+    """How long to wait before "jag kollar" in this turn; 0 = never.
+
+    The owner, 2026-10-02 21:16: the ack is good on the first question after
+    the wake word, not on follow-ups in the same conversation, unless the wait
+    is really long. A follow-up turn (no wake since the last idle) waits
+    EARLY_ACK_FOLLOWUP_MS (3000, 0 = never) for both triggers.
+    """
+    if wake_ms <= 0 or liveness is None or liveness.from_wake():
+        return wake_ms
+    return _followup_ack_ms()
+
+
 def _is_error(result) -> bool:
     return isinstance(result, dict) and "error" in result
 
@@ -94,7 +114,7 @@ class ToolRegistrationMixin:
         audio or a new utterance, never in its history.
         """
         self.cancel_silence_ack()
-        ms = _silence_ack_ms()
+        ms = ack_delay_ms(_silence_ack_ms(), self.turn_liveness)
         if self.early_ack is None or ms <= 0:
             return
         asked = time.monotonic()
@@ -166,7 +186,7 @@ class ToolRegistrationMixin:
                 # but needs to check, instead of going quiet. Fast tools (HA:
                 # 0.1-0.8 s) finish before this fires and stay silent.
                 nonlocal ack_speaking
-                await asyncio.sleep(_early_ack_ms() / 1000.0)
+                await asyncio.sleep(ack_ms / 1000.0)
                 liveness = self.turn_liveness
                 if liveness is not None and not liveness.claim_ack(started):
                     return
@@ -177,7 +197,8 @@ class ToolRegistrationMixin:
                     logger.warning(f"⚠️ early ack failed: {e!r}")
 
             ack_task = None
-            if self.early_ack is not None and _early_ack_ms() > 0:
+            ack_ms = ack_delay_ms(_early_ack_ms(), self.turn_liveness)
+            if self.early_ack is not None and ack_ms > 0:
                 ack_task = asyncio.ensure_future(ack_if_slow())
 
             def stop_waiting_ack() -> None:

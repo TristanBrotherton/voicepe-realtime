@@ -130,6 +130,7 @@ async def test_at_most_once_per_turn(monkeypatch):
     await _call(service, "play_media", _slow)
     assert service.early_ack.await_count == 1
     liveness.turn_over()  # the phase went idle: a new turn
+    liveness.woke()  # after a new wake word (a follow-up waits longer, section 4)
     await _call(service, "web_search", _slow)
     assert service.early_ack.await_count == 2
 
@@ -380,3 +381,85 @@ async def test_phase_emitter_marks_user_speech_and_dangling_stops():
         await pe.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     assert not liveness.acked and liveness.user_started_at > float("-inf")
     await pe.close()
+
+
+# --- 4. follow-ups wait longer (0.24.1) ------------------------------------
+# The owner, 2026-10-02 21:16: "vänta, jag kollar" is good on the first
+# question after the wake word, not on follow-ups in the same conversation
+# (the post-reply follow-up window, no new wake) unless the wait is long.
+
+from app.providers.tool_registration import ack_delay_ms
+
+
+def _followup_liveness():
+    """A woken turn that was answered: the next utterance is a follow-up."""
+    liveness = TurnLiveness()
+    liveness.woke()
+    liveness.turn_over()
+    return liveness
+
+
+def test_wake_turn_acks_at_900_followup_at_3000(monkeypatch):
+    monkeypatch.delenv("EARLY_ACK_FOLLOWUP_MS", raising=False)
+    liveness = TurnLiveness()
+    assert ack_delay_ms(900, liveness) == 900  # first turn of the connection
+    liveness.turn_over()
+    assert ack_delay_ms(900, liveness) == 3000  # follow-up window, no wake
+    assert ack_delay_ms(500, liveness) == 3000  # slow-tool trigger too
+    liveness.woke()
+    assert ack_delay_ms(900, liveness) == 900  # a new wake word
+    monkeypatch.setenv("EARLY_ACK_FOLLOWUP_MS", "0")
+    assert ack_delay_ms(900, _followup_liveness()) == 0
+    assert ack_delay_ms(0, liveness) == 0  # the wake value 0 is still "off"
+
+
+def test_mic_flush_is_not_a_wake():
+    """Only the device's wake marks a woken turn; the flush that closes an
+    unused follow-up window must not."""
+    emitter = PhaseEmitter(send_phase=None, liveness=_followup_liveness())
+    emitter.note_wake()  # what _on_device_mic_flush calls
+    assert not emitter._liveness.from_wake()
+
+
+@pytest.mark.asyncio
+async def test_followup_silence_ack_waits_for_the_followup_threshold(monkeypatch):
+    monkeypatch.setenv("EARLY_ACK_FOLLOWUP_MS", "300")
+    woken = TurnLiveness()
+    woken.woke()
+    service = _silent_service(GEMINI, monkeypatch, woken)
+    await service._end_activity()
+    await asyncio.sleep(0.15)
+    service.early_ack.assert_awaited_once()  # wake turn: 50 ms
+
+    service = _silent_service(GEMINI, monkeypatch, _followup_liveness())
+    await service._end_activity()
+    await asyncio.sleep(0.15)
+    service.early_ack.assert_not_awaited()  # follow-up: not at the wake threshold
+    await asyncio.sleep(0.3)
+    service.early_ack.assert_awaited_once()  # but after a really long wait
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", [OPENAI, GEMINI])
+async def test_followup_zero_never_acks(provider, monkeypatch):
+    monkeypatch.setenv("EARLY_ACK_FOLLOWUP_MS", "0")
+    service = _silent_service(provider, monkeypatch, _followup_liveness())
+    if provider == GEMINI:
+        await service._end_activity()
+    else:
+        service.arm_silence_ack()
+    await _call(service, "web_search", _slow)
+    await asyncio.sleep(0.3)
+    service.early_ack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_followup_slow_tool_acks_only_past_the_followup_threshold(monkeypatch):
+    monkeypatch.setenv("EARLY_ACK_FOLLOWUP_MS", "100")
+    service = _acking_service(GEMINI, monkeypatch, _followup_liveness())
+    await _call(service, "web_search", _slow)  # 200 ms tool
+    assert service.early_ack.await_count == 1
+    monkeypatch.setenv("EARLY_ACK_FOLLOWUP_MS", "400")
+    service = _acking_service(GEMINI, monkeypatch, _followup_liveness())
+    await _call(service, "web_search", _slow)
+    assert service.early_ack.await_count == 0

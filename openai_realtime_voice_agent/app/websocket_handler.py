@@ -1461,6 +1461,10 @@ class WebSocketHandler:
             # segment closing late → suppress its thinking + cancel its garbage
             # response (handled in PhaseEmitter via the kill-window callbacks).
             phase_emitter.note_wake()
+            # Only here, never on the mic flush: the early ack tells a woken
+            # turn from a follow-up by this (TurnLiveness.from_wake).
+            if connection.turn_liveness is not None:
+                connection.turn_liveness.woke()
             # New turn boundary: drop any pending post-tool kill so it can't
             # leak onto this fresh turn's response.
             _kill_next_response["v"] = False

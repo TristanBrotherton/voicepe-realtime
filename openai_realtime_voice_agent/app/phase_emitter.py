@@ -106,6 +106,17 @@ class TurnLiveness:
         # ended (idle, force_idle) after the model was asked, calls it off.
         self.user_started_at = float("-inf")
         self.turn_over_at = float("-inf")
+        # The device's {"type":"wake"} (websocket_handler._on_device_wake). A
+        # turn with no wake since the last idle came through the follow-up
+        # window. 0.0, not -inf: the first turn of a connection counts as woken.
+        self.woke_at = 0.0
+
+    def woke(self) -> None:
+        self.woke_at = time.monotonic()
+
+    def from_wake(self) -> bool:
+        """This turn began with a wake word, not in a follow-up window."""
+        return self.woke_at > self.turn_over_at
 
     def bot_started(self) -> None:
         self.bot_speaking = True

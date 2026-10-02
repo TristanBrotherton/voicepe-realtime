@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.24.1 (fork)
+
+- **"Jag kollar" bara på första frågan efter väckordet.** Ägaren
+  2026-10-02 21:16: i en uppföljning (mikrofonen öppen efter svaret, inget
+  nytt väckord) ska den inte låta, utom vid en riktigt lång väntan. En tur
+  räknas som väckt om enhetens `{"type":"wake"}` kom efter senaste idle;
+  annars gäller `EARLY_ACK_FOLLOWUP_MS` (3000, 0 = aldrig) för både
+  tystnads- och verktygsutlösaren. Väckta turer behåller `EARLY_ACK_MS` och
+  `EARLY_ACK_SILENCE_MS`. Mikrofonens flush räknas inte som väckning.
+
 ## 0.24.0 (fork)
 
 - **Redo för `gemini-3.8-live`.** Efter verktygssvaret skickar 3.8 en
