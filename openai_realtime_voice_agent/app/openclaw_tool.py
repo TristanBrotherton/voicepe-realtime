@@ -59,17 +59,10 @@ def get_openclaw_tool_definition() -> dict:
         "type": "function",
         "name": "ask_openclaw",
         "description": (
-            "Ask the owner's OpenClaw assistant a question or give it a task, and "
-            "get its answer. It also holds the household's DEEP LONG-TERM MEMORY - "
-            "people, contacts, plans, history, past conversations, preferences going "
-            "back months - so use it for personal or historical recall questions you "
-            "cannot answer. ONLY for things Home Assistant cannot do itself - "
-            "calendar, messaging, phone calls, web knowledge, memory recall, "
-            "cross-app or computer tasks. NEVER use this for smart-home control or "
-            "anything with a Home Assistant tool - lights, switches, climate, "
-            "timers, and especially adding or removing items on shopping or to-do "
-            "lists. This can take up to a couple of minutes, so tell the user you "
-            "are checking before calling it. One request at a time."
+            "Ask the owner's assistant (deep long-term memory, messaging, calls, "
+            "computer tasks) when recall_memory had nothing. NEVER for anything "
+            "a house tool does: lights, climate, timers, shopping or to-do lists. "
+            "Takes up to minutes: say you are checking first. One at a time."
         ),
         "parameters": {
             "type": "object",
@@ -89,13 +82,9 @@ def get_recall_tool_definition() -> dict:
         "type": "function",
         "name": "recall_memory",
         "description": (
-            "INSTANT (under a second) search of the household's long-term memory: "
-            "people, contact phone numbers, birthdays, preferences, history, past "
-            "decisions. ALWAYS try this FIRST for any personal or household recall "
-            "question ('what is X's number', 'when is Y's birthday', 'what did we "
-            "decide about Z'). Answer from the returned memory lines. Only if "
-            "nothing relevant comes back, or the request needs action (messages, "
-            "calls, research), fall back to ask_openclaw."
+            "Instant search of household memory: people, phone numbers, "
+            "birthdays, preferences, past decisions. Try FIRST for any personal "
+            "recall question; fall back to ask_openclaw if nothing comes back."
         ),
         "parameters": {
             "type": "object",

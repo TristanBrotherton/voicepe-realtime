@@ -184,6 +184,31 @@ def _device_idle(connection, quiet_s: float) -> bool:
     return time.monotonic() - last >= quiet_s
 
 
+def _compact_slots(tool_name: str, properties: dict) -> dict:
+    """HA's generic intent slots, minus the ones that only cost tokens.
+
+    Every OpenAI turn re-bills the whole tool list (40k TPM). HA gives each
+    intent the same name/area/floor/domain/device_class block; on the media,
+    light and intent_script tools `device_class` is a list of enums the tool
+    already implies, and a `domain` that can only be one value says nothing.
+    The `intent__` tools keep both: "open the blinds" needs device_class, and
+    "turn off the lights" sends domain (it did in every logged call).
+    """
+    if tool_name.startswith("intent__"):
+        return properties
+    out = {}
+    for key, schema in (properties or {}).items():
+        if key == "device_class":
+            continue
+        if key == "domain" and (
+            tool_name.startswith("intent_script__")
+            or len(((schema or {}).get("items") or {}).get("enum") or [0, 0]) == 1
+        ):
+            continue
+        out[key] = schema
+    return out
+
+
 class Application:
     """Main application class using Pipecat."""
     
@@ -901,23 +926,35 @@ class Application:
         """
         tools = []
         for function_schema in mcp_tools_schema.standard_tools:
-            if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
+            name = function_schema.name
+            if self.mcp_tool_allowlist and name not in self.mcp_tool_allowlist:
                 continue
-            if openclaw_url() and function_schema.name == "ask_openclaw":
+            # Comms hands tools out as `<domain>__<name>`
+            # (media_player__HassMediaSearchAndPlay), HA itself bare. Matching
+            # the full name let both duplicates below through in production.
+            base = name.rsplit("__", 1)[-1]
+            if openclaw_url() and base == "ask_openclaw":
                 continue
             # Our play_media does the same job and can be told what kind of
             # thing to look for. Leaving both in place means the model
             # sometimes picks the one that answers "play P3" with a Spotify
-            # track. See play_media_tool.
-            if function_schema.name == "HassMediaSearchAndPlay":
+            # track. See play_media_tool. HassCancelAllTimers cancels HA's
+            # timers; the house's timers are our own set_timer/cancel_timer.
+            if base in ("HassMediaSearchAndPlay", "HassCancelAllTimers"):
                 continue
+            description = function_schema.description
+            if base == "GetLiveContext":
+                # Unfiltered it is the whole house, ~6,300 tokens re-billed on
+                # every later turn (see cap_tool_result).
+                description += (" ALWAYS filter by name, area or domain; unfiltered it "
+                                "is the whole house and gets cut off. For the time, use GetDateTime.")
             tools.append({
                 "type": "function",
-                "name": function_schema.name,
-                "description": function_schema.description,
+                "name": name,
+                "description": description,
                 "parameters": {
                     "type": "object",
-                    "properties": function_schema.properties,
+                    "properties": _compact_slots(name, function_schema.properties),
                     "required": function_schema.required
                 }
             })
