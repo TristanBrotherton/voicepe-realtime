@@ -1616,7 +1616,7 @@ class WebSocketHandler:
                 if self.engine_probe is None or liveness is None:
                     return
                 router = self.router
-                engines = (router.primary, router.backup) if router is not None else (provider,)
+                engines = tuple(router.chain) if router is not None else (provider,)
                 asked = time.monotonic()
                 task = asyncio.get_running_loop().create_task(bana0.vakta_natet(
                     natet_nere=lambda: bana0.natet_nere(self.engine_probe, engines, OFFLINE_PROBE_S),
