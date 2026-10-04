@@ -115,3 +115,58 @@ def test_status_says_what_a_dashboard_needs(clock):
     assert s["provider"] == "openai"
     assert "quota" in s["reason"]
     assert s["retry_primary_in_s"] == pytest.approx(1800.0, abs=1)
+
+
+# --- three engines in order (0.26.2, Henrik 2026-10-04: gemini, xai, openai) ---
+
+def _router3(clock, healthy=("xai", "openai")):
+    return ProviderRouter("gemini", "xai", probe=lambda e: e in healthy, clock=clock, extra=["openai"])
+
+
+def test_tre_motorer_i_ordning(clock):
+    r = _router3(clock)
+    assert r.chain == ["gemini", "xai", "openai"]
+    assert r.report_failure("gemini", "insufficient_quota") == "xai"
+    assert r.report_failure("xai", "insufficient_quota") == "openai"
+
+
+def test_hoppar_over_en_sjuk_mellanniva(clock):
+    r = _router3(clock, healthy=("openai",))
+    assert r.report_failure("gemini", "insufficient_quota") == "openai"
+
+
+def test_sista_nivan_faller_tillbaka_till_den_forsta(clock):
+    r = _router3(clock)
+    r.report_failure("gemini", "insufficient_quota")
+    r.report_failure("xai", "insufficient_quota")
+    assert r.report_failure("openai", "insufficient_quota") == "gemini"
+
+
+def test_ingen_frisk_stannar_pa_den_forsta(clock):
+    r = _router3(clock, healthy=())
+    assert r.report_failure("gemini", "insufficient_quota") == "gemini"
+
+
+def test_tredje_nivan_provar_forsta_igen_efter_nedkylningen(clock):
+    r = _router3(clock)
+    r.report_failure("gemini", "insufficient_quota")
+    r.report_failure("xai", "insufficient_quota")
+    clock.advance(r.cooldown_s)
+    assert r.current() == "gemini"
+
+
+def test_build_router_laser_voice_providers(monkeypatch):
+    from app.main import build_router
+    monkeypatch.setenv("VOICE_PROVIDERS", "gemini, xai ,openai,bogus,xai")
+    monkeypatch.setenv("VOICE_PROVIDER", "openai")  # the list wins
+    r = build_router()
+    assert r.chain == ["gemini", "xai", "openai"]
+    assert (r.primary, r.backup) == ("gemini", "xai")
+
+
+def test_build_router_utan_lista_som_forut(monkeypatch):
+    from app.main import build_router
+    monkeypatch.delenv("VOICE_PROVIDERS", raising=False)
+    monkeypatch.setenv("VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("VOICE_PROVIDER_BACKUP", "xai")
+    assert build_router().chain == ["gemini", "xai"]

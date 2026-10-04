@@ -6,7 +6,7 @@ in milliseconds instead of by emptying an account.
 """
 import logging
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Sequence
 
 from app.provider_failures import Failure, classify
 
@@ -28,6 +28,7 @@ class ProviderRouter:
         cooldown_s: float = 1800.0,
         clock: Callable[[], float] = time.monotonic,
         probe: Optional[Callable[[str], bool]] = None,
+        extra: Sequence[str] = (),
     ) -> None:
         """
         Args:
@@ -40,9 +41,14 @@ class ProviderRouter:
                 when a switch to the backup is on the table and the backup has
                 not proved itself within the cooldown. None means no probe, so
                 an unproven backup is never switched to.
+            extra: Further engines after the backup, in order (0.26.2,
+                VOICE_PROVIDERS=gemini,xai,openai). A failing engine hands
+                over to the first one after it that is known healthy.
         """
         self.primary = primary
         self.backup = backup or None
+        # The order of preference, without repeats or gaps.
+        self.chain = list(dict.fromkeys(e for e in (primary, backup, *extra) if e))
         self.cooldown_s = cooldown_s
         self._clock = clock
         self._active = primary
@@ -136,29 +142,34 @@ class ProviderRouter:
             "provider": active,
             "primary": self.primary,
             "backup": self.backup,
+            "chain": list(self.chain),
             "reason": self._reason,
             "switched_at": self._switched_at,
             "retry_primary_in_s": round(remaining, 1),
         }
 
     def _switch(self, failure: Failure, message: str) -> str:
-        other = self.backup if self._active == self.primary else self.primary
-        if not other or other == self._active:
-            logger.warning(
-                f"⚠️ {self._active} failed ({failure.value}) and there is no backup: {message[:120]}"
-            )
-            self._reason = f"{failure.value}: {message[:160]}"
-            return self._active
-
-        # 2026-10-02: the house was moved to a backup that could not hear and
-        # sat deaf for 30 min. A primary that hiccups beats a backup nobody
-        # has seen work. Going back to the primary needs no proof.
-        if other != self.primary and not self._known_healthy(other):
-            logger.warning(
-                f"⚠️ {self._active} failed ({failure.value}) but {other} is not known "
-                f"healthy — staying on {self._active}: {message[:120]}"
-            )
-            self._reason = f"{failure.value}, backup unhealthy: {message[:140]}"
+        # Down the chain from the engine that failed: the first one known
+        # healthy takes over. 2026-10-02: the house was moved to a backup that
+        # could not hear and sat deaf for 30 min, so an unproven engine is
+        # skipped. Nothing healthy after it: back to the primary, which needs
+        # no proof (a primary that hiccups beats an engine nobody has seen work).
+        later = self.chain[self.chain.index(self._active) + 1:] if self._active in self.chain else []
+        other = next((e for e in later if self._known_healthy(e)), None)
+        if other is None and self._active != self.primary:
+            other = self.primary
+        if other is None:
+            if later:
+                logger.warning(
+                    f"⚠️ {self._active} failed ({failure.value}) but none of {later} is known "
+                    f"healthy — staying on {self._active}: {message[:120]}"
+                )
+                self._reason = f"{failure.value}, backup unhealthy: {message[:140]}"
+            else:
+                logger.warning(
+                    f"⚠️ {self._active} failed ({failure.value}) and there is no backup: {message[:120]}"
+                )
+                self._reason = f"{failure.value}: {message[:160]}"
             return self._active
 
         logger.warning(

@@ -135,14 +135,25 @@ def build_router():
     from app.provider_router import ProviderRouter
     from app.providers import OPENAI, PROVIDERS
 
-    primary = (os.environ.get("VOICE_PROVIDER") or OPENAI).strip().lower()
-    if primary not in PROVIDERS:
-        logger.warning(f"⚠️ unknown voice_provider {primary!r}, using {OPENAI}")
-        primary = OPENAI
+    # VOICE_PROVIDERS=gemini,xai,openai: the whole order (0.26.2, Henrik
+    # 2026-10-04). Unset: VOICE_PROVIDER and VOICE_PROVIDER_BACKUP as before.
+    lista = [e.strip().lower() for e in (os.environ.get("VOICE_PROVIDERS") or "").split(",") if e.strip()]
+    okanda = [e for e in lista if e not in PROVIDERS]
+    if okanda:
+        logger.warning(f"⚠️ unknown engines in VOICE_PROVIDERS ignored: {okanda}")
+    lista = list(dict.fromkeys(e for e in lista if e in PROVIDERS))
+    if lista:
+        primary, backup, extra = lista[0], (lista[1] if len(lista) > 1 else None), lista[2:]
+    else:
+        extra = []
+        primary = (os.environ.get("VOICE_PROVIDER") or OPENAI).strip().lower()
+        if primary not in PROVIDERS:
+            logger.warning(f"⚠️ unknown voice_provider {primary!r}, using {OPENAI}")
+            primary = OPENAI
 
-    backup = (os.environ.get("VOICE_PROVIDER_BACKUP") or "none").strip().lower()
-    if backup in ("none", "", primary) or backup not in PROVIDERS:
-        backup = None
+        backup = (os.environ.get("VOICE_PROVIDER_BACKUP") or "none").strip().lower()
+        if backup in ("none", "", primary) or backup not in PROVIDERS:
+            backup = None
 
     try:
         minutes = float(os.environ.get("PROVIDER_COOLDOWN_MINUTES") or 30)
@@ -151,9 +162,9 @@ def build_router():
 
     logger.info(
         f"🔀 voice engine: {primary}"
-        + (f", backup {backup} (cooldown {minutes:.0f} min)" if backup else ", no backup")
+        + (f", backup {' → '.join([backup, *extra])} (cooldown {minutes:.0f} min)" if backup else ", no backup")
     )
-    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0, probe=probe_engine)
+    return ProviderRouter(primary, backup, cooldown_s=minutes * 60.0, probe=probe_engine, extra=extra)
 
 
 dotenv.load_dotenv()
