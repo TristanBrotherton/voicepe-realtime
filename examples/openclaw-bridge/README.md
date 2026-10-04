@@ -7,7 +7,7 @@ Realtime add-on to [OpenClaw](https://openclaw.ai). It implements the full
 | Request body | What happens | Typical latency |
 |---|---|---|
 | `{"recall": "grandma phone"}` | Greps OpenClaw's memory markdown, returns matching lines | ~50 ms |
-| `{"question": "...", "room": "kitchen"}` | One OpenClaw agent turn; answer returned, or announced later if slow | seconds–minutes |
+| `{"question": "...", "room": "kitchen", "device_id": "..."}` | One OpenClaw agent turn; answer returned, or announced later on the asking device if slow | seconds–minutes |
 
 Long turns are never killed: past `ASK_TIMEOUT_MS` the voice side hears
 "still working on that", the turn finishes in the background, and the bridge
@@ -30,7 +30,7 @@ openssl rand -hex 24 > .announce-token   # same value goes in the add-on config
 chmod 600 .ask-path .announce-token
 
 # 2. Run (or install as a service — samples below)
-ANNOUNCE_HOST=192.168.1.50 ANNOUNCE_MAP="kitchen=8090,workshop=8091" node bridge.mjs
+ANNOUNCE_HOST=192.0.2.50 ANNOUNCE_MAP="kitchen=8090,workshop=8091" node bridge.mjs
 ```
 
 Then in the **add-on configuration** (each instance):
@@ -87,7 +87,9 @@ POST a short message and it is spoken aloud in that room:
       -d '{"message":"The research is done - details in your messages."}'
 
 - Rooms: kitchen = 8090, workshop = 8091. Voice requests tell you which room
-  asked — ALWAYS announce to that room.
+  and device asked — ALWAYS announce to that room, and include
+  `"device_id": "<id>"` in the JSON body when the request named one (an
+  instance that serves several devices then speaks on the right one).
 - ALWAYS use exec/shell curl, not a web-fetch tool (those often refuse LAN hosts).
 - Write announcements in FIRST PERSON as the house voice assistant — to the
   household, you and it are the same assistant. Keep it short; it is read aloud.
@@ -107,7 +109,7 @@ POST a short message and it is spoken aloud in that room:
   <key>ProgramArguments</key>
   <array><string>/usr/local/bin/node</string><string>/path/to/bridge.mjs</string></array>
   <key>EnvironmentVariables</key><dict>
-    <key>ANNOUNCE_HOST</key><string>192.168.1.50</string>
+    <key>ANNOUNCE_HOST</key><string>192.0.2.50</string>
     <key>ANNOUNCE_MAP</key><string>kitchen=8090,workshop=8091</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
@@ -127,7 +129,7 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/node /path/to/bridge.mjs
-Environment=ANNOUNCE_HOST=192.168.1.50
+Environment=ANNOUNCE_HOST=192.0.2.50
 Environment=ANNOUNCE_MAP=kitchen=8090,workshop=8091
 Restart=always
 User=youruser
@@ -170,3 +172,16 @@ contract changes when you also update the add-on.
 - The bridge runs agent turns with whatever powers your OpenClaw agent has.
   Voice input is inherently open to anyone in the room — configure the agent
   (and the add-on's `male_only_tools` speaker gate, if you use it) accordingly.
+
+### Irreversible actions
+
+The bridge directive tells the agent to act without clarifying questions only
+for lookups and easily reversible tasks. Anything irreversible or
+security-sensitive (unlocking, opening garages or gates, disarming, payments,
+messaging someone new, deleting data) gets a confirmation question instead. The
+add-on additionally holds such requests until the user answers a spoken yes/no
+question (`confirm_actions`), so a single overheard sentence cannot trigger
+them.
+
+Example addresses in this guide use the documentation range 192.0.2.0/24;
+replace them with your own host.

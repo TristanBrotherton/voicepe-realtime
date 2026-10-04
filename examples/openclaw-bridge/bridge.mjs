@@ -5,7 +5,8 @@
  * One tiny HTTP server on the machine where OpenClaw's gateway runs. It
  * implements the add-on's whole agent contract (see docs/agent-integration.md):
  *
- *   POST <secret path>  {"question": "...", "room": "kitchen"} → {"answer": "..."}
+ *   POST <secret path>  {"question": "...", "room": "kitchen", "device_id": "..."}
+ *                       → {"answer": "..."}
  *       Runs one OpenClaw agent turn (fresh session per request). If the turn
  *       outlives ASK_TIMEOUT_MS, replies "still working" immediately, lets the
  *       turn finish, and POSTs the eventual answer to that room's announce
@@ -28,6 +29,7 @@
  *   ANNOUNCE_MAP        room=port list, e.g. "kitchen=8090,workshop=8091"
  *   ANNOUNCE_TOKEN      bearer token for the announce endpoint, or put it in a
  *                       .announce-token file next to this script
+ *   BRIDGE_LOG_CONTENT  "1" to log question/answer text (default: lengths only)
  *   IMESSAGE_ROUTES     JSON object mapping destination aliases to OpenClaw
  *                       targets and Messages chat IDs, or put it in an ignored
  *                       .imessage-routes.json file next to this script
@@ -63,6 +65,11 @@ const ANNOUNCE_PORTS = Object.fromEntries(
     .map(([room, port]) => [room.toLowerCase(), Number(port)]),
 );
 const DEFAULT_ROOM = Object.keys(ANNOUNCE_PORTS)[0];
+const LOG_CONTENT = process.env.BRIDGE_LOG_CONTENT === "1";
+const describe = (text) => (LOG_CONTENT ? text.slice(0, 120) : `${text.length} chars`);
+// Device ids name the exact Voice PE that asked, so a late answer is spoken
+// on that device even when one add-on instance serves several rooms.
+const cleanDeviceId = (raw) => String(raw || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 64);
 
 function loadIMessageRoutes() {
   const raw = process.env.IMESSAGE_ROUTES || readOptional(".imessage-routes.json");
@@ -170,9 +177,9 @@ if (!ASK_PATH) {
   process.exit(1);
 }
 
-// Deliver a late answer to the room that asked. Requires ANNOUNCE_HOST,
+// Deliver a late answer to the device that asked. Requires ANNOUNCE_HOST,
 // ANNOUNCE_MAP and ANNOUNCE_TOKEN; silently logs (never throws) otherwise.
-async function announce(text, room) {
+async function announce(text, room, deviceId = "") {
   const port = ANNOUNCE_PORTS[room] || ANNOUNCE_PORTS[DEFAULT_ROOM];
   if (!ANNOUNCE_HOST || !port || !ANNOUNCE_TOKEN) {
     console.log("[bridge] late answer NOT announced (announce not configured)");
@@ -185,9 +192,11 @@ async function announce(text, room) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ANNOUNCE_TOKEN}`,
       },
-      body: JSON.stringify({ message: text.slice(0, 590) }),
+      body: JSON.stringify(
+        deviceId ? { message: text.slice(0, 590), device_id: deviceId } : { message: text.slice(0, 590) },
+      ),
     });
-    console.log(`[bridge] late answer announced (${room || "default"}): HTTP ${r.status}`);
+    console.log(`[bridge] late answer announced (${room || "default"}${deviceId ? `/${deviceId}` : ""}): HTTP ${r.status}`);
     return r.ok;
   } catch (e) {
     console.log(`[bridge] late announce failed: ${String(e).slice(0, 120)}`);
@@ -234,13 +243,17 @@ function localRecall(query) {
   return out;
 }
 
-function runAgent(question, room) {
+function runAgent(question, room, deviceId = "") {
   return new Promise((resolve) => {
     const sessionKey = `voicepe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const directive =
       "[Voice request — you are answering someone speaking to their voice assistant " +
-      "out loud. Act immediately using your available tools; do NOT deliberate or ask " +
-      "clarifying questions — make the most reasonable assumption and do it. LOOKUPS: " +
+      "out loud. For lookups and easily reversible tasks, act immediately using your " +
+      "available tools; do not ask clarifying questions there — make the most " +
+      "reasonable assumption. For anything irreversible or security-sensitive " +
+      "(unlocking or opening doors, garages or gates, disarming alarms, payments or " +
+      "purchases, messaging someone new, deleting data) do NOT act: reply with one " +
+      "short question asking the user to confirm. LOOKUPS: " +
       "when asked for a person or fact, be THOROUGH before answering not-found — check " +
       "memory files, then every source you would use for a direct request. When you " +
       "find such a fact, silently save it to a memory file (memory/<name>.md) so " +
@@ -248,8 +261,9 @@ function runAgent(question, room) {
       "multi-step jobs), reply NOW that you will report back, then do the work and " +
       "report via the Voice PE announce endpoint (see your TOOLS.md). Otherwise reply " +
       "in ONE short spoken sentence stating what you did or the answer.] ";
-    const roomNote = room
-      ? `[This request came from the ${room} Voice PE — announce results to that room.] `
+    const roomNote = room || deviceId
+      ? `[This request came from the ${room || "home"} Voice PE${deviceId ? ` (device_id ${deviceId})` : ""} — ` +
+        "announce results to that device.] "
       : "";
     const args = ["agent", "--agent", AGENT, "--session-key", sessionKey,
                   "--message", directive + roomNote + question];
@@ -261,7 +275,7 @@ function runAgent(question, room) {
       const text = out.trim();
       if (timedOut) {
         // The HTTP caller is long gone — deliver the answer to the room.
-        if (code === 0 && text) announce(text, room);
+        if (code === 0 && text) announce(text, room, deviceId);
         return;
       }
       if (code === 0 && text) resolve(text);
@@ -282,13 +296,14 @@ const server = createServer((req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
-    let question = "", recall = "", room = "";
+    let question = "", recall = "", room = "", deviceId = "";
     let notificationDestination = "", notificationMessage = "", notificationMedia = "";
     try {
       const parsed = JSON.parse(body);
       question = String(parsed?.question || "").trim();
       recall = String(parsed?.recall || "").trim();
       room = String(parsed?.room || "").trim().toLowerCase();
+      deviceId = cleanDeviceId(parsed?.device_id);
       notificationDestination = String(parsed?.notification_destination || "").trim();
       notificationMessage = String(parsed?.notification_message || "").trim();
       notificationMedia = String(parsed?.notification_media || "").trim();
@@ -308,7 +323,7 @@ const server = createServer((req, res) => {
     }
     if (recall) {
       const matches = localRecall(recall);
-      console.log(`[bridge] recall: ${recall.slice(0, 80)} -> ${matches.length} lines`);
+      console.log(`[bridge] recall: ${describe(recall)} -> ${matches.length} lines`);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ matches }));
       return;
@@ -318,9 +333,9 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ answer: "question required" }));
       return;
     }
-    console.log(`[bridge] question (${room || "?"}): ${question.slice(0, 120)}`);
-    const answer = await runAgent(question, room);
-    console.log(`[bridge] answer: ${answer.slice(0, 120)}`);
+    console.log(`[bridge] question (${room || "?"}${deviceId ? `/${deviceId}` : ""}): ${describe(question)}`);
+    const answer = await runAgent(question, room, deviceId);
+    console.log(`[bridge] answer: ${describe(answer)}`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ answer }));
   });

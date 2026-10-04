@@ -5,13 +5,18 @@ server, every call is capped by HA core's hardcoded MCP request timeout
 (homeassistant/components/mcp_server/http.py: TIMEOUT = 60). Deep tasks —
 memory recall, contact lookups, multi-step agent turns — routinely take
 longer, so the tool call dies while the real answer is still in flight
-(observed live: "Buddy's number" answered by the agent at ~75s, discarded).
+(observed live: a contact-number lookup answered by the agent at ~75 s and
+discarded).
 
 With OPENCLAW_URL set, the backend registers ask_openclaw natively and POSTs
 {"question": ...} straight to the bridge endpoint ({"answer": ...} back),
 with a timeout that actually matches agent latency. The same-named HA MCP
 tool is skipped during tool assembly so the model sees exactly one. Unset,
 everything falls back to the MCP-script path unchanged.
+
+Each request names the device it came from (``device_id``) and the add-on
+instance (``room``), so an agent that finishes later can announce the answer
+on the device that asked, through the announce endpoint's ``device_id``.
 
 The speaker gate still applies: registration goes through
 SafeRealtimeLLMService.register_function, so male_only_tools enforcement is
@@ -68,8 +73,9 @@ def get_openclaw_tool_definition() -> dict:
             "cross-app or computer tasks. NEVER use this for smart-home control or "
             "anything with a Home Assistant tool - lights, switches, climate, "
             "timers, and especially adding or removing items on shopping or to-do "
-            "lists. This can take up to a couple of minutes, so tell the user you "
-            "are checking before calling it. One request at a time."
+            "lists. It can take up to a couple of minutes; do not announce the call "
+            "yourself (the device plays a short acknowledgement when a lookup is "
+            "slow). One request at a time."
         ),
         "parameters": {
             "type": "object",
@@ -102,7 +108,7 @@ def get_recall_tool_definition() -> dict:
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Two to four key words, e.g. 'Buddy phone'",
+                    "description": "Two to four key words, e.g. 'dentist phone'",
                 }
             },
             "required": ["query"],
@@ -110,18 +116,22 @@ def get_recall_tool_definition() -> dict:
     }
 
 
-def register_openclaw_tool(llm) -> None:
+def register_openclaw_tool(llm, device_id: str = "") -> None:
     async def _ask(params) -> None:
         question = ((params.arguments or {}).get("question") or "").strip()
         if not question:
             await params.result_callback({"error": "empty question"})
             return
-        # room tells the bridge which device to announce late answers on when
-        # a turn outlives the sync window (guaranteed report-back).
+        # room + device_id tell the bridge where to announce a late answer
+        # when a turn outlives the sync window (report-back to the device
+        # that asked, not to whichever room spoke last).
         room = os.environ.get("INSTANCE_NAME", "").strip().lower()
+        payload = {"question": question, "room": room}
+        if device_id:
+            payload["device_id"] = device_id
         try:
             async with httpx.AsyncClient(timeout=ASK_TIMEOUT_S) as client:
-                r = await client.post(openclaw_url(), json={"question": question, "room": room})
+                r = await client.post(openclaw_url(), json=payload)
                 r.raise_for_status()
                 answer = (r.json() or {}).get("answer", "").strip()
         except Exception as e:
