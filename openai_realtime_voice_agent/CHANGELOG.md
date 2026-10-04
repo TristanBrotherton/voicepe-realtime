@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## Drift (ingen ny version)
+
+- **`scripts/deploy-core.sh`** - så lägger Rolle ut main på core efter en
+  merge (Henrik 2026-10-04: allt som mergas går ut via Rolle). Backup som
+  följer symlänken (`cp -aL`, tre senaste sparas), rsync utan `--delete`
+  (agenten skriver `recordings/`), `chown raawr`, omstart, hälsoprov (aktiv,
+  lyssnar på 127.0.0.1:8080, inget "Fatal error") och automatisk
+  tillbakarullning om hälsoprovet faller. `--rollback` för hand.
+  `/etc/raawr-rostagent.env` rörs aldrig. Provat mot core 2026-10-04 14:49Z:
+  utläggning och tillbakarullning friska efter 8 s.
+
 ## 0.26.1 (fork)
 
 - **Molnbudget per dag.** Ägaren 2026-10-04 efter xAI-läckan: "allt vi gör
