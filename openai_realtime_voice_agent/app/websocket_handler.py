@@ -2130,6 +2130,15 @@ class WebSocketHandler:
             await phase_emitter.close()
         service = connection.openai_service
         if service is not None:
+            # sova() is not the only close: HA recycle (socket 1000), a
+            # displacing reconnect and cleanup all land here. bokfor() clears
+            # the clock, so a session that already slept is not counted twice.
+            bokfor = getattr(service, "bokfor", None)
+            if bokfor is not None:
+                try:
+                    bokfor()
+                except Exception as e:
+                    logger.warning(f"⚠️ cloud budget not recorded for {connection.device_id}: {e!r}")
             for method in ("disconnect", "_disconnect", "cleanup"):
                 closer = getattr(service, method, None)
                 if closer is None:

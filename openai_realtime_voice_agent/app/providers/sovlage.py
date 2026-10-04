@@ -25,7 +25,9 @@ import datetime
 import json
 import logging
 import os
+import tempfile
 import time
+import weakref
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +69,44 @@ class Budget:
     def __init__(self, path=None, today=None):
         self.path = path or os.environ.get("MOLN_LEDGER", "/data/moln_minuter.json")
         self._today = today or (lambda: datetime.date.today().isoformat())
+        self._kand: float | None = None  # last good total for today; a bad read must not become 0
 
     def _read(self) -> dict:
         try:
             with open(self.path) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError(f"not an object: {type(data).__name__}")
+            self._kand = float(data.get(self._today(), 0.0))
+            return data
+        except FileNotFoundError:
+            if self._kand is None:
+                return {}
+            logger.error("❌ cloud budget file is missing, keeping last known value")
+            return {self._today(): self._kand}
+        except (OSError, ValueError) as e:
+            logger.error(f"❌ cloud budget file is unreadable, keeping last known value: {e!r}")
+            if self._kand is None:
+                return {}
+            return {self._today(): self._kand}
+
+    def _skriv(self, data: dict) -> None:
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".moln-", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+            tmp = ""
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     def anvant(self) -> float:
         return float(self._read().get(self._today(), 0.0))
@@ -83,13 +116,13 @@ class Budget:
             return
         data = self._read()
         day = self._today()
-        data = {day: float(data.get(day, 0.0)) + sekunder}  # only today is kept
+        total = float(data.get(day, 0.0)) + sekunder  # only today is kept
         try:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path, "w") as f:
-                json.dump(data, f)
+            self._skriv({day: total})
         except OSError as e:
             logger.warning(f"⚠️ cloud budget not saved: {e!r}")
+            return
+        self._kand = total
 
 
 BUDGET = Budget()
@@ -102,15 +135,28 @@ class SovlageMixin:
     _vaknat_forut = False
     _uppkopplad_sedan = None
     budget = BUDGET
+    _oppna: weakref.WeakSet = weakref.WeakSet()
 
     def oppen_tid(self) -> float:
         return 0.0 if self._uppkopplad_sedan is None else time.monotonic() - self._uppkopplad_sedan
+
+    def bokfor(self) -> None:
+        """Add this session's open seconds to the ledger, once.
+
+        Clearing the clock first makes a second call, from sova() after
+        teardown or the other way around, add nothing.
+        """
+        sekunder = self.oppen_tid()
+        self._uppkopplad_sedan = None
+        self._oppna.discard(self)
+        self.budget.lagg_till(sekunder)
 
     def over_maxtid(self) -> bool:
         return self.oppen_tid() >= max_sekunder_per_samtal()
 
     def over_budget(self) -> bool:
-        return self.budget.anvant() + self.oppen_tid() >= max_sekunder_per_dag()
+        oppet = sum(m.oppen_tid() for m in list(self._oppna))
+        return self.budget.anvant() + oppet >= max_sekunder_per_dag()
 
     async def _connect(self, *args, **kwargs):  # type: ignore[override]
         if self.sover:
@@ -130,6 +176,7 @@ class SovlageMixin:
             return False
         self.sover = False
         self._uppkopplad_sedan = time.monotonic()
+        self._oppna.add(self)
         t0 = time.monotonic()
         try:
             await self._ateranslut(self._vaknat_forut)
@@ -141,8 +188,10 @@ class SovlageMixin:
             # Live 2026-10-04 (US-018): the connect failed offline, the service
             # still counted as awake, and nothing reconnected it when the net
             # came back. Asleep again, so the next wake tries anew.
+            # Not booked: the socket never came up.
             self.sover = True
             self._uppkopplad_sedan = None
+            self._oppna.discard(self)
             logger.warning("☁️ cloud engine did not connect on wake — asleep, the next wake retries")
             return False
         self._vaknat_forut = True
@@ -158,8 +207,7 @@ class SovlageMixin:
         if self.sover:
             return False
         self.sover = True  # first: the closing socket's errors are then ignored
-        self.budget.lagg_till(self.oppen_tid())
-        self._uppkopplad_sedan = None
+        self.bokfor()
         try:
             await self._disconnect()
         except Exception as e:

@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.1 (fork)
+
+- **Dygnstaket bokförs när sessionen rivs.** Minuterna skrevs bara i `sova()`.
+  HA-återvinning, en högtalare som ansluter igen och nedstängning gick via
+  `_teardown` och räknades inte. Samma öppna tid bokförs en gång där, och en
+  gång till från `sova()` lägger inte till något. Ledgern skrivs atomiskt.
+  En trasig eller saknad fil efter ett känt värde nollar inte dagen. Taket
+  räknar alla vakna motorer i processen, inte bara den egna.
+
 ## 0.27.0 (fork) - tidigare 0.25.8 + 0.25.7, ovanpå sovläget
 
 - **Snabbvägen bekräftas av modellen, inte av HA:s torra röst.** Ägaren
