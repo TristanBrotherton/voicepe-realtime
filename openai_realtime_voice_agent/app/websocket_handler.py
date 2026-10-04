@@ -8,12 +8,20 @@ from typing import Any, Optional, Callable, Awaitable, Dict
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, InputAudioRawFrame, OutputAudioRawFrame, StartFrame, EndFrame, ErrorFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    ErrorFrame,
+    Frame,
+    InputAudioRawFrame,
+    MetricsFrame,
+    OutputAudioRawFrame,
+    StartFrame,
+)
 from pipecat.audio.utils import create_stream_resampler
 from pipecat.services.openai.realtime import events as openai_rt_events
 
@@ -25,6 +33,11 @@ from app.audio_recording_service import AudioRecordingService
 from app.phase_emitter import PhaseEmitter
 from app.output_lead_buffer import OutputLeadBuffer
 from app.transcript_logger import TranscriptLogger
+from app.turn_timeline import TurnTimeline
+from app.input_replay import InputReplayBuffer
+from app.wake_events import WakeAudioCapture, WakeEventStore
+from app.device_auth import DeviceAuth
+from app.ha_sensors import PUBLISHER
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +127,26 @@ class InputResampler(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TimelineMetricsTap(FrameProcessor):
+    """Copy pipecat's TTFB metric into the turn timeline (cross-check only)."""
+
+    def __init__(self, timeline_getter, **kwargs):
+        super().__init__(**kwargs)
+        self._timeline_getter = timeline_getter
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, MetricsFrame):
+            timeline = self._timeline_getter()
+            turn = getattr(timeline, "current", None)
+            for data in getattr(frame, "data", None) or []:
+                if type(data).__name__ == "TTFBMetricsData" and turn is not None:
+                    value = getattr(data, "value", None)
+                    if isinstance(value, (int, float)) and value > 0:
+                        turn.meta["pipecat_ttfb_ms"] = int(round(value * 1000))
+        await self.push_frame(frame, direction)
+
+
 class ConnectionRecovery(FrameProcessor):
     """Auto-reconnect the OpenAI Realtime session when its WebSocket dies.
 
@@ -172,9 +205,17 @@ class ConnectionRecovery(FrameProcessor):
     REFRESH_QUIET_S = 60.0    # ... and no mic audio flowed for this long
     REFRESH_CHECK_S = 60.0    # poll cadence of the background check
 
-    def __init__(self, openai_service, emit_idle=None, phase_emitter=None, **kwargs):
+    def __init__(self, openai_service, emit_idle=None, phase_emitter=None,
+                 replay=None, should_replay=None, on_turn_error=None, **kwargs):
         super().__init__(**kwargs)
         self._service = openai_service
+        # Reconnects hold mic frames and, when the request in progress was not
+        # answered yet, replay it into the fresh session (input_replay.py).
+        self._replay = replay
+        self._should_replay = should_replay or (lambda: False)
+        # Called with the error text when a turn ends on a non-fatal error
+        # (rate limit, failed response) so the user can be told out loud.
+        self._on_turn_error = on_turn_error
         self._emit_idle = emit_idle  # async callable(value:str), this device's send_phase
         # Preferred idle route: PhaseEmitter.force_idle() keeps the emitter's
         # phase state consistent AND suppresses the racing `thinking` from VAD
@@ -233,7 +274,11 @@ class ConnectionRecovery(FrameProcessor):
                 if now - self._last_attempt >= self.RECONNECT_COOLDOWN_S:
                     self._reconnecting = True
                     self._last_attempt = now
-                    self._recover_task = asyncio.create_task(self._recover(msg))
+                    # A request still in flight is replayed into the new
+                    # session, so keep the device listening instead of idling it.
+                    self._recover_task = asyncio.create_task(
+                        self._recover(msg, unstick=not self._should_replay())
+                    )
             else:
                 # Non-connection-death error that ENDS a turn without a reply:
                 # most importantly an OpenAI rate-limit ("Rate limit reached …"),
@@ -249,7 +294,31 @@ class ConnectionRecovery(FrameProcessor):
                     asyncio.create_task(self._unstick_idle(msg))
         await self.push_frame(frame, direction)
 
-    async def force_reconnect(self, reason: str) -> None:
+    @property
+    def reconnecting(self) -> bool:
+        return self._reconnecting
+
+    async def probe_liveness(self, timeout_s: float = 1.5) -> bool:
+        """Positive liveness check: a WebSocket ping must get its pong back.
+
+        Has no effect on the conversation (unlike clearing the input buffer),
+        and a half-open socket — the failure mode that produced NO error at
+        all — cannot answer it.
+        """
+        socket = getattr(self._service, "_websocket", None)
+        if socket is None:
+            return False
+        try:
+            waiter = await asyncio.wait_for(socket.ping(), timeout_s)
+            await asyncio.wait_for(waiter, timeout_s)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.info(f"🔌 OpenAI liveness ping failed: {e!r}")
+            return False
+
+    async def force_reconnect(self, reason: str, unstick: bool = True) -> None:
         """Positive-liveness reconnect: for wedged (half-open) sockets that
         produce NO ErrorFrames at all — audio streams out, nothing comes back
         (observed live 2026-07-16: wake + speech after an idle gap → zero
@@ -259,22 +328,29 @@ class ConnectionRecovery(FrameProcessor):
             return
         self._reconnecting = True
         self._last_attempt = now
-        self._recover_task = asyncio.create_task(self._recover(reason))
+        self._recover_task = asyncio.create_task(self._recover(reason, unstick=unstick))
         await self._recover_task
 
-    async def _recover(self, reason: str):
+    async def _recover(self, reason: str, unstick: bool = True):
         t0 = time.monotonic()
         age_s = t0 - self._connected_at
+        replay = self._replay
+        if replay is not None:
+            replay.begin_hold()
+        released = False
         try:
             logger.warning(
                 f"🔌 OpenAI Realtime connection lost after {age_s:.0f}s "
                 f"({reason[:90]}) — reconnecting…"
             )
-            # Unstick the device first, regardless of how the reconnect goes.
-            try:
-                await self._go_idle(f"reconnect: {reason[:60]}")
-            except Exception as e:
-                logger.warning(f"⚠️ could not emit idle during recovery: {e!r}")
+            # Unstick the device first, regardless of how the reconnect goes —
+            # unless the request in progress will be replayed, in which case
+            # the device must keep its mic open and the user keeps talking.
+            if unstick:
+                try:
+                    await self._go_idle(f"reconnect: {reason[:60]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ could not emit idle during recovery: {e!r}")
             reset = getattr(self._service, "reset_conversation", None)
             if reset is None:
                 logger.error("❌ service has no reset_conversation(); cannot reconnect in place")
@@ -285,9 +361,20 @@ class ConnectionRecovery(FrameProcessor):
                 f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "
                 f"(gap the user may have heard)"
             )
+            if replay is not None:
+                do_replay = bool(self._should_replay())
+                pushed = await replay.release(replay=do_replay)
+                released = True
+                if do_replay:
+                    logger.info(f"🔁 replayed the unanswered request into the new session ({pushed} frames)")
         except Exception as e:
             logger.error(f"❌ OpenAI reconnect attempt failed: {e!r}")
         finally:
+            if replay is not None and not released:
+                try:
+                    await replay.release(replay=False)
+                except Exception as e:
+                    logger.debug(f"replay release after failed reconnect: {e!r}")
             self._reconnecting = False
 
     async def _proactive_refresh_loop(self):
@@ -358,12 +445,20 @@ class ConnectionRecovery(FrameProcessor):
             await self._go_idle(f"turn ended on error: {reason[:60]}")
         except Exception as e:
             logger.warning(f"⚠️ could not emit idle after turn-ending error: {e!r}")
+        if self._on_turn_error is not None:
+            try:
+                await self._on_turn_error(reason)
+            except Exception as e:
+                logger.debug(f"turn-error observer failed: {e!r}")
 
 
 class WebSocketHandler:
     """Handles WebSocket transport initialization, pipeline building, and event management."""
 
     WEDGE_TIMEOUT_S = 12.0
+    # A wake opens a liveness check that runs during the chime + mic-open
+    # delay, so a dead socket is replaced before the user starts talking.
+    WAKE_PROBE_TIMEOUT_S = 1.5
     
     def __init__(
         self,
@@ -376,6 +471,9 @@ class WebSocketHandler:
         wake_open_delay_ms: int = 700,
         playback_prebuffer_ms: int = 0,
         output_lead_buffer_ms: int = 0,
+        wake_events: Optional[WakeEventStore] = None,
+        device_auth: Optional[DeviceAuth] = None,
+        trigger_capture: bool = False,
     ):
         """
         Initialize WebSocket handler.
@@ -404,6 +502,17 @@ class WebSocketHandler:
         self.wake_open_delay_ms = max(0, int(wake_open_delay_ms))
         self.playback_prebuffer_ms = max(0, int(playback_prebuffer_ms))
         self.output_lead_buffer_ms = max(0, int(output_lead_buffer_ms))
+        # Wake metadata, false-wake labels and (opt-in) captures, shared by
+        # every connection of this add-on instance.
+        self.wake_events = wake_events or WakeEventStore()
+        self.device_auth = device_auth or DeviceAuth()
+        # Ask firmware for the pre-wake trigger snippet only when audio
+        # capture is on AND the operator opted in to trigger capture.
+        self.trigger_capture = bool(trigger_capture)
+        # Called with (connection, kind) to speak a short error to the user
+        # (set by main.py; see SpokenPrompts).
+        self.turn_error_speaker = None
+        self._background: set = set()
 
         # Per-device connections. Everything that used to be a singleton here —
         # transport, serializer, OpenAI session, pipeline, task — now lives on a
@@ -503,9 +612,24 @@ class WebSocketHandler:
         )
         connection.phase_emitter = phase_emitter
 
+        timeline = connection.turn_timeline
+        connection.replay = InputReplayBuffer()
+
+        def _should_replay() -> bool:
+            # Replay only a request that is still in progress and unanswered.
+            turn = getattr(timeline, "current", None)
+            return bool(turn and not turn.done and "first_model_audio" not in turn.stamps)
+
+        async def _on_turn_error(reason: str) -> None:
+            speaker = self.turn_error_speaker
+            if speaker is not None:
+                await speaker(connection, reason)
+
         connection.recovery = ConnectionRecovery(
             openai_service=openai_service, emit_idle=send_phase,
             phase_emitter=connection.phase_emitter,
+            replay=connection.replay, should_replay=_should_replay,
+            on_turn_error=_on_turn_error,
         )
         pipeline_components = [
             transport.input(),
@@ -514,6 +638,8 @@ class WebSocketHandler:
             # reconnect in place. Without it a 1011/1001 drop bricks the session.
             connection.recovery,
             InputResampler(out_rate=PIPELINE_SAMPLE_RATE),
+            # Keeps the request in progress so a reconnect can replay it.
+            connection.replay,
             input_activity_tracker,
         ]
         
@@ -552,6 +678,7 @@ class WebSocketHandler:
             ])
 
         pipeline_components.append(output_activity_tracker)
+        pipeline_components.append(TimelineMetricsTap(lambda: connection.turn_timeline))
 
         # Emit va_client phase messages (listening/thinking/replying/idle) to
         # the device, derived from Pipecat speaking frames as they pass
@@ -597,7 +724,14 @@ class WebSocketHandler:
         # disconnect would tear down shutdown handling for the whole add-on.
         # The process owns its own signal handling in main().
         runner = PipelineRunner(handle_sigint=False)
-        task = PipelineTask(pipeline, idle_timeout_secs=None, cancel_on_idle_timeout=False)
+        # Metrics on: pipecat's TTFB/processing metrics feed the turn timeline
+        # (TimelineMetricsTap) as a cross-check of our own stage stamps.
+        task = PipelineTask(
+            pipeline,
+            params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+            idle_timeout_secs=None,
+            cancel_on_idle_timeout=False,
+        )
 
         logger.info(f"✅ Pipeline built for {client_id}")
 
@@ -667,6 +801,14 @@ class WebSocketHandler:
         _kill_next_response = {"v": False}
 
         async def _on_device_interrupt():
+            turn = timeline.current if timeline is not None else None
+            if turn is not None and not turn.done:
+                if "bot_started" in turn.stamps or "first_audio_sent" in turn.stamps:
+                    timeline.finish("interrupted")
+                elif "speech_started" not in turn.stamps:
+                    timeline.finish("no_speech")
+                else:
+                    timeline.finish("cancelled")
             _interrupt_kill_until["t"] = time.monotonic() + INTERRUPT_KILL_WINDOW_S
             # Arm the next-response kill on EVERY stop (see the flag comment):
             # the 1.5 s time-window alone misses responses that land later —
@@ -738,10 +880,30 @@ class WebSocketHandler:
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input clear no-op ({e!r})")
 
-        async def _on_device_wake():
-            asyncio.create_task(
-                self._wedge_check(connection, phase_emitter, time.monotonic())
+        async def _on_device_wake(meta=None):
+            meta = dict(meta or {})
+            source = meta.get("src") or "wake_word"
+            turn = timeline.begin(turn_id=meta.get("turn"), source=source, meta=meta)
+            connection.replay.clear()
+            event = self.wake_events.record_wake(
+                connection.device_id,
+                turn.turn_id,
+                source=source,
+                model=str(meta.get("model", "")),
+                model_sha=str(meta.get("model_sha", "")),
+                cutoff=meta.get("cutoff"),
+                window=meta.get("window"),
+                tier=str(meta.get("tier", "")),
             )
+            if connection.wake_capture is not None:
+                connection.wake_capture.start(event)
+            # Sensor publishing is fire-and-forget: the receive loop that
+            # delivered this wake also delivers the user's next audio frames.
+            await PUBLISHER.wake(connection.device_id)
+            if meta.get("model"):
+                PUBLISHER.wake_model(connection.device_id, meta)
+            self._spawn(self._wake_liveness(connection))
+            self._spawn(self._wedge_check(connection, phase_emitter, time.monotonic()))
             # va_client sends {"type":"wake"} on every wake (start_session). Mark
             # the turn boundary for the dangling-VAD guard (A): until the user
             # actually speaks, a server-VAD end-of-turn is a stale pre-wake
@@ -768,6 +930,31 @@ class WebSocketHandler:
                 "t", time.monotonic() + INTERRUPT_KILL_WINDOW_S),
             on_real_speech=_clear_kill_window,
         )
+
+        def _on_turn_end(outcome: str) -> None:
+            turn = timeline.current
+            if turn is None or turn.done:
+                return
+            timeline.finish(outcome)
+            self.wake_events.set_outcome(connection.device_id, turn.turn_id.split(".f")[0], outcome)
+
+        phase_emitter.on_turn_end = _on_turn_end
+        phase_emitter.on_bot_started = lambda: timeline.mark("bot_started")
+        phase_emitter.on_bot_stopped = lambda: timeline.mark("bot_stopped", overwrite=True)
+
+        def _on_silent_response() -> None:
+            turn = timeline.current
+            if turn is not None and not turn.done:
+                self.wake_events.mark_candidate(
+                    connection.device_id, turn.turn_id.split(".f")[0], "admission_silence"
+                )
+            phase_emitter.end_silent_turn()
+
+        if hasattr(openai_service, "turn_timeline"):
+            openai_service.turn_timeline = timeline
+        openai_service.on_silent_response = _on_silent_response
+        # The request was answered: a later reconnect must not replay it.
+        openai_service.on_response_audio = connection.replay.clear
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
@@ -806,28 +993,42 @@ class WebSocketHandler:
 
             if self.enrollment_recorder is not None:
                 serializer.set_enrollment_recorder(self.enrollment_recorder)
-            # Button-cancel shortly after a wake = user flagging a false
-            # trigger: label the latest probe capture like mark_false_wake.
-            async def _on_button_cancel():
-                try:
-                    import os
-                    d = "/share/voice-probes"
-                    files = sorted(f for f in os.listdir(d)
-                                   if f.startswith("probe_") and f.endswith(".wav"))
-                    if files:
-                        latest = files[-1]
-                        os.rename(os.path.join(d, latest),
-                                  os.path.join(d, latest.replace("probe_", "falsewake_", 1)))
-                        logger.info(f"🏷️ button-flagged false wake: {latest}")
-                        from .ha_sensors import PUBLISHER
-                        await PUBLISHER.false_wake()
-                except Exception as e:
-                    logger.warning(f"⚠️ button false-wake flag failed: {e!r}")
-            serializer.set_button_cancel_handler(_on_button_cancel)
+            # False-wake feedback (fast button cancel, double press, or a
+            # queued flag sent after a reconnect) labels exactly one wake on
+            # THIS device: the named turn, or the newest wake within the
+            # bounded flag window. Never another room's capture.
+            async def _on_false_flag(method, turn_id="", age_ms=0):
+                event = self.wake_events.flag_false_wake(
+                    connection.device_id,
+                    method,
+                    turn_id=turn_id or None,
+                    age_s=(age_ms or 0) / 1000.0,
+                    reply_audio_before_flag=serializer._reply_audio_since_wake,
+                )
+                if event is None:
+                    return
+                timeline.set_outcome(event.turn_id, "false_wake")
+                await PUBLISHER.false_wake(connection.device_id)
+            serializer.set_button_cancel_handler(_on_false_flag)
 
             async def _on_first_audio():
+                timeline.mark("first_audio_frame")
                 await connection.send_json({"type": "ack"})
             serializer.set_first_audio_handler(_on_first_audio)
+
+            async def _on_turn_metrics(turn_id, metrics):
+                timeline.merge_device_metrics(turn_id, metrics)
+            serializer.set_turn_metrics_handler(_on_turn_metrics)
+
+            async def _on_trigger_audio(turn_id, pcm, rate):
+                event = self.wake_events.find(connection.device_id, turn_id)
+                if event is None:
+                    return
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.wake_events.save_trigger, event, pcm, rate)
+            serializer.set_trigger_audio_handler(_on_trigger_audio)
+
+            serializer.set_output_audio_handler(lambda: timeline.mark("first_audio_sent"))
 
             if self.enrollment_conductor is not None:
                 async def _on_device_enroll_stopped():
@@ -837,18 +1038,60 @@ class WebSocketHandler:
 
         return pipeline, runner, task
 
+    def _spawn(self, coro) -> None:
+        """Run a background coroutine, keeping a reference until it finishes."""
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _wake_liveness(self, connection: DeviceConnection) -> None:
+        """Check the OpenAI socket while the wake chime plays.
+
+        A half-open socket used to be discovered only 12 s after the wake,
+        with the user's request already lost. Pinging during the chime and the
+        mic-open delay replaces a dead socket before speech arrives, and the
+        replay buffer covers any speech that still raced the reconnect.
+        """
+        recovery = connection.recovery
+        if recovery is None or recovery.reconnecting:
+            return
+        if await recovery.probe_liveness(self.WAKE_PROBE_TIMEOUT_S):
+            return
+        if connection.recovery is not recovery:
+            return
+        logger.warning("🔌 OpenAI socket did not answer a ping at wake — reconnecting before the request")
+        await recovery.force_reconnect("liveness: no pong at wake", unstick=False)
+
     async def _wedge_check(
         self, connection: DeviceConnection, phase_emitter: PhaseEmitter, wake_mono: float
     ) -> None:
-        """Reconnect a quiet wake only while its connection is still live."""
+        """Close a wake that heard no speech; reconnect only a socket that is dead.
+
+        No server VAD activity WEDGE_TIMEOUT_S after a wake used to always mean
+        a reconnect — so every silent or false wake made the next turn cold.
+        Now a ping decides: a live socket just ends the turn (the device mic
+        closes, nothing is reconnected); a dead one is replaced.
+        """
         await asyncio.sleep(self.WEDGE_TIMEOUT_S)
         if getattr(phase_emitter, "last_vad_mono", 0.0) >= wake_mono:
             return
         recovery = connection.recovery
         if recovery is None:
             return
+        if await recovery.probe_liveness():
+            if connection.recovery is not recovery:
+                return
+            logger.info(
+                "🤫 no speech %.0fs after wake; OpenAI socket is alive — closing the turn "
+                "without reconnecting", self.WEDGE_TIMEOUT_S
+            )
+            timeline = connection.turn_timeline
+            if timeline is not None and timeline.current is not None and not timeline.current.done:
+                timeline.finish("no_speech")
+            await phase_emitter.force_idle("no speech after wake")
+            return
         logger.warning(
-            "🧟 no server VAD activity %.0fs after wake — presuming a "
+            "🧟 no server VAD activity %.0fs after wake and no pong — "
             "half-open OpenAI socket, reconnecting", self.WEDGE_TIMEOUT_S
         )
         await recovery.force_reconnect("wedge: silent after wake")
@@ -999,11 +1242,15 @@ class WebSocketHandler:
         """
         return {
             "type": "hello",
+            "proto": 2,
             "audio_out": "pcm",
             "follow_up_ms": self.follow_up_ms,
             "follow_up_open_delay_ms": self.follow_up_open_delay_ms,
             "wake_open_delay_ms": self.wake_open_delay_ms,
             "playback_prebuffer_ms": self.playback_prebuffer_ms,
+            # 1 = the operator opted in to storing the pre-wake trigger snippet
+            # for false-wake review; firmware also requires its own switch.
+            "trigger_capture": 1 if (self.trigger_capture and self.wake_events.storing_audio()) else 0,
         }
 
     async def serve_connection(
@@ -1027,15 +1274,27 @@ class WebSocketHandler:
             on_client_disconnected: Optional callback(connection).
             activity_callback: Optional session-activity callback.
         """
+        decision = self.device_auth.check(websocket)
+        if not decision.allowed:
+            logger.warning(f"⛔ device connection rejected: {decision.reason}")
+            # Closing before accept() makes the server refuse the handshake.
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         device_id = device_id_from_websocket(websocket)
-        logger.info(f"🔗 device {device_id} connected ({len(self.devices) + 1} total)")
+        logger.info(
+            f"🔗 device {device_id} connected ({len(self.devices) + 1} total)"
+            + ("" if decision.authenticated else f" [{decision.reason}]")
+        )
 
         serializer = RawAudioSerializer(device_id)
         connection = DeviceConnection(
             device_id=device_id, websocket=websocket, serializer=serializer
         )
         connection.transport = self.create_transport(websocket, serializer)
+        connection.turn_timeline = TurnTimeline(device_id, publish=PUBLISHER.latency)
+        connection.wake_capture = WakeAudioCapture(self.wake_events)
+        serializer.add_audio_tap(connection.wake_capture)
 
         # Keepalive. The device sends {"type":"ping"} and waits for a pong;
         # the previous implementation registered this on an event pipecat
@@ -1132,6 +1391,13 @@ class WebSocketHandler:
         phase_emitter = connection.phase_emitter
         if phase_emitter is not None:
             await phase_emitter.close()
+        timeline = connection.turn_timeline
+        if timeline is not None:
+            if timeline.current is not None and not timeline.current.done:
+                timeline.finish("disconnected")
+            timeline.close()
+        if connection.wake_capture is not None:
+            connection.wake_capture.finalize()
         service = connection.openai_service
         if service is not None:
             for method in ("disconnect", "_disconnect", "cleanup"):

@@ -95,6 +95,9 @@ class DeviceConnection:
     recovery: Any = None
     phase_emitter: Any = None
     records_audio: bool = False
+    turn_timeline: Any = None
+    wake_capture: Any = None
+    replay: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""
@@ -125,16 +128,18 @@ class DeviceConnection:
             logger.warning(f"⚠️ send to {self.device_id} failed: {e!r}")
             return False
 
-    async def send_phase(self, value: str) -> bool:
+    async def send_phase(self, value: str, **extra) -> bool:
         """Send a va_client phase message to this device only.
 
         Args:
             value: One of listening/thinking/replying/idle.
+            **extra: Optional fields (e.g. followup=False). The firmware
+                matches the phase by substring, so older builds ignore them.
 
         Returns:
             True if the frame was handed to the socket.
         """
-        return await self.send_json({"type": "phase", "value": value})
+        return await self.send_json({"type": "phase", "value": value, **extra})
 
 
 class DeviceRegistry:

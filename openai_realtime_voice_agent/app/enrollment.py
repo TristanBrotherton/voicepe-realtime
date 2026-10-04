@@ -142,37 +142,37 @@ def get_false_alarm_tool_definition() -> Dict[str, Any]:
         "type": "function",
         "name": "mark_false_wake",
         "description": (
-            "Mark the most recent wake as a FALSE trigger. Use when the user says "
-            "the device woke by mistake — e.g. 'that was a false alarm', 'nobody "
-            "called you', 'you weren't being spoken to'. Confirms in one short "
-            "sentence; no apology beyond that."
+            "Mark this device's most recent wake (within the last half minute) as a "
+            "FALSE trigger. Use when the user says the device woke by mistake — e.g. "
+            "'that was a false alarm', 'nobody called you', 'you weren't being spoken "
+            "to'. Confirms in one short sentence; no apology beyond that."
         ),
         "parameters": {"type": "object", "properties": {}},
     }
 
 
-def create_false_alarm_tool_handler() -> Callable[["FunctionCallParams"], Awaitable[None]]:
+def create_false_alarm_tool_handler(store, device_id: str) -> Callable[["FunctionCallParams"], Awaitable[None]]:
+    """Label the newest wake on THIS device, within the store's flag window.
+
+    The old handler renamed the globally newest capture, which could belong
+    to another room or to an earlier genuine wake.
+    """
     async def false_alarm_handler(params: "FunctionCallParams") -> None:
         try:
-            probes_dir = "/share/voice-probes"
-            files = sorted(
-                f for f in os.listdir(probes_dir)
-                if f.startswith("probe_") and f.endswith(".wav")
-            )
-            if not files:
-                await params.result_callback({"status": "no recent wake capture found"})
+            event = store.flag_false_wake(device_id, "voice")
+            if event is None:
+                await params.result_callback({
+                    "status": "no recent wake on this device",
+                    "note": "Nothing was marked. Say briefly that there was no recent wake to mark.",
+                })
                 return
-            latest = files[-1]
-            marked = latest.replace("probe_", "falsewake_", 1)
-            os.rename(os.path.join(probes_dir, latest), os.path.join(probes_dir, marked))
-            logger.info(f"🏷️ marked false wake: {marked}")
             try:
                 from .ha_sensors import PUBLISHER
-                await PUBLISHER.false_wake()
+                await PUBLISHER.false_wake(device_id)
             except Exception:
                 pass
             await params.result_callback(
-                {"status": "marked", "note": "Logged as a false trigger for retraining. Confirm briefly."}
+                {"status": "marked", "note": "Logged as a false trigger for review. Confirm briefly."}
             )
         except Exception as e:
             logger.error(f"❌ mark_false_wake failed: {e}", exc_info=True)
@@ -311,13 +311,19 @@ class EnrollmentConductor:
     REP_GAP_S = 4.5
 
     def __init__(self, recorder, send_json, send_bytes, api_key,
-                 phrase="hey leonard", tts_voice="fable"):
+                 phrase="hey leonard", tts_voice="fable", tts_style=""):
+        from .spoken_prompts import DEFAULT_STYLE, TTSCache
+
         self.recorder = recorder
         self.send_json = send_json
         self.send_bytes = send_bytes
         self.api_key = api_key
         self.phrase = phrase or "your wake word"
         self.tts_voice = tts_voice or "fable"
+        # Voice style for coach prompts, timer and announcement speech
+        # (tts_style option). Generic by default; set a persona there.
+        self.tts = TTSCache(api_key, self.tts_voice, tts_style or DEFAULT_STYLE,
+                            cache_dir="/data/enroll_prompts")
         self._task = None
         self.device_id: Optional[str] = None
         self.on_finished = None   # async callback(info: dict) after stop
@@ -327,26 +333,10 @@ class EnrollmentConductor:
         return self._task is not None and not self._task.done()
 
     async def _tts(self, text):
-        """Synthesize one prompt to 24 kHz mono PCM16, cached in /data."""
-        import hashlib
-        os.makedirs("/data/enroll_prompts", exist_ok=True)
-        key = hashlib.md5(f"{self.tts_voice}:{text}".encode()).hexdigest()
-        path = f"/data/enroll_prompts/{key}.pcm"
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            with open(path, "rb") as f:
-                return f.read()
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/audio/speech",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": "gpt-4o-mini-tts", "voice": self.tts_voice,
-                      "input": text, "response_format": "pcm",
-                      "instructions": "Calm, composed British butler. Brisk but unhurried."},
-            )
-            r.raise_for_status()
-            pcm = r.content
-        with open(path, "wb") as f:
-            f.write(pcm)
+        """Synthesize one prompt to 24 kHz mono PCM16 (cached on /data)."""
+        pcm = await self.tts.get(text)
+        if pcm is None:
+            raise RuntimeError("speech synthesis unavailable")
         return pcm
 
     async def _say(self, text, device_id=None):

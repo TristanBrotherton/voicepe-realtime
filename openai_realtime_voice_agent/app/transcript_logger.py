@@ -29,10 +29,13 @@ How the text reaches us (verified against pipecat 0.0.97's *real*
 Because the two transcripts travel in opposite directions past the service, no
 single position sees both — so the pipeline wires TWO instances of this class,
 one per role (see websocket_handler.build_pipeline). It is pure instrumentation:
-it never transforms or drops a frame. (Listed for removal under CLAUDE.md
-roadmap #5 once the system is stable.)
+it never transforms or drops a frame.
+
+Privacy: transcripts are personal data, so logging them is OFF unless the
+``log_transcripts`` option (LOG_TRANSCRIPTS=true) is enabled for debugging.
 """
 import logging
+import os
 
 from pipecat.frames.frames import (
     Frame,
@@ -54,9 +57,11 @@ class TranscriptLogger(FrameProcessor):
             the LLM), "user" (TranscriptionFrame, place BEFORE the LLM), or "both".
     """
 
-    def __init__(self, capture: str = "both", **kwargs):
+    def __init__(self, capture: str = "both", enabled: bool = None, **kwargs):
         super().__init__(**kwargs)
-        self._capture = capture
+        if enabled is None:
+            enabled = os.environ.get("LOG_TRANSCRIPTS", "false").strip().lower() == "true"
+        self._capture = capture if enabled else "none"
         self._assistant_buf: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):

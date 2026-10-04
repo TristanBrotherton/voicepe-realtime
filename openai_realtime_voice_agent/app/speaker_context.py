@@ -18,9 +18,7 @@ zero overhead beyond an attribute check per audio frame).
 """
 import asyncio
 import logging
-import os
 import time
-import wave
 from typing import Awaitable, Callable, Optional
 
 from .speaker_gender import classify_gender
@@ -29,11 +27,9 @@ from . import voiceprint
 logger = logging.getLogger(__name__)
 
 CAPTURE_SECONDS = 5.0
-# Partial captures at least this long are still classified + dumped when a
-# session ends before the full window fills — short false wakes are exactly
-# the audio we want to harvest for retraining, and they were being lost.
+# Partial captures at least this long are still classified when a session
+# ends before the full window fills.
 MIN_PARTIAL_SECONDS = 1.0
-PROBE_DUMP_DIR = "/share/voice-probes"  # persistent across add-on rebuilds
 SAMPLE_RATE = 16000
 CAPTURE_BYTES = int(CAPTURE_SECONDS * SAMPLE_RATE * 2)  # PCM16 mono
 # A verdict older than this is stale (device asleep between turns); the gate
@@ -158,30 +154,9 @@ class SpeakerProbe:
 
     async def _classify(self, data: bytes) -> None:
         try:
-            # Debug: when add-on recording is enabled, dump the raw capture so
-            # thresholds can be tuned offline against real device audio.
-            if os.environ.get("ENABLE_RECORDING", "false").strip().lower() == "true":
-                try:
-                    os.makedirs(PROBE_DUMP_DIR, exist_ok=True)
-                    path = f"{PROBE_DUMP_DIR}/probe_{time.strftime('%Y%m%d_%H%M%S')}.wav"
-                    with wave.open(path, "wb") as w:
-                        w.setnchannels(1)
-                        w.setsampwidth(2)
-                        w.setframerate(16000)
-                        w.writeframes(data)
-                    logger.info(f"🎙️ speaker probe capture saved: {path}")
-                    # Retention: cap the probe archive at the newest 500 files
-                    # (~50 MB) so harvesting can run indefinitely without hygiene.
-                    try:
-                        files = sorted(
-                            f for f in os.listdir(PROBE_DUMP_DIR) if f.endswith(".wav")
-                        )
-                        for stale in files[:-500]:
-                            os.remove(os.path.join(PROBE_DUMP_DIR, stale))
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.warning(f"⚠️ probe capture dump failed: {e!r}")
+            # Post-wake audio archiving lives in wake_events.WakeAudioCapture
+            # (explicit capture modes, device/turn-scoped names, label-safe
+            # retention); this probe only classifies.
             label, name, metric, method = await asyncio.to_thread(self._identify, data)
             self.current_label = label
             self.current_f0 = metric

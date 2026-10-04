@@ -31,6 +31,23 @@ from app.voice_memory import (
     register_memory_tools,
 )
 from app.realtime_payload import transform_gpt_transcription_language
+from app.realtime_observer import ObservedSocket
+from app.action_gate import (
+    ActionGate,
+    EntityDirectory,
+    confirmation_result,
+    get_confirm_tool_definition,
+    replace_arguments,
+)
+from app.device_auth import DeviceAuth
+from app.spoken_prompts import (
+    DEFAULT_SLOW_TOOLS,
+    SpokenPrompts,
+    TTSCache,
+    classify_error,
+    pick_voice,
+)
+from app.wake_events import CaptureConfig, WakeEventStore
 from app.turn_admission import turn_admission_instructions
 from app.enrollment import (
     EnrollmentRecorder,
@@ -75,6 +92,34 @@ def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:
     return choice or default
 
 dotenv.load_dotenv()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    if raw in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
+def _env_list(name: str, default: str = "") -> list:
+    return [t.strip() for t in os.environ.get(name, default).split(",") if t.strip()]
+
+
+TOOL_ACK_INSTRUCTIONS = """
+
+TOOL USE: Call tools without announcing them — never say "let me check" or
+"one moment" before or while a tool runs. When a lookup is slow, the device
+plays a short acknowledgement by itself. Speak once, with the result.
+"""
+
+CONFIRMATION_INSTRUCTIONS = """
+
+CONFIRMATIONS: Some actions (unlocking, opening garages or gates, alarm
+changes) return "confirmation_required" instead of running. Then ask one short
+yes/no question and call confirm_action only after the user clearly says yes.
+"""
 
 
 class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
@@ -149,7 +194,91 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
                 "out_text": out_text, "out_audio": out_audio}))
         except Exception as e:
             logger.debug(f"usage accounting failed: {e!r}")
+        silent = self._is_silent_response(evt)
         await super()._handle_evt_response_done(evt)
+        if silent:
+            callback = getattr(self, "on_silent_response", None)
+            if callback is not None:
+                try:
+                    callback()
+                except Exception as e:
+                    logger.debug(f"silent-response observer failed: {e!r}")
+
+    def _is_silent_response(self, evt) -> bool:
+        """A completed response with no audio and no tool call.
+
+        That is the turn-admission policy declining an accidental wake: no Bot
+        frames will follow, so the phase machine must close the turn itself.
+        """
+        response = getattr(evt, "response", None)
+        if response is None or getattr(response, "status", None) != "completed":
+            return False
+        if getattr(response, "id", None) in getattr(self, "_responses_with_audio", set()):
+            return False
+        for item in getattr(response, "output", None) or []:
+            if getattr(item, "type", None) == "function_call":
+                return False
+            for part in getattr(item, "content", None) or []:
+                if getattr(part, "type", None) in ("output_audio", "audio"):
+                    return False
+        return True
+
+    # -- per-turn timeline stamps (app/turn_timeline.py) -----------------------
+    def _timeline(self):
+        return getattr(self, "turn_timeline", None)
+
+    async def _send_user_audio(self, frame):  # type: ignore[override]
+        # Session-relative input audio clock: OpenAI's audio_end_ms is measured
+        # on the same axis, so (appended - audio_end_ms) is the audio streamed
+        # after the real end of speech before the VAD declared end-of-turn.
+        self._appended_audio_ms = getattr(self, "_appended_audio_ms", 0.0) + len(frame.audio) / 48.0
+        await super()._send_user_audio(frame)
+
+    async def _handle_evt_speech_started(self, evt):  # type: ignore[override]
+        timeline = self._timeline()
+        if timeline is not None:
+            turn = timeline.ensure_active()
+            timeline.mark("speech_started")
+            self._speech_audio_start_ms = getattr(evt, "audio_start_ms", None)
+            turn.meta.setdefault("model_name", getattr(self, "model_name", ""))
+        await super()._handle_evt_speech_started(evt)
+
+    async def _handle_evt_speech_stopped(self, evt):  # type: ignore[override]
+        timeline = self._timeline()
+        if timeline is not None:
+            timeline.note_speech_stopped(
+                getattr(evt, "audio_end_ms", None),
+                getattr(self, "_speech_audio_start_ms", None),
+                getattr(self, "_appended_audio_ms", None),
+            )
+        await super()._handle_evt_speech_stopped(evt)
+
+    async def _handle_evt_audio_delta(self, evt):  # type: ignore[override]
+        responses = getattr(self, "_responses_with_audio", None)
+        if responses is None:
+            responses = self._responses_with_audio = set()
+        response_id = getattr(evt, "response_id", None)
+        if response_id not in responses:
+            responses.add(response_id)
+            if len(responses) > 64:
+                responses.clear()
+                responses.add(response_id)
+            timeline = self._timeline()
+            if timeline is not None:
+                timeline.mark("first_model_audio")
+            callback = getattr(self, "on_response_audio", None)
+            if callback is not None:
+                try:
+                    callback()
+                except Exception as e:
+                    logger.debug(f"response-audio observer failed: {e!r}")
+        await super()._handle_evt_audio_delta(evt)
+
+    def _observe_server_event(self, event_type: str, _message) -> None:
+        if event_type == "response.created":
+            timeline = self._timeline()
+            if timeline is not None:
+                timeline.mark("response_created")
 
     async def reset_conversation(self):  # type: ignore[override]
         """Reconnect WITHOUT forcing a response on the reconnected session.
@@ -194,6 +323,7 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
                 logger.warning(f"⚠️ could not snapshot tool-call history before reconnect: {e!r}")
 
         self._resetting_conversation = True
+        self._appended_audio_ms = 0.0
         try:
             await super().reset_conversation()
             try:
@@ -290,15 +420,79 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
                         )
                     })
                     return
+            # Consequential-action gate (app/action_gate.py): unlock/open/disarm
+            # calls are held until the user answers a confirmation question.
+            # Enforced here, below the model, like the speaker gate.
+            gate = getattr(self, "action_gate", None)
+            if gate is not None and gate.enabled and function_name != "confirm_action":
+                decision = await gate.check(function_name, params.arguments)
+                if decision.requires_confirmation:
+                    device_id, user_seq, wake_seq = self.gate_context()
+                    pending = gate.request(
+                        device_id, function_name, dict(params.arguments or {}), handler,
+                        decision.summary, user_seq, wake_seq,
+                    )
+                    await params.result_callback(confirmation_result(pending, gate.window_s))
+                    return
+            timeline = getattr(self, "turn_timeline", None)
+            record = timeline.tool_started(function_name) if timeline is not None else None
             self.turn_liveness.tool_started()
+            ack = self._schedule_slow_tool_ack(function_name)
+            ok = False
             try:
-                return await handler(params)
+                result = await handler(params)
+                ok = True
+                return result
             finally:
+                # Never cut an acknowledgement off mid-word; only a pending
+                # (not yet started) one is cancelled when the tool finishes.
+                if ack is not None and not ack.ack_state["playing"]:
+                    ack.cancel()
+                if timeline is not None:
+                    timeline.tool_finished(record, ok)
                 self.turn_liveness.tool_finished()
 
         super().register_function(
             function_name, liveness_tracked, start_callback, cancel_on_interruption=False
         )
+
+    def gate_context(self):
+        """(device_id, user_turn_seq, wake_seq) for confirmation bookkeeping."""
+        timeline = getattr(self, "turn_timeline", None)
+        if timeline is None:
+            return getattr(self, "device_id", ""), 0, 0
+        return timeline.device_id, timeline.user_turn_seq, timeline.wake_seq
+
+    def _schedule_slow_tool_ack(self, function_name: str):
+        """Play one short acknowledgement if a slow tool is still running.
+
+        Only tools known to be slow (or whose measured median exceeds the
+        threshold) qualify, only after ack_delay_s, at most once per turn, and
+        never while the assistant is already speaking.
+        """
+        prompts = getattr(self, "spoken_prompts", None)
+        timeline = getattr(self, "turn_timeline", None)
+        if prompts is None or not prompts.enabled or timeline is None:
+            return None
+        p50 = timeline.stats.p50(f"tool.{function_name}")
+        if not prompts.is_slow(function_name, None if p50 is None else p50 / 1000.0):
+            return None
+        turn = timeline.current
+        state = {"playing": False}
+
+        async def _ack():
+            await asyncio.sleep(prompts.ack_delay_s)
+            if turn is None or turn.done or turn.meta.get("ack_played"):
+                return
+            if "first_audio_sent" in turn.stamps and "bot_stopped" not in turn.stamps:
+                return  # the assistant is speaking right now
+            turn.meta["ack_played"] = True
+            state["playing"] = True
+            await prompts.say("ack", timeline.device_id)
+
+        task = asyncio.create_task(_ack())
+        task.ack_state = state
+        return task
 
     async def _receive_task_handler(self):  # type: ignore[override]
         """Surface OpenAI reader death as an ErrorFrame so recovery can act.
@@ -312,6 +506,14 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
         Wrap the loop and report its end; ConnectionRecovery treats the
         message as a reconnect trigger.
         """
+        socket = getattr(self, "_websocket", None)
+        if socket is not None and not isinstance(socket, ObservedSocket):
+            from pipecat.services.openai.realtime import events as _rt_events
+            self._websocket = ObservedSocket(
+                socket,
+                on_event=self._observe_server_event,
+                known_types=getattr(_rt_events, "_server_event_types", None),
+            )
         try:
             await super()._receive_task_handler()
         except asyncio.CancelledError:
@@ -347,6 +549,11 @@ class Application:
         self.speaker_male_name = ""
         self.speaker_female_name = ""
         self.male_only_tools: set[str] = set()
+        self.wake_events: Optional[WakeEventStore] = None
+        self.device_auth: Optional[DeviceAuth] = None
+        self.action_gate: Optional[ActionGate] = None
+        self.spoken_prompts: Optional[SpokenPrompts] = None
+        self._guest_state = {"value": False, "checked": -1e9}
         
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -555,6 +762,23 @@ class Application:
             output_dir="recordings"
         )
 
+        # Wake events: false-wake labels and (opt-in) captures. What is stored
+        # is an explicit choice (wake_capture); a guest-mode entity turns all
+        # storage off while it is on. See app/wake_events.py.
+        capture_config = CaptureConfig.from_env()
+        self.wake_events = WakeEventStore(
+            capture_config,
+            instance=os.environ.get("INSTANCE_NAME", ""),
+            guest_mode=self._guest_mode_active,
+        )
+        logger.info(
+            f"🗂️ wake capture: {capture_config.mode} "
+            f"(unlabeled TTL {capture_config.unlabeled_ttl_days} d, labeled TTL "
+            f"{capture_config.labeled_ttl_days} d, flag window {capture_config.flag_window_s:.0f} s)"
+        )
+        self.device_auth = DeviceAuth.from_env()
+        self.device_auth.log_startup()
+
         # Initialize WebSocket handler
         self.websocket_handler = WebSocketHandler(
             host=websocket_host,
@@ -566,6 +790,9 @@ class Application:
             wake_open_delay_ms=wake_open_delay_ms,
             playback_prebuffer_ms=playback_prebuffer_ms,
             output_lead_buffer_ms=output_lead_buffer_ms,
+            wake_events=self.wake_events,
+            device_auth=self.device_auth,
+            trigger_capture=_env_bool("TRIGGER_CAPTURE", False),
         )
         logger.info(
             f"🔁 Follow-up window: {follow_up_listen_seconds}s "
@@ -601,6 +828,7 @@ class Application:
         # Voice enrollment (fork): guided on-device voice capture, always available.
         self.enrollment_recorder = EnrollmentRecorder()
         self.websocket_handler.enrollment_recorder = self.enrollment_recorder
+        tts_style = os.environ.get("TTS_STYLE", "").strip()
         self.enrollment_conductor = EnrollmentConductor(
             self.enrollment_recorder,
             self.websocket_handler.send_json_to,
@@ -608,7 +836,36 @@ class Application:
             openai_api_key,
             phrase=os.environ.get("ENROLLMENT_PHRASE", "").strip(),
             tts_voice=os.environ.get("ENROLLMENT_TTS_VOICE", "fable").strip() or "fable",
+            tts_style=tts_style,
         )
+
+        # Slow-tool acknowledgements + audible errors (app/spoken_prompts.py).
+        prompt_voice = pick_voice(
+            os.environ.get("TTS_VOICE", ""), openai_voice,
+            os.environ.get("ENROLLMENT_TTS_VOICE", ""),
+        )
+        self.spoken_prompts = SpokenPrompts(
+            TTSCache(openai_api_key, prompt_voice, tts_style),
+            play=self._play_prompt,
+            slow_tools=_env_list("SLOW_TOOLS", ",".join(DEFAULT_SLOW_TOOLS)),
+            enabled=_env_bool("SLOW_TOOL_ACK", True),
+        )
+        self.speak_errors = _env_bool("SPEAK_ERRORS", True)
+        self._last_error_spoken = {}
+        self.websocket_handler.turn_error_speaker = self._speak_turn_error
+        asyncio.get_running_loop().create_task(self._warm_prompts())
+
+        # Consequential-action confirmations (app/action_gate.py).
+        self.action_gate = ActionGate(
+            rules=_env_list("CONFIRM_ACTIONS", "lock,garage,gate,door,alarm"),
+            extra_tools=_env_list("CONFIRM_TOOLS"),
+            directory=EntityDirectory(self._fetch_ha_states),
+        )
+        if self.action_gate.enabled:
+            logger.info(
+                f"🔐 confirmation required for: {sorted(self.action_gate.rules)}"
+                + (f" + tools {sorted(self.action_gate.extra_tools)}" if self.action_gate.extra_tools else "")
+            )
         self.websocket_handler.enrollment_conductor = self.enrollment_conductor
 
         # Auto-build the voice print when enrollment finishes (fork, 0.16.5):
@@ -723,6 +980,105 @@ class Application:
 
         logger.info("✅ Application initialized - ready to accept WebSocket connections")
     
+    def _ha_token(self) -> str:
+        return os.environ.get("SUPERVISOR_TOKEN", "")
+
+    async def _fetch_ha_states(self) -> list:
+        """Home Assistant's state list (entity directory for the action gate)."""
+        token = self._ha_token()
+        if not token:
+            return []
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(
+                "http://supervisor/core/api/states",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def _guest_mode_active(self) -> bool:
+        """True while the optional guest-mode entity is on (cached, refreshed async)."""
+        entity = os.environ.get("GUEST_MODE_ENTITY", "").strip()
+        if not entity:
+            return False
+        import time as _t
+        state = self._guest_state
+        if _t.monotonic() - state["checked"] > 30:
+            state["checked"] = _t.monotonic()
+            try:
+                asyncio.get_running_loop().create_task(self._refresh_guest_mode(entity))
+            except RuntimeError:
+                pass
+        return state["value"]
+
+    async def _refresh_guest_mode(self, entity: str) -> None:
+        token = self._ha_token()
+        if not token:
+            return
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(
+                    f"http://supervisor/core/api/states/{entity}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                on = response.json().get("state") == "on"
+        except Exception as e:
+            logger.debug(f"guest-mode check failed: {e!r}")
+            return
+        if on != self._guest_state["value"]:
+            logger.info(f"🙈 guest mode {'ON — nothing is stored' if on else 'off'}")
+        self._guest_state["value"] = on
+
+    async def _warm_prompts(self) -> None:
+        try:
+            await self.spoken_prompts.warm()
+        except Exception as e:
+            logger.debug(f"prompt warm-up failed: {e!r}")
+
+    async def _play_prompt(self, pcm: bytes, device_id: str) -> bool:
+        """Play a cached prompt on one device with the inbound mic suppressed."""
+        import time as _t
+        ser = self.websocket_handler.serializer_for(device_id)
+        chunk = 4800  # 100 ms of 24 kHz mono PCM16
+        if ser is not None:
+            ser.suppress_inbound_until = _t.monotonic() + len(pcm) / 48000.0 + 1.2
+            ser.begin_out_of_band()
+        try:
+            for i in range(0, len(pcm), chunk):
+                if not await self.websocket_handler.send_bytes_to(pcm[i:i + chunk], device_id):
+                    return False
+                await asyncio.sleep(0.09)
+            return True
+        finally:
+            if ser is not None:
+                ser.end_out_of_band()
+
+    async def _speak_turn_error(self, connection, reason: str) -> None:
+        """Explain a turn-ending error out loud, but only for a turn the user started."""
+        if not self.speak_errors:
+            return
+        import time as _t
+        timeline = getattr(connection, "turn_timeline", None)
+        turns = list(getattr(timeline, "history", []) or [])
+        if timeline is not None and timeline.current is not None:
+            turns.append(timeline.current)
+        recent = [t for t in turns if _t.monotonic() - t.started < 60 and "first_audio_sent" not in t.stamps]
+        if not recent:
+            return
+        last = self._last_error_spoken.get(connection.device_id, -1e9)
+        if _t.monotonic() - last < 30:
+            return
+        self._last_error_spoken[connection.device_id] = _t.monotonic()
+        key = classify_error(reason)
+        logger.info(f"🔊 telling the user about a failed turn ({key})")
+        spoken = await self.spoken_prompts.say(key, connection.device_id)
+        if not spoken:
+            # Firmware plays its error chime for audible errors.
+            await connection.send_json({"type": "error", "audible": True, "kind": key})
+
     def _update_session_activity(self):
         """Update session activity timestamp (called by SessionActivityTracker)."""
         pass
@@ -800,6 +1156,8 @@ class Application:
             all_tools.append(get_false_alarm_tool_definition())
             all_tools.extend(get_timer_tool_definitions())
             all_tools.extend(get_memory_tool_definitions())
+            if self.action_gate is not None and self.action_gate.enabled:
+                all_tools.append(get_confirm_tool_definition())
             # Direct OpenClaw escalation (fork): with OPENCLAW_URL set the tool
             # is native (no HA-MCP 60s cap); the same-named MCP tool is skipped
             # below so the model sees exactly one ask_openclaw.
@@ -823,6 +1181,10 @@ class Application:
                             continue
                         if openclaw_url() and function_schema.name == "ask_openclaw":
                             continue
+                        if self.action_gate is not None:
+                            self.action_gate.tool_descriptions[function_schema.name] = (
+                                function_schema.description or ""
+                            )
                         openai_tool = {
                             "type": "function",
                             "name": function_schema.name,
@@ -903,6 +1265,8 @@ class Application:
                 instructions=(
                     self.instructions
                     + memory_instructions()
+                    + (TOOL_ACK_INSTRUCTIONS if self.spoken_prompts and self.spoken_prompts.enabled else "")
+                    + (CONFIRMATION_INSTRUCTIONS if self.action_gate and self.action_gate.enabled else "")
                     + turn_admission_instructions()
                 ),
                 # Cap the reply length: bounds runaway monologues + per-response
@@ -947,6 +1311,10 @@ class Application:
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
             service.turn_liveness = connection.turn_liveness
+            service.device_id = connection.device_id
+            service.turn_timeline = connection.turn_timeline
+            service.action_gate = self.action_gate
+            service.spoken_prompts = self.spoken_prompts
             if self.speaker_male_name or self.speaker_female_name:
                 connection.speaker_probe = SpeakerProbe(
                     self.speaker_male_name, self.speaker_female_name
@@ -981,12 +1349,17 @@ class Application:
             )
             logger.info("✅ Registered voice_enrollment tool handler")
             service.register_function(
-                "mark_false_wake", create_false_alarm_tool_handler()
+                "mark_false_wake",
+                create_false_alarm_tool_handler(self.wake_events, connection.device_id),
             )
+            if self.action_gate is not None and self.action_gate.enabled:
+                service.register_function(
+                    "confirm_action", self._create_confirm_handler(service)
+                )
             register_timer_tools(service, self.timer_registry, connection.device_id)
             register_memory_tools(service, _current_speaker_name)
             if openclaw_url():
-                register_openclaw_tool(service)
+                register_openclaw_tool(service, connection.device_id)
                 logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
             logger.info("✅ Registered timer + memory tools")
 
@@ -1004,7 +1377,7 @@ class Application:
             # path and its 60s cap. Observed live 2026-07-13: "It failed. I
             # couldn't send the text" at exactly 60s — while the text sent fine.
             if openclaw_url():
-                register_openclaw_tool(service)
+                register_openclaw_tool(service, connection.device_id)
                 logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
             
             # Register service with session manager
@@ -1015,6 +1388,22 @@ class Application:
 
             logger.info("✅ New OpenAI Session created")
             return service
+
+    def _create_confirm_handler(self, service):
+        gate = self.action_gate
+
+        async def confirm_action(params) -> None:
+            confirm_id = str((params.arguments or {}).get("confirm_id") or "")
+            device_id, user_seq, wake_seq = service.gate_context()
+            pending, error = gate.take(confirm_id, device_id, user_seq, wake_seq)
+            if pending is None:
+                logger.info(f"🔐 confirmation refused on {device_id}: {error}")
+                await params.result_callback({"error": error})
+                return
+            logger.info(f"🔐 confirmed on {device_id}: {pending.summary}")
+            await pending.handler(replace_arguments(params, pending.function_name, pending.arguments))
+
+        return confirm_action
 
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
@@ -1086,10 +1475,19 @@ class Application:
                 activity_callback=self._update_session_activity,
             )
 
+        from fastapi import Request
+
         @web_app.get("/healthz")
-        async def healthz():
-            """Liveness plus the currently connected device ids."""
-            return {"status": "ok", "devices": self.websocket_handler.devices.ids()}
+        async def healthz(request: Request):
+            """Liveness and a device count; ids only for an authorized caller."""
+            body = {"status": "ok", "devices": len(self.websocket_handler.devices)}
+            auth = self.device_auth
+            if auth is not None and auth.authorizes_request(
+                request.headers.get("authorization", ""),
+                [os.environ.get("ANNOUNCE_TOKEN", "").strip()],
+            ):
+                body["device_ids"] = self.websocket_handler.devices.ids()
+            return body
 
         return web_app
 

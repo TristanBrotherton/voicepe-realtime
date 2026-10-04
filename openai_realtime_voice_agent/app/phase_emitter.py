@@ -60,6 +60,17 @@ IMPORTANT — thinking watchdog + forced idle (v0.5.3):
        drops back to 0 — after which the normal THINKING_TIMEOUT_S window
        applies again. If a slow-but-alive turn is ever cut off, the late
        reply still plays (BotStarted -> replying) — degraded but never stuck.
+
+IMPORTANT — silent turns:
+    The turn-admission policy tells the model to stay silent for accidental
+    wakes. A silent response produces no Bot frames, so `thinking` used to sit
+    with an OPEN MIC until the 15 s watchdog. `end_silent_turn()` (called when a
+    response completes with no audio and no tool call) closes the turn after
+    SILENT_GRACE_S unless the user starts speaking again, and tells the device
+    not to open a follow-up window for it.
+
+Turn observers (`on_turn_end`, `on_bot_started`, `on_bot_stopped`) let the
+per-turn latency timeline stamp stages without coupling it to this class.
 """
 import asyncio
 import logging
@@ -114,6 +125,9 @@ class PhaseEmitter(FrameProcessor):
     WATCHDOG_POLL_S = 1.0
     # How often to log that we're deliberately waiting on a running tool.
     INFLIGHT_LOG_EVERY_S = 30.0
+    # After a silent (admission-suppressed) response: how long to keep the
+    # mic open for a genuine late request before closing the turn.
+    SILENT_GRACE_S = 3.0
 
     def __init__(self, send_phase, idle_debounce_s: float = None, liveness=None, **kwargs):
         """
@@ -158,6 +172,14 @@ class PhaseEmitter(FrameProcessor):
         # genuine new utterance — never cancel ITS response).
         self._on_dangling_stop = None
         self._on_real_speech = None
+        self._silent_task = None
+        # Turn observers (set by websocket_handler). on_turn_end(outcome) runs
+        # whenever this emitter ends a turn (idle after a reply, silent turn,
+        # forced idle); the bot callbacks stamp the latency timeline.
+        self.on_turn_end = None
+        self.on_bot_started = None
+        self.on_bot_stopped = None
+        self._bot_spoke_this_turn = False
 
     def note_wake(self) -> None:
         """Device woke (or a follow-up window closed without speech). Until the
@@ -181,9 +203,11 @@ class PhaseEmitter(FrameProcessor):
         """
         self._cancel_pending_idle()
         self._cancel_watchdog()
+        self._cancel_silent()
         self._suppress_thinking = True
         if reason:
             logger.warning(f"📞 forcing phase idle ({reason[:90]})")
+        self._turn_end("error")
         # A wake changes the device's ring locally before server VAD produces a
         # phase frame. If that socket is half-open, our cached phase can still
         # be ``idle`` even though the physical device is visibly listening.
@@ -191,7 +215,7 @@ class PhaseEmitter(FrameProcessor):
         # deduping here leaves the ring spinning forever after the reconnect.
         await self._emit("idle", force=True)
 
-    async def _emit(self, value: str, force: bool = False) -> None:
+    async def _emit(self, value: str, force: bool = False, extra: dict = None) -> None:
         # "listening" is NEVER deduped. The device lifts its post-stop incoming-
         # audio suppression ONLY on receiving a "listening" phase (firmware
         # 14bff74). A stop can RE-SET that suppression after our last "listening"
@@ -206,10 +230,13 @@ class PhaseEmitter(FrameProcessor):
         if value == self._current and value != "listening" and not force:
             return
         self._current = value
-        logger.info(f"📞 phase -> {value}")  # TEMP instrumentation
+        logger.info(f"📞 phase -> {value}" + (f" {extra}" if extra else ""))
         if self._send_phase is not None:
             try:
-                await self._send_phase(value)
+                if extra:
+                    await self._send_phase(value, **extra)
+                else:
+                    await self._send_phase(value)
             except Exception as e:  # never let UI signalling break the audio path
                 logger.warning(f"⚠️ Failed to emit phase '{value}': {e}")
 
@@ -223,15 +250,53 @@ class PhaseEmitter(FrameProcessor):
             self._watchdog_task.cancel()
         self._watchdog_task = None
 
+    def _cancel_silent(self) -> None:
+        if self._silent_task is not None and not self._silent_task.done():
+            self._silent_task.cancel()
+        self._silent_task = None
+
+    def _turn_end(self, outcome: str) -> None:
+        if self.on_turn_end is not None:
+            try:
+                self.on_turn_end(outcome)
+            except Exception as e:
+                logger.debug(f"turn-end observer failed: {e!r}")
+        self._bot_spoke_this_turn = False
+
+    def end_silent_turn(self) -> None:
+        """A response finished with no audio and no tool call (admission silence).
+
+        Close the turn after SILENT_GRACE_S unless the user speaks again or a
+        reply starts, and ask the device not to open a follow-up window.
+        """
+        if self._current != "thinking" or self._liveness.in_flight > 0:
+            return
+        self._cancel_silent()
+        self._silent_task = asyncio.create_task(self._silent_idle_after_grace())
+
+    async def _silent_idle_after_grace(self) -> None:
+        try:
+            await asyncio.sleep(self.SILENT_GRACE_S)
+        except asyncio.CancelledError:
+            return
+        if self._current != "thinking" or self._liveness.in_flight > 0:
+            return
+        logger.info("📞 silent response (turn admission) — closing the turn without a follow-up")
+        self._cancel_watchdog()
+        self._suppress_thinking = True
+        await self._emit("idle", extra={"followup": False})
+        self._turn_end("silent")
+
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
         self._watchdog_task = asyncio.create_task(self._thinking_watchdog())
 
     async def close(self) -> None:
         """Stop idle and watchdog tasks owned by this connection."""
-        tasks = (self._idle_task, self._watchdog_task)
+        tasks = (self._idle_task, self._watchdog_task, self._silent_task)
         self._idle_task = None
         self._watchdog_task = None
+        self._silent_task = None
         for task in tasks:
             if task is None or task is asyncio.current_task():
                 continue
@@ -262,6 +327,7 @@ class PhaseEmitter(FrameProcessor):
             self._arm_watchdog()
             return
         await self._emit("idle")
+        self._turn_end("replied" if self._bot_spoke_this_turn else "ended")
 
     async def _thinking_watchdog(self) -> None:
         """Force idle when `thinking` sits with no model activity (dead turn)."""
@@ -311,6 +377,7 @@ class PhaseEmitter(FrameProcessor):
                 self._on_real_speech()
             self._cancel_pending_idle()
             self._cancel_watchdog()
+            self._cancel_silent()
             await self._emit("listening")
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._cancel_pending_idle()
@@ -341,10 +408,16 @@ class PhaseEmitter(FrameProcessor):
             self._suppress_thinking = False
             self._cancel_pending_idle()
             self._cancel_watchdog()
+            self._cancel_silent()
+            self._bot_spoke_this_turn = True
+            if self.on_bot_started is not None:
+                self.on_bot_started()
             await self._emit("replying")
         elif isinstance(frame, BotStoppedSpeakingFrame):
             # Don't go idle immediately — TTS comes in segments. Only emit idle
             # if the bot stays silent for the debounce window.
+            if self.on_bot_stopped is not None:
+                self.on_bot_stopped()
             self._cancel_pending_idle()
             self._idle_task = asyncio.create_task(self._emit_idle_after_debounce())
 
