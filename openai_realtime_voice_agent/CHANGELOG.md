@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.26.2 (fork)
+
+- **Tre motorer i ordning:** `VOICE_PROVIDERS=gemini,xai,openai` (Henrik
+  2026-10-04: 1 Gemini, 2 xAI, 3 OpenAI). En motor som fallerar lämnar över
+  till den första efter sig som är känd frisk (sista turen, eller sonden mot
+  `/models`); finns ingen går den tillbaka till den första, som inte kräver
+  bevis. Efter nedkylningen (`PROVIDER_COOLDOWN_MINUTES`) provas den första
+  igen. Utan listan gäller `VOICE_PROVIDER` och `VOICE_PROVIDER_BACKUP` som
+  förut. Sovläget och dagstaket gäller alla tre (de sitter i varje motor).
+
 ## Drift (ingen ny version)
 
 - **`scripts/deploy-core.sh`** - så lägger Rolle ut main på core efter en
