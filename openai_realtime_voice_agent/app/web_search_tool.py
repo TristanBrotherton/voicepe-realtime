@@ -12,7 +12,9 @@ model gpt-5.5 gives the best-quality search answers; it's configurable via
 WEB_SEARCH_MODEL (the mini/nano models are cheaper) so a different price/quality
 (or a renamed model) can be swapped in without a code change.
 """
+import asyncio
 import logging
+import os
 from typing import Dict, Any, Callable, Awaitable, TYPE_CHECKING
 
 from openai import AsyncOpenAI
@@ -21,6 +23,14 @@ if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
 logger = logging.getLogger(__name__)
+
+# The search is a second OpenAI call; without a bound it inherited the SDK's
+# 600 s default while the user stood waiting. Override with WEB_SEARCH_TIMEOUT_S.
+DEFAULT_TIMEOUT_S = 20.0
+NO_QUERY = "No search query was given."
+NO_RESULT = "I couldn't find anything online about that."
+FAILED = "The web search didn't work just now."
+TIMED_OUT = "The web search took too long and was stopped."
 
 
 def get_web_search_tool_definition() -> Dict[str, Any]:
@@ -60,31 +70,44 @@ def create_web_search_tool_handler(
     tool and returns a short answer via ``params.result_callback`` (which becomes
     the function_call_output the Realtime model speaks).
     """
-    client = AsyncOpenAI(api_key=api_key)
+    try:
+        timeout_s = float(os.environ.get("WEB_SEARCH_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    except ValueError:
+        timeout_s = DEFAULT_TIMEOUT_S
+    client = AsyncOpenAI(api_key=api_key, timeout=timeout_s, max_retries=0)
 
     async def web_search_tool_handler(params: "FunctionCallParams") -> None:
         query = (params.arguments or {}).get("query", "").strip()
-        logger.info(f"🔎 web_search called: {query!r} (model={model})")
+        if os.environ.get("LOG_TRANSCRIPTS", "false").strip().lower() == "true":
+            logger.info(f"🔎 web_search called: {query!r} (model={model})")
+        else:
+            logger.info(f"🔎 web_search called ({len(query)} chars, model={model})")
 
         if not query:
-            await params.result_callback("Geen zoekopdracht ontvangen.")
+            await params.result_callback(NO_QUERY)
             return
 
         try:
-            response = await client.responses.create(
-                model=model,
-                tools=[{"type": "web_search"}],
-                input=(
-                    "Answer in at most 2 short sentences suitable for being read "
-                    "aloud, in the same language as the question. Do not include "
-                    "URLs, citations, or markdown. Question: " + query
+            response = await asyncio.wait_for(
+                client.responses.create(
+                    model=model,
+                    tools=[{"type": "web_search"}],
+                    input=(
+                        "Answer in at most 2 short sentences suitable for being read "
+                        "aloud, in the same language as the question. Do not include "
+                        "URLs, citations, or markdown. Question: " + query
+                    ),
                 ),
+                timeout_s + min(2.0, timeout_s),
             )
             answer = (getattr(response, "output_text", None) or "").strip()
-            logger.info(f"🔎 web_search answer: {answer[:200]}")
-            await params.result_callback(answer or "Ik kon hier online niets over vinden.")
+            logger.info(f"🔎 web_search answer ({len(answer)} chars)")
+            await params.result_callback(answer or NO_RESULT)
+        except asyncio.TimeoutError:
+            logger.warning(f"⏱️ web_search timed out after {timeout_s:.0f}s")
+            await params.result_callback(TIMED_OUT)
         except Exception as e:
-            logger.error(f"❌ web_search failed: {e}", exc_info=True)
-            await params.result_callback("Het zoeken op internet lukte even niet.")
+            logger.error(f"❌ web_search failed: {e!r}")
+            await params.result_callback(FAILED)
 
     return web_search_tool_handler
