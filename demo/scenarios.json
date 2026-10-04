@@ -1,0 +1,57 @@
+{
+  "schema": "voicepe.demo.scenarios/1",
+  "notes": "A fictitious household: run against a separate Home Assistant instance with the built-in demo integration (Kitchen Lights, Front Door lock). Never against a real home.",
+  "steps": [
+    {
+      "id": "lights_on",
+      "path": "fast",
+      "text": "Turn on the kitchen lights.",
+      "shows": "Home Assistant control through MCP",
+      "timeout_s": 20
+    },
+    {
+      "id": "remember",
+      "path": "fast",
+      "text": "Remember that the spare key is under the blue pot.",
+      "shows": "Voice-taught memory (stored on the box and sent to OpenAI as part of the prompt)",
+      "timeout_s": 20
+    },
+    {
+      "id": "timer",
+      "path": "fast",
+      "text": "Set a pasta timer for one minute.",
+      "shows": "Voice timers; the spoken expiry plays later in the demo",
+      "timeout_s": 20
+    },
+    {
+      "id": "weather",
+      "path": "slow",
+      "text": "What's the weather in Amsterdam tomorrow?",
+      "shows": "A slow lookup: one short acknowledgement, then the answer",
+      "timeout_s": 45
+    },
+    {
+      "id": "unlock",
+      "path": "fast",
+      "text": "Unlock the front door.",
+      "shows": "A risky action: the add-on asks for a spoken yes before running it",
+      "timeout_s": 20
+    },
+    {
+      "id": "unlock_yes",
+      "path": "fast",
+      "followup": true,
+      "text": "Yes.",
+      "shows": "The confirmation, answered in the follow-up window without a wake word",
+      "timeout_s": 20
+    },
+    {
+      "id": "story_stop",
+      "path": "fast",
+      "text": "Tell me a long story about a lighthouse keeper.",
+      "interrupt_after_s": 3.0,
+      "shows": "Stop: the reply is cut off on request",
+      "timeout_s": 30
+    }
+  ]
+}

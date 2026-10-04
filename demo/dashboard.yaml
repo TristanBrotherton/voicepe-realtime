@@ -1,0 +1,51 @@
+# Home Assistant dashboard card for the demo: the last turn's timeline, rolling
+# percentiles, the wake-word operating point and today's counters.
+# Paste into a dashboard (Edit -> Add card -> Manual). Replace "demo" with your
+# add-on's instance_name everywhere.
+type: vertical-stack
+cards:
+  - type: markdown
+    title: Voice PE — last turn
+    content: >-
+      {% set t = state_attr('sensor.voicepe_demo_latency', 'last_turn') or {} %}
+      {% set d = state_attr('sensor.voicepe_demo_latency', 'device') or {} %}
+      | Stage | ms |
+      |---|---|
+      | Wake → first mic audio | {{ t.wake_to_first_frame_ms | default('—') }} |
+      | Server end-of-turn decision (VAD) | {{ t.vad_endpoint_delay_ms | default('—') }} |
+      | Speech end → first reply audio sent | {{ t.speech_end_to_first_audio_sent_ms | default('—') }} |
+      | Tools | {{ t.tool_ms_total | default('—') }} |
+      | Reply audio received → audible (device) | {{ d.first_audio_to_audible_ms | default('—') }} |
+
+      Outcome: **{{ state_attr('sensor.voicepe_demo_latency', 'outcome') | default('—') }}**
+      {% for tool in state_attr('sensor.voicepe_demo_latency', 'tools') or [] %}
+      · {{ tool.name }} {{ tool.ms }} ms{% endfor %}
+  - type: markdown
+    title: Rolling percentiles (last 50 turns)
+    content: >-
+      {% set s = state_attr('sensor.voicepe_demo_latency', 'stats') or {} %}
+      | Interval | n | p50 | p90 |
+      |---|---|---|---|
+      {% for key, v in s.items() %}| {{ key }} | {{ v.n }} | {{ v.p50 }} | {{ v.p90 }} |
+      {% endfor %}
+  - type: entities
+    title: Wake word
+    entities:
+      - entity: sensor.voicepe_demo_wake_word
+        name: Model
+      - type: attribute
+        entity: sensor.voicepe_demo_wake_word
+        attribute: cutoff
+        name: Cutoff
+      - type: attribute
+        entity: sensor.voicepe_demo_wake_word
+        attribute: window
+        name: Window
+      - type: attribute
+        entity: sensor.voicepe_demo_wake_word
+        attribute: tier
+        name: Sensitivity
+      - entity: sensor.voicepe_demo_wakes_today
+        name: Wakes today
+      - entity: sensor.voicepe_demo_false_wakes_today
+        name: False wakes today

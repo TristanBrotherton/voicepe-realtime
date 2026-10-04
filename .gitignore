@@ -52,3 +52,18 @@ recordings/
 
 # Secrets
 .env
+# Household audio and voice data never belong in this public repository
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.opus
+voice-enrollment/
+voice-prints/
+voice-probes/
+voice-memory/
+
+# Demo: synthesized prompts and local results
+demo/prompts/
+demo/results*.json
