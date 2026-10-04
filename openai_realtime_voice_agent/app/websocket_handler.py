@@ -799,6 +799,10 @@ class ConnectionRecovery(FrameProcessor):
                 if self._service.over_budget():
                     logger.warning("💸 cloud budget for today used — disconnecting now")
                     await self._service.sova("daily cloud budget used")
+                elif self._service.over_maxtid():
+                    # Even mid-sentence: the next wake word connects again.
+                    logger.warning("⏱️ cloud session reached its maximum length — disconnecting")
+                    await self._service.sova("maximum session length")
                 elif self._tyst_nog(time.monotonic()):
                     await self._service.sova(f"quiet for {sov_efter_s():.0f}s")
             except asyncio.CancelledError:
