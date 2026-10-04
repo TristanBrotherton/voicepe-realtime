@@ -150,16 +150,17 @@ async def drop_pending_input_audio(provider: str, service, keep_speech: bool = F
 
 
 async def bana0_hit(provider: str, service, text: str) -> None:
-    """Bana 0 hit: Home Assistant already did it and said so; the model must not.
+    """Bana 0 hit: Home Assistant already did it; the model only confirms it.
 
-    OpenAI heard the turn, so it is told what HA said (and never asked to
-    answer). Gemini's turn was held back and is simply dropped: the model
-    never heard the order, so it cannot answer it or do it again.
+    OpenAI/xAI heard the turn, so they are told what was done and asked for a
+    short confirmation with no tools (0.25.8: HA's own dry voice is not
+    spoken any more). Gemini's turn was held back and is simply dropped: the
+    model never heard the order; the cached "Klart." confirms it.
     """
     from app import bana0
 
     if supports_client_events(provider):
-        await bana0.lagg_till_svar(service, text)
+        await bana0.be_om_bekraftelse(service, text)
     else:
         await service.drop_turn()
 

@@ -331,7 +331,8 @@ class EnrollmentConductor:
         if os.path.exists(path) and os.path.getsize(path) > 0:
             with open(path, "rb") as f:
                 return f.read()
-        async with httpx.AsyncClient(timeout=30) as client:
+        # connect=3: offline, bana 0's fallback 'Klart.' must not wait 30 s (US-018).
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=3.0)) as client:
             r = await client.post(
                 "https://api.openai.com/v1/audio/speech",
                 headers={"Authorization": f"Bearer {self.api_key}"},

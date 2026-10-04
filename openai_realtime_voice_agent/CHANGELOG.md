@@ -2,6 +2,29 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.0 (fork) - tidigare 0.25.8 + 0.25.7, ovanpå sovläget
+
+- **Snabbvägen bekräftas av modellen, inte av HA:s torra röst.** Ägaren
+  2026-10-03: "hellre tyst än den torra". Efter en träff talas HA:s svar inte
+  längre; modellen får ett systemmeddelande om vad som gjorts och ombeds
+  bekräfta med en mening, utan verktyg (`tool_choice: none`), så den inte kan
+  göra ordern igen. Live 0.25.6 på xAI svarade modellen ändå efter träffen,
+  ovanpå HA:s röst - två bekräftelser. Säger modellen inget på 2,5 s (utan
+  internet) spelas "Klart." i motorns egen röst ur diskcachen; på Gemini, som
+  aldrig hör ordern, direkt. Även "nätet är nere" spelas i motorns röst.
+
+
+- **Utan internet (raawr US-018).** Snabbvägen tände lampan men högtalaren
+  kunde tiga: HA:s svar talas genom molnets TTS. Går det inte säger den nu
+  "Klart.", förrenderat vid start och cachat på disk. En fråga som inte når
+  modellen får "Jag når inte nätet just nu. Lampor och sånt fungerar ändå."
+  när INGEN motors API svarar inom 1 s (`bana0.natet_nere`, alla motorer
+  parallellt - bara xAI nere är en failover, inte "inget nät"), i samma
+  enda tystnadsplats som "Ett ögonblick." - aldrig båda; proben räknas från
+  samma stund och hinner före kvittot. Ett misslyckat modellanrop efter en
+  miss kraschar inte längre turen. Konduktörens TTS ger upp anslutningen
+  efter 3 s (var 30), så "Klart." inte väntar på ett dött nät.
+
 ## Drift (ingen ny version)
 
 - **`scripts/deploy-core.sh`** - så lägger Rolle ut main på core efter en

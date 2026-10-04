@@ -26,6 +26,13 @@ RATE, WIDTH, CHANNELS = 16000, 2, 1
 CHUNK_BYTES = 3200  # 100 ms of 16 kHz PCM16 mono
 AUDIO = {"rate": RATE, "width": WIDTH, "channels": CHANNELS}
 
+# Without internet (raawr US-018) the cloud TTS cannot render HA's reply or an
+# answer. These two lines are rendered at startup (main._warm_early_acks) and
+# cached on disk, so they play offline. Never a question mark: it opens the mic.
+OK_FALLBACK = "Klart."
+OFFLINE_LINE = "Jag når inte nätet just nu. Lampor och sånt fungerar ändå."
+LOKALA_REPLIKER = (OK_FALLBACK, OFFLINE_LINE)
+
 
 def stt_adress(value: str) -> Optional[tuple[str, int]]:
     """The `bana0_stt` option, "host" or "host:port" (Wyoming default 10300). Empty or bad = off."""
@@ -115,13 +122,19 @@ async def tur(
     stt: Callable[[bytes, float], Awaitable[Optional[str]]],
     timeout_stt: float,
     timeout_comms: float,
-    say: Callable[[str], Awaitable[None]],
     skicka_svar_till_modellen: Callable[[str], Awaitable[None]],
     skapa_svar: Callable[[], Awaitable[None]],
+    efter_miss: Optional[Callable[[], None]] = None,
+    efter_traff: Optional[Callable[[], None]] = None,
 ) -> str:
     """One finished user turn. Returns 'bana0' on a hit, 'modell' otherwise.
 
     `stt(pcm, timeout)` is typically transkribera bound to host/port.
+    On a hit HA's own reply is NOT spoken (the owner 2026-10-03: "hellre tyst
+    än den torra"): the model is told what was done and confirms in its own
+    words, with no tools (`skicka_svar_till_modellen`). `efter_traff()` is the
+    net when the model stays silent (vakta_bekraftelse, US-018).
+    `efter_miss()` runs after the model was asked (vakta_natet, US-018).
     """
     try:
         text = await stt(pcm, timeout_stt) if pcm else None
@@ -130,26 +143,116 @@ async def tur(
         logger.warning(f"bana0: turn failed, model answers: {e!r}")
         svar = None
     if not svar:
-        await skapa_svar()
-        return "modell"
-    # HA already acted: from here on the model must never be asked to answer,
-    # or the room hears the order handled twice.
-    logger.info(f"bana0: hit {text!r} -> {svar!r}")
-    for steg in (say, skicka_svar_till_modellen):
         try:
-            await steg(svar)
-        except Exception as e:
-            logger.warning(f"bana0: {getattr(steg, '__name__', steg)} failed after a hit: {e!r}")
+            await skapa_svar()
+        except Exception as e:  # no model socket: efter_miss says why
+            logger.warning(f"bana0: asking the model failed: {e!r}")
+        if efter_miss is not None:
+            efter_miss()
+        return "modell"
+    # HA already acted: the model may only confirm it, never do it again.
+    logger.info(f"bana0: hit {text!r} -> {svar!r}")
+    try:
+        await skicka_svar_till_modellen(gjort(text, svar))
+    except Exception as e:
+        logger.warning(f"bana0: telling the model failed after a hit: {e!r}")
+    if efter_traff is not None:
+        efter_traff()
     return "bana0"
 
 
-async def lagg_till_svar(service, text: str) -> None:
-    """Tell the realtime model what HA said, as an assistant item. No response."""
+def gjort(text: str, svar: str) -> str:
+    """What the model is told after a hit: the order, HA's reply, and what to do."""
+    return (
+        f"Användaren sa: \"{text}\". Huset har REDAN gjort det; Home Assistant svarade: "
+        f"\"{svar}\". Bekräfta kort med egna ord, en mening. Anropa inga verktyg och gör inget mer."
+    )
+
+
+async def vakta_bekraftelse(
+    *,
+    vanta_s: float,
+    claim: Callable[[], bool],
+    say_ok: Callable[[], Awaitable[None]],
+) -> bool:
+    """After a hit: if the model has said nothing after `vanta_s`, say OK_FALLBACK.
+
+    Offline the model never answers; the room still hears it was done, in the
+    engine's own voice (cached clip). True when the clip was said.
+    """
+    await asyncio.sleep(vanta_s)
+    if not claim():
+        return False
+    logger.warning(f"bana0: no confirmation from the model, saying {OK_FALLBACK!r}")
+    try:
+        await say_ok()
+    except Exception as e:
+        logger.warning(f"bana0: fallback confirmation failed: {e!r}")
+        return False
+    return True
+
+
+async def natet_nere(probe: Callable[[str], bool], engines, timeout: float) -> bool:
+    """True when NO engine's API answers within `timeout` (sync `probe`, in threads).
+
+    Every engine, not just the one running: an xAI-only outage is a failover
+    for the router, not "no internet" for the room. A probe that hangs or
+    raises counts as down for that engine.
+    """
+    async def one(engine) -> bool:
+        try:
+            return bool(await asyncio.wait_for(asyncio.to_thread(probe, engine), timeout))
+        except Exception:
+            return False
+
+    engines = [e for e in dict.fromkeys(engines) if e]
+    if not engines:
+        return False
+    return not any(await asyncio.gather(*(one(e) for e in engines)))
+
+
+async def vakta_natet(
+    *,
+    natet_nere: Callable[[], Awaitable[bool]],
+    claim: Callable[[], bool],
+    say: Callable[[str], Awaitable[None]],
+) -> bool:
+    """After a miss: if the model's engine cannot be reached, say OFFLINE_LINE.
+
+    `claim()` is the turn's once-only silence slot (TurnLiveness.claim_silence_ack):
+    false when the model already spoke or the "Ett ögonblick" ack took it, so
+    the room never hears both. True when the line was said.
+    """
+    try:
+        if not await natet_nere():
+            return False
+    except Exception as e:
+        logger.warning(f"bana0: engine probe raised: {e!r}")
+    if not claim():
+        return False
+    logger.warning("bana0: the engine is unreachable, saying so")
+    try:
+        await say(OFFLINE_LINE)
+    except Exception as e:
+        logger.warning(f"bana0: offline line failed: {e!r}")
+        return False
+    return True
+
+
+async def be_om_bekraftelse(service, besked: str) -> None:
+    """After a hit: tell the model what was done and ask for a short spoken confirmation.
+
+    A system item, then response.create with no tools, so the model cannot
+    act on the order a second time.
+    """
     await service.send_client_event(events.ConversationItemCreateEvent(
         item=events.ConversationItem(
-            type="message", role="assistant",
-            content=[events.ItemContent(type="output_text", text=text)],
+            type="message", role="system",
+            content=[events.ItemContent(type="input_text", text=besked)],
         )
+    ))
+    await service.send_client_event(events.ResponseCreateEvent(
+        response=events.ResponseProperties(tool_choice="none")
     ))
 
 
