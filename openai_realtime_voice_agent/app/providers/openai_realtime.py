@@ -10,6 +10,7 @@ import os
 
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
+from app.providers.sovlage import SovlageMixin
 from app.providers.tool_registration import ToolRegistrationMixin
 
 from app.realtime_payload import transform_gpt_transcription_language
@@ -59,7 +60,7 @@ def add_history_cap(payload: dict) -> None:
         }
 
 
-class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
+class SafeRealtimeLLMService(SovlageMixin, ToolRegistrationMixin, OpenAIRealtimeLLMService):
     """OpenAIRealtimeLLMService with audio-truncation-on-interruption disabled.
 
     pipecat's `_truncate_current_audio_response()` (called by `_handle_interruption`
@@ -92,6 +93,15 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         self.on_user_turn_end = None
         self.on_user_turn_start = None  # plain callable, run before pipecat's handling
         self._turn_end_task = None
+
+    async def _ateranslut(self, forut: bool) -> None:  # SovlageMixin
+        """First wake: a plain connect (the start-up seeding is still waiting for it).
+        Later wakes: reset_conversation, which reconnects AND re-seeds the
+        conversation this service holds, the path the 60-min cap already uses."""
+        if forut:
+            await self.reset_conversation()
+        else:
+            await self._connect()
 
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
@@ -469,12 +479,14 @@ class SafeRealtimeLLMService(ToolRegistrationMixin, OpenAIRealtimeLLMService):
         except asyncio.CancelledError:
             raise  # our own disconnect/reset tearing the task down — not a death
         except Exception as e:
+            if self.sover:
+                return  # our own sleep closed it
             await self.push_error(error_msg=f"realtime receive loop died: {e!r}")
             return
         # reset_conversation() intentionally closes the old reader before
         # connecting the replacement session. That normal close is not a
         # recoverable failure and may arrive after the processor has stopped.
-        if getattr(self, "_resetting_conversation", False):
+        if getattr(self, "_resetting_conversation", False) or self.sover:
             return
         # Loop ended without an exception: a clean server-side close, or the
         # fatal-error path (which already pushed its own ErrorFrame —

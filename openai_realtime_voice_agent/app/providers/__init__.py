@@ -196,11 +196,18 @@ def build_service(provider: str, options: ProviderOptions, tools: List[Dict[str,
     # they are about to do (early_ack.with_ack_hint, 0.25.6).
     from app.early_ack import with_ack_hint
     tools = with_ack_hint(tools)
+    from app.providers.sovlage import SovlageMixin, sovlage_pa
     if _known(provider) == OPENAI:
         from app.providers import openai_realtime
-        return openai_realtime.build(options, tools)
-    if provider == XAI:
+        service = openai_realtime.build(options, tools)
+    elif provider == XAI:
         from app.providers import xai_realtime
-        return xai_realtime.build(options, tools)
-    from app.providers import gemini_live
-    return gemini_live.build(options, tools)
+        service = xai_realtime.build(options, tools)
+    else:
+        from app.providers import gemini_live
+        service = gemini_live.build(options, tools)
+    # Asleep from the start: pipecat's start() connects nothing until the
+    # device's wake (providers/sovlage.py, raawr INKAST 2026-10-04).
+    if isinstance(service, SovlageMixin):
+        service.sover = sovlage_pa()
+    return service

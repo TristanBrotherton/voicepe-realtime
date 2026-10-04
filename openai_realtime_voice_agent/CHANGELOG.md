@@ -2,6 +2,19 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.26.0 (fork)
+
+- **Sovläge: molnmotorn är uppkopplad bara under ett samtal** (raawr INKAST
+  2026-10-04, brådskande). Agenten höll en realtidssession per högtalare
+  öppen dygnet runt; xAI tar betalt per uppkopplad minut och stänger en tyst
+  session efter 900 s, och agenten kopplade upp igen på 0,5 s - 212 gånger,
+  ~45 dollar på ett dygn i ett tyst hus. Nu (`app/providers/sovlage.py`):
+  varje motor (OpenAI, xAI, Gemini) startar sovande, väckningen kopplar upp
+  (ljudet efter väckningen väntar under tiden), och 30 s tystnad efter
+  samtalet (`SOV_EFTER_S`) kopplar ner. En sovande motor återansluts aldrig:
+  varken av återställningen, av xAI:s 900 s-stängning (som nu söver) eller av
+  Geminis egen återanslutning. `MOLN_SOVLAGE=0` = som förut.
+
 ## 0.25.6 (fork)
 
 - **"Jag kollar" säger vad agenten gör.** Ägaren 2026-10-02 23:12: de fasta

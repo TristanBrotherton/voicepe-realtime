@@ -267,6 +267,9 @@ class ConnectionRecovery(FrameProcessor):
         self._last_input_audio = time.monotonic()
         self._refresh_task = None
         self._recover_task = None
+        self._sov_task = None
+        # Last wake of this device (providers/sovlage.py): the sleep timer counts from it too.
+        self._last_wake = time.monotonic()
         self._closed = False
         # Rate-limit ladder for the current turn: 0 nothing yet, 1 answer
         # retried, 2 fallback said. Reset by a finished turn or by time.
@@ -277,13 +280,19 @@ class ConnectionRecovery(FrameProcessor):
         await super().process_frame(frame, direction)
         if self._refresh_task is None:
             self._refresh_task = asyncio.create_task(self._proactive_refresh_loop())
+        if self._sov_task is None and getattr(self._service, "sover", None) is not None:
+            self._sov_task = asyncio.create_task(self._sov_loop())
         if isinstance(frame, InputAudioRawFrame):
             # Only kept for the proactive-refresh "is anyone interacting?" check.
             # (Stale-audio clearing is now done at the cut-off source — the device
             # sends {"type":"flush"} when a follow-up window times out — not
             # reactively on mic-resume, which disturbed the VAD and caused garbage.)
             self._last_input_audio = time.monotonic()
-        if isinstance(frame, ErrorFrame) and not self._reconnecting:
+        if isinstance(frame, ErrorFrame) and getattr(self._service, "sover", False):
+            # Asleep (providers/sovlage.py): the socket was closed on purpose.
+            # Nothing to report to the router and nothing to reconnect.
+            logger.debug(f"💤 error while asleep ignored: {str(getattr(frame, 'error', ''))[:80]}")
+        elif isinstance(frame, ErrorFrame) and not self._reconnecting:
             msg = str(getattr(frame, "error", "") or "")
             # EVERY error goes through handle_error now — including the ones
             # that used to fall straight to the plain idle-unstick below (a
@@ -604,6 +613,8 @@ class ConnectionRecovery(FrameProcessor):
         now = time.monotonic()
         if self._closed or self._reconnecting or now - self._last_attempt < self.RECONNECT_COOLDOWN_S:
             return
+        if getattr(self._service, "sover", False):
+            return  # asleep on purpose: the next wake connects
         self._reconnecting = True
         self._last_attempt = now
         self._recover_task = asyncio.create_task(self._recover(reason))
@@ -704,7 +715,7 @@ class ConnectionRecovery(FrameProcessor):
         path is directly testable without waiting on REFRESH_CHECK_S/
         REFRESH_AGE_S/REFRESH_QUIET_S — behaviour is unchanged either way.
         """
-        if self._reconnecting:
+        if self._reconnecting or getattr(self._service, "sover", False):
             return
         now = time.monotonic()
         age = now - self._connected_at
@@ -726,12 +737,57 @@ class ConnectionRecovery(FrameProcessor):
             # finished turn.
             self._router.note_success(self._provider)
 
+    SOV_CHECK_S = 5.0
+
+    def note_wake(self) -> None:
+        self._last_wake = time.monotonic()
+
+    async def vakna(self) -> None:
+        """The device woke: connect the engine if it sleeps (providers/sovlage.py)."""
+        self.note_wake()
+        vakna = getattr(self._service, "vakna", None)
+        if vakna is not None and await vakna():
+            self._connected_at = time.monotonic()
+
+    def _tyst_nog(self, now: float) -> bool:
+        """Quiet for SOV_EFTER_S: no mic audio, no wake, device idle, no reply under way."""
+        from app.providers.sovlage import sov_efter_s
+
+        after = sov_efter_s()
+        phase = getattr(self._phase_emitter, "phase", None) if self._phase_emitter is not None else None
+        busy = getattr(self._service, "_current_assistant_response", None) is not None
+        return (
+            now - self._last_input_audio >= after
+            and now - self._last_wake >= after
+            and phase in (None, "idle")
+            and not busy
+            and not self._reconnecting
+        )
+
+    async def _sov_loop(self):
+        """Put the engine to sleep once the conversation has been quiet long enough."""
+        while True:
+            try:
+                await asyncio.sleep(self.SOV_CHECK_S)
+                if self._closed:
+                    return
+                if getattr(self._service, "sover", True):
+                    continue
+                from app.providers.sovlage import sov_efter_s
+                if self._tyst_nog(time.monotonic()):
+                    await self._service.sova(f"quiet for {sov_efter_s():.0f}s")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"⚠️ sleep loop error: {e!r}")
+
     async def close(self) -> None:
         """Stop background work owned by this pipeline processor."""
         self._closed = True
-        tasks = (self._refresh_task, self._recover_task)
+        tasks = (self._refresh_task, self._recover_task, self._sov_task)
         self._refresh_task = None
         self._recover_task = None
+        self._sov_task = None
         for task in tasks:
             if task is None or task is asyncio.current_task():
                 continue
@@ -1452,6 +1508,10 @@ class WebSocketHandler:
                 logger.debug(f"🧽 mic-flush input drop no-op ({e!r})")
 
         async def _on_device_wake():
+            # Connect the cloud engine first, awaited: the serializer holds the
+            # mic audio after the wake until this returns, so nothing is lost
+            # (providers/sovlage.py, raawr INKAST 2026-10-04).
+            await connection.recovery.vakna()
             asyncio.create_task(
                 self._wedge_check(connection, phase_emitter, time.monotonic())
             )
