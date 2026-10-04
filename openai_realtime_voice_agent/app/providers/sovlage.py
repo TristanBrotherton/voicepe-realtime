@@ -14,7 +14,15 @@ service is never reconnected by anything: not the recovery, not xAI's idle
 close, not Gemini's own reconnect.
 
 MOLN_SOVLAGE=0 turns it off (always connected, as before 0.26.0).
+
+The budget (0.26.1, the owner 2026-10-04: "allt vi gör framåt behöver
+försiktighet"): connected minutes are counted per day, for every engine and
+speaker together, in MOLN_LEDGER. Past MOLN_MAX_MINUTER_PER_DAG (60) a wake
+does not connect and an open session is put to sleep. A bug elsewhere can then
+cost at most that many minutes a day, whatever the provider charges.
 """
+import datetime
+import json
 import logging
 import os
 import time
@@ -34,11 +42,60 @@ def sov_efter_s() -> float:
         return 30.0
 
 
+def max_sekunder_per_dag() -> float:
+    try:
+        return max(0.0, float(os.environ.get("MOLN_MAX_MINUTER_PER_DAG", "60"))) * 60.0
+    except ValueError:
+        return 3600.0
+
+
+class Budget:
+    """Connected seconds per local day, on disk so a restart does not reset them."""
+
+    def __init__(self, path=None, today=None):
+        self.path = path or os.environ.get("MOLN_LEDGER", "/data/moln_minuter.json")
+        self._today = today or (lambda: datetime.date.today().isoformat())
+
+    def _read(self) -> dict:
+        try:
+            with open(self.path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def anvant(self) -> float:
+        return float(self._read().get(self._today(), 0.0))
+
+    def lagg_till(self, sekunder: float) -> None:
+        if sekunder <= 0:
+            return
+        data = self._read()
+        day = self._today()
+        data = {day: float(data.get(day, 0.0)) + sekunder}  # only today is kept
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+        except OSError as e:
+            logger.warning(f"⚠️ cloud budget not saved: {e!r}")
+
+
+BUDGET = Budget()
+
+
 class SovlageMixin:
     """First in the MRO of every engine's service, so its _connect gates them all."""
 
     sover = False
     _vaknat_forut = False
+    _uppkopplad_sedan = None
+    budget = BUDGET
+
+    def oppen_tid(self) -> float:
+        return 0.0 if self._uppkopplad_sedan is None else time.monotonic() - self._uppkopplad_sedan
+
+    def over_budget(self) -> bool:
+        return self.budget.anvant() + self.oppen_tid() >= max_sekunder_per_dag()
 
     async def _connect(self, *args, **kwargs):  # type: ignore[override]
         if self.sover:
@@ -50,7 +107,14 @@ class SovlageMixin:
         """Connect now (the wake word was heard). True if it was asleep."""
         if not self.sover:
             return False
+        if self.over_budget():
+            logger.warning(
+                f"💸 cloud budget for today used ({self.budget.anvant() / 60:.0f} of "
+                f"{max_sekunder_per_dag() / 60:.0f} min) — not connecting"
+            )
+            return False
         self.sover = False
+        self._uppkopplad_sedan = time.monotonic()
         t0 = time.monotonic()
         try:
             await self._ateranslut(self._vaknat_forut)
@@ -65,6 +129,8 @@ class SovlageMixin:
         if self.sover:
             return False
         self.sover = True  # first: the closing socket's errors are then ignored
+        self.budget.lagg_till(self.oppen_tid())
+        self._uppkopplad_sedan = None
         try:
             await self._disconnect()
         except Exception as e:

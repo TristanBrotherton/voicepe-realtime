@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.26.1 (fork)
+
+- **Molnbudget per dag.** Ägaren 2026-10-04 efter xAI-läckan: "allt vi gör
+  framåt behöver försiktighet". Uppkopplade minuter räknas per dag för alla
+  motorer och högtalare tillsammans (`MOLN_LEDGER`, standard
+  `/data/moln_minuter.json`, överlever omstart). Över
+  `MOLN_MAX_MINUTER_PER_DAG` (60) kopplar en väckning inte upp, och en öppen
+  session söver direkt. Ett fel någon annanstans kostar då högst så många
+  minuter om dagen, oavsett hur leverantören tar betalt.
+
 ## 0.26.0 (fork)
 
 - **Sovläge: molnmotorn är uppkopplad bara under ett samtal** (raawr INKAST

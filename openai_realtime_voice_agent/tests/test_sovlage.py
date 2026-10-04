@@ -12,8 +12,16 @@ from pipecat.frames.frames import ErrorFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from app.providers import GEMINI, OPENAI, XAI, ProviderOptions, build_service
-from app.providers.sovlage import SovlageMixin
+from app.providers.sovlage import Budget, SovlageMixin
 from app.websocket_handler import ConnectionRecovery
+
+
+@pytest.fixture(autouse=True)
+def egen_budget(tmp_path, monkeypatch):
+    """Never the real ledger on the box the tests run on."""
+    b = Budget(path=str(tmp_path / "moln.json"), today=lambda: "2026-10-04")
+    monkeypatch.setattr(SovlageMixin, "budget", b)
+    return b
 
 
 def _service(provider):
@@ -221,3 +229,45 @@ async def test_ateranslutning_mitt_i_samtal_vacker_nya_motorn():
         await r.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
     await asyncio.sleep(0.7)
     assert s.sover is False
+
+
+# --- the daily budget (0.26.1): a bug elsewhere costs at most N minutes a day ---
+
+@pytest.mark.asyncio
+async def test_sova_raknar_uppkopplad_tid(egen_budget):
+    s = Fake()
+    await s.vakna()
+    s._uppkopplad_sedan -= 90  # 90 s connected
+    await s.sova("tyst")
+    assert 89 < egen_budget.anvant() < 95
+
+
+@pytest.mark.asyncio
+async def test_slut_budget_vaknar_inte(egen_budget, monkeypatch):
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "1")
+    egen_budget.lagg_till(60)
+    s = Fake()
+    assert await s.vakna() is False
+    assert s.sover is True and s.calls == []
+
+
+def test_budgeten_overlever_omstart_och_nollas_nasta_dag(tmp_path):
+    path = str(tmp_path / "m.json")
+    Budget(path=path, today=lambda: "2026-10-04").lagg_till(120)
+    assert Budget(path=path, today=lambda: "2026-10-04").anvant() == 120
+    assert Budget(path=path, today=lambda: "2026-10-05").anvant() == 0
+
+
+@pytest.mark.asyncio
+async def test_sovloopen_kopplar_ner_nar_budgeten_tar_slut(egen_budget, monkeypatch):
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "1")
+    s = Fake()
+    await s.vakna()
+    egen_budget.lagg_till(60)  # the other speaker used the rest
+    r = _recovery(s)
+    r.SOV_CHECK_S = 0.01
+    r._last_input_audio = r._last_wake = time.monotonic()  # mid-conversation
+    task = asyncio.create_task(r._sov_loop())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    assert s.sover is True
