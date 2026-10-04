@@ -42,6 +42,18 @@ def sov_efter_s() -> float:
         return 30.0
 
 
+def max_sekunder_per_samtal() -> float:
+    """VOICE_SESSION_MAX_SECONDS (600): a hard cap on one connection, audio or not.
+
+    Henrik 2026-10-04, on top of sleep mode and the daily budget: a session
+    that never goes quiet (an open mic, a TV, a stuck device) is cut anyway.
+    """
+    try:
+        return max(30.0, float(os.environ.get("VOICE_SESSION_MAX_SECONDS", "600")))
+    except ValueError:
+        return 600.0
+
+
 def max_sekunder_per_dag() -> float:
     try:
         return max(0.0, float(os.environ.get("MOLN_MAX_MINUTER_PER_DAG", "60"))) * 60.0
@@ -93,6 +105,9 @@ class SovlageMixin:
 
     def oppen_tid(self) -> float:
         return 0.0 if self._uppkopplad_sedan is None else time.monotonic() - self._uppkopplad_sedan
+
+    def over_maxtid(self) -> bool:
+        return self.oppen_tid() >= max_sekunder_per_samtal()
 
     def over_budget(self) -> bool:
         return self.budget.anvant() + self.oppen_tid() >= max_sekunder_per_dag()
