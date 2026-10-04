@@ -51,6 +51,17 @@ SESSION_REUSE_TIMEOUT_SECONDS=$(bashio::config 'session_reuse_timeout_seconds')
 MAX_CONTEXT_MESSAGES=$(bashio::config 'max_context_messages')
 TRANSCRIPTION_MODEL=$(bashio::config 'transcription_model')
 
+# --- 🔐 Privacy & safety ---
+WAKE_CAPTURE=$(bashio::config 'wake_capture')
+TRIGGER_CAPTURE=$(bashio::config 'trigger_capture')
+LOG_TRANSCRIPTS=$(bashio::config 'log_transcripts')
+DEVICE_TOKEN=$(bashio::config 'device_token')
+DEVICE_AUTH=$(bashio::config 'device_auth')
+CONFIRM_ACTIONS=$(bashio::config 'confirm_actions')
+SLOW_TOOL_ACK=$(bashio::config 'slow_tool_ack')
+SPEAK_ERRORS=$(bashio::config 'speak_errors')
+TTS_STYLE=$(bashio::config 'tts_style')
+
 # --- 🔍 Debug ---
 ENABLE_RECORDING=$(bashio::config 'enable_recording')
 
@@ -97,6 +108,37 @@ export SESSION_REUSE_TIMEOUT_SECONDS
 export MAX_CONTEXT_MESSAGES
 export TRANSCRIPTION_MODEL
 export ENABLE_RECORDING
+export WAKE_CAPTURE
+export TRIGGER_CAPTURE
+export LOG_TRANSCRIPTS
+export DEVICE_TOKEN
+export DEVICE_AUTH
+export CONFIRM_ACTIONS
+export SLOW_TOOL_ACK
+export SPEAK_ERRORS
+export TTS_STYLE
+
+# Optional privacy/safety/tool tuning (hidden options): export only when set,
+# because bashio prints the literal string "null" for unset optionals.
+for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s \
+              guest_mode_entity device_allowlist confirm_tools slow_tools tts_voice \
+              mcp_persistent_session web_search_timeout_s; do
+    if bashio::config.has_value "${option}"; then
+        value=$(bashio::config "${option}")
+        case "${option}" in
+            wake_capture_ttl_days) export WAKE_CAPTURE_TTL_DAYS="${value}" ;;
+            wake_label_ttl_days) export WAKE_LABEL_TTL_DAYS="${value}" ;;
+            false_wake_flag_window_s) export FALSE_WAKE_FLAG_WINDOW_S="${value}" ;;
+            guest_mode_entity) export GUEST_MODE_ENTITY="${value}" ;;
+            device_allowlist) export DEVICE_ALLOWLIST="${value}" ;;
+            confirm_tools) export CONFIRM_TOOLS="${value}" ;;
+            slow_tools) export SLOW_TOOLS="${value}" ;;
+            tts_voice) export TTS_VOICE="${value}" ;;
+            mcp_persistent_session) export MCP_PERSISTENT_SESSION="${value}" ;;
+            web_search_timeout_s) export WEB_SEARCH_TIMEOUT_S="${value}" ;;
+        esac
+    fi
+done
 
 # The *_custom escape hatches (🗣️/🌐/⚙️) are optional WITHOUT defaults —
 # bashio::config prints "null" for unset optionals, and main.py's

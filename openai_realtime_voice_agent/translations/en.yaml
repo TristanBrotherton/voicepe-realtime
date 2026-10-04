@@ -26,9 +26,9 @@ configuration:
     name: "🔑 Basics · Spoken language (e.g. nl, en, de)"
     description: >-
       Two-letter code of the language you speak to it. Setting it keeps the
-      assistant from drifting into other languages, AND writes what you said
-      into the add-on log (the 🗣️ lines — handy to check what it heard).
-      Leave empty for auto-detect (no user transcript in the log).
+      assistant from drifting into other languages and enables the user
+      transcript (shown in the add-on log only when "Log transcripts" is on).
+      Leave empty for auto-detect.
 
   # --- 🗣️ Model & voice ---
   openai_model:
@@ -135,6 +135,14 @@ configuration:
       bigger buffer absorbs brief Wi-Fi hiccups (the occasional crackle), but
       every answer starts this much later. 150 is a good balance; raise to
       250–300 if you still hear crackle, 0 = play immediately.
+  output_lead_buffer_ms:
+    name: "🎚️ Audio · Reply start lead (ms)"
+    description: >-
+      Holds the first part of each reply for this long and sends it as one
+      burst, so the device starts playback with a cushion. Helps when replies
+      start with a click or stutter; costs about this much latency on the
+      first word. 0 = off (default); try 400 if replies start clipped. The
+      per-turn latency sensor shows the effect.
   noise_reduction:
     name: "🎚️ Audio · Microphone noise reduction"
     description: >-
@@ -241,20 +249,132 @@ configuration:
       Only with server_vad. How long a silence ends your question (default
       800). Raise it if you get cut off while pausing.
 
+  # --- 🔐 Privacy & safety ---
+  wake_capture:
+    name: "🔐 Privacy · Wake data kept on this host"
+    description: >-
+      What is stored about wakes, on your Home Assistant host only (never
+      uploaded by the add-on). auto = short audio clips only if "Record
+      audio" is on, otherwise metadata; off = nothing at all; metadata =
+      counters and wake metadata (time, device, model, threshold, your
+      false-wake flags), no audio; audio = metadata plus a few seconds after
+      each wake, used to review false wakes. Clips expire automatically.
+  trigger_capture:
+    name: "🔐 Privacy · Keep the sound that triggered a wake"
+    description: >-
+      Also keep the ~1.5 seconds BEFORE each wake (what the device thought was
+      the wake word) — the most useful audio for fixing false wakes. Needs
+      "Wake data kept" = audio AND the device's own "Share wake trigger audio"
+      switch. Stays on this host.
+  log_transcripts:
+    name: "🔐 Privacy · Log transcripts"
+    description: >-
+      Write what you and the assistant said into the add-on log. Off by
+      default because transcripts are personal data; turn on briefly when
+      debugging.
+  device_token:
+    name: "🔐 Security · Device token"
+    description: >-
+      Shared secret the Voice PE must present when it connects. Set the same
+      value as va_token in the device firmware. Empty = the socket is open to
+      every host on your network (the add-on logs a warning).
+  device_auth:
+    name: "🔐 Security · Device token policy"
+    description: >-
+      auto = require the token once one is set. permissive = accept devices
+      without a valid token but log them (use while reflashing). enforce =
+      require it. off = never check. enforce and permissive need a token;
+      without one the check stays off and the add-on logs a warning.
+  confirm_actions:
+    name: "🔐 Safety · Actions that need a spoken yes"
+    description: >-
+      Comma-separated: lock (unlocking), garage, gate, door (opening those
+      covers), alarm (any alarm panel action). The action only runs after you
+      answer the assistant's yes/no question. Enforced below the model. Empty
+      = no confirmations.
+  slow_tool_ack:
+    name: "💬 Conversation · Acknowledge slow lookups"
+    description: >-
+      When a slow lookup (web search, your agent) is still running after about
+      a second, the device says "One moment." once. Fast smart-home commands
+      never trigger it.
+  speak_errors:
+    name: "💬 Conversation · Say when something fails"
+    description: >-
+      If a request you started fails (rate limit, failed response), the device
+      says so out loud instead of just going quiet. Falls back to the error
+      chime if the message cannot be produced.
+  tts_style:
+    name: "💬 Conversation · Speaking style for announcements"
+    description: >-
+      Style instructions for timer messages, announcements, acknowledgements
+      and the enrollment coach (e.g. "Calm and friendly."). Empty = neutral.
+  wake_capture_ttl_days:
+    name: "🔐 Privacy · Unlabeled clip lifetime (days)"
+    description: >-
+      Optional. Unreviewed wake clips are deleted after this many days
+      (default 30). Clips you flagged as false wakes are kept separately.
+  wake_label_ttl_days:
+    name: "🔐 Privacy · Flagged clip lifetime (days)"
+    description: >-
+      Optional. Clips you flagged as false wakes are deleted after this many
+      days (default 180).
+  false_wake_flag_window_s:
+    name: "🔐 Privacy · False-wake flag window (seconds)"
+    description: >-
+      Optional. A double press or "that was a false alarm" labels this
+      device's wake only if it happened within this many seconds (default 30).
+  guest_mode_entity:
+    name: "🔐 Privacy · Guest mode switch"
+    description: >-
+      Optional input_boolean or switch entity. While it is on, nothing about
+      wakes is stored.
+  device_allowlist:
+    name: "🔐 Security · Allowed device addresses"
+    description: >-
+      Optional comma-separated IPs or networks (e.g. 192.0.2.10/32). Other
+      hosts cannot connect at all. Works without reflashing.
+  confirm_tools:
+    name: "🔐 Safety · Extra tools that need a spoken yes"
+    description: >-
+      Optional comma-separated tool names (e.g. an exposed script) that
+      always need confirmation.
+  slow_tools:
+    name: "💬 Conversation · Tools treated as slow"
+    description: >-
+      Optional. Default web_search,ask_openclaw. Any tool whose measured
+      median exceeds 1.2 s also qualifies automatically.
+  tts_voice:
+    name: "💬 Conversation · Announcement voice"
+    description: >-
+      Optional speech voice for prompts; defaults to the assistant's voice
+      when the speech endpoint supports it, otherwise alloy.
+  mcp_persistent_session:
+    name: "🏠 Home Assistant · Reuse the MCP session"
+    description: >-
+      Optional (default on). Reuses one Home Assistant tool session instead of
+      opening a new one for every command.
+  web_search_timeout_s:
+    name: "🌐 Web search · Timeout (seconds)"
+    description: >-
+      Optional (default 20). A search that takes longer is stopped and the
+      assistant says so.
+
   # --- 🔍 Debug ---
   enable_recording:
     name: "🔍 Debug · Record audio"
     description: >-
       Saves microphone and speaker audio to files inside the add-on, for
-      troubleshooting only. Leave off normally.
+      troubleshooting only. Leave off normally. (Also enables short wake
+      clips when "Wake data kept" is auto.)
 
   # --- 🧩 Fork features ---
   instance_name:
     name: "🧩 Fork · Instance name (room)"
     description: >-
-      Short name for the room/device this instance serves (e.g. kitchen).
-      Used in the Home Assistant sensor names and to route agent
-      announcements back to the right device. One add-on instance per device.
+      Short name for this add-on instance (e.g. kitchen). Used in the Home
+      Assistant sensor names. One instance can serve several devices; each
+      device is addressed by its own device_id.
   wake_sound_entity:
     name: "🧩 Fork · Wake sound switch entity"
     description: >-

@@ -54,9 +54,9 @@ options:
     words or an accent; do not infer the language from accent or a single word.
     STYLE: Your replies are read aloud, so keep them short and natural. Do not
     read out entity IDs, lists, or technical names; use ordinary names ("the
-    bedroom lamp"). Call your tools silently — say nothing like "Okay, let me
-    check" or "one moment" beforehand; just do it and then give one complete
-    answer. Do not start every answer with "Okay"; vary your confirmation
+    bedroom lamp"). Call your tools without announcing them (for slow lookups
+    the device plays a short acknowledgement by itself) and then give one
+    complete answer. Do not start every answer with "Okay"; vary your confirmation
     naturally, e.g. "The bedroom lamp is on now" or "Done, the light is off".
     BEHAVIOR: Carry out requested actions immediately with your tools and never
     guess. If you are unsure which device, room, or action is meant, ask a short
@@ -146,6 +146,30 @@ options:
   # (turn_detection_type + vad_* deliberately have NO defaults here — see the
   # header comment; semantic_vad is the hardwired default in main.py.)
 
+  # --- 🔐 Privacy & safety ---
+  # What wake data is kept on this Home Assistant host (never uploaded):
+  # auto = audio only if enable_recording is on (legacy behaviour), else
+  # metadata; off = nothing (guest mode); metadata = counters + wake metadata;
+  # audio = metadata + short post-wake clips for false-wake review.
+  wake_capture: "auto"
+  # Also ask the firmware for the ~1.5 s BEFORE a wake (the sound that
+  # triggered it). Needs wake_capture=audio AND the device's own switch.
+  trigger_capture: false
+  # Write what was said into the add-on log. Off by default (personal data).
+  log_transcripts: false
+  # Device WebSocket access control (see DOCS). Empty token = legacy open
+  # socket, logged loudly at startup.
+  device_token: ""
+  device_auth: "auto"
+  # Actions that need a spoken yes before they run, enforced below the model.
+  confirm_actions: "lock,garage,gate,door,alarm"
+  # One short "One moment." when a slow lookup is still running after ~1 s.
+  slow_tool_ack: true
+  # Explain rate limits / failed responses out loud on a turn you started.
+  speak_errors: true
+  # Speaking style for timers, announcements, prompts and the enrollment coach.
+  tts_style: ""
+
   # --- 🔍 Debug ---
   enable_recording: false
 
@@ -204,6 +228,27 @@ schema:
   vad_threshold: "float(0,1)?"
   vad_prefix_padding_ms: int?
   vad_silence_duration_ms: int?
+  # --- 🔐 Privacy & safety ---
+  wake_capture: "list(auto|off|metadata|audio)"
+  trigger_capture: bool
+  log_transcripts: bool
+  device_token: password
+  device_auth: "list(auto|enforce|permissive|off)"
+  confirm_actions: str
+  slow_tool_ack: bool
+  speak_errors: bool
+  tts_style: str
+  # Optional, hidden until "Show unused optional configuration options".
+  wake_capture_ttl_days: "int(1,365)?"
+  wake_label_ttl_days: "int(1,730)?"
+  false_wake_flag_window_s: "int(5,300)?"
+  guest_mode_entity: str?
+  device_allowlist: str?
+  confirm_tools: str?
+  slow_tools: str?
+  tts_voice: str?
+  mcp_persistent_session: bool?
+  web_search_timeout_s: "int(5,120)?"
   # --- 🔍 Debug ---
   enable_recording: bool
 # No `image:` key -> Home Assistant builds the add-on locally from the
