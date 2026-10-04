@@ -796,7 +796,10 @@ class ConnectionRecovery(FrameProcessor):
                 if getattr(self._service, "sover", True):
                     continue
                 from app.providers.sovlage import sov_efter_s
-                if self._tyst_nog(time.monotonic()):
+                if self._service.over_budget():
+                    logger.warning("💸 cloud budget for today used — disconnecting now")
+                    await self._service.sova("daily cloud budget used")
+                elif self._tyst_nog(time.monotonic()):
                     await self._service.sova(f"quiet for {sov_efter_s():.0f}s")
             except asyncio.CancelledError:
                 raise
