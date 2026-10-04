@@ -1028,6 +1028,10 @@ class WebSocketHandler:
                 await loop.run_in_executor(None, self.wake_events.save_trigger, event, pcm, rate)
             serializer.set_trigger_audio_handler(_on_trigger_audio)
 
+            async def _on_shadow_detection(model):
+                self.wake_events.record_shadow(connection.device_id, model)
+            serializer.set_shadow_detection_handler(_on_shadow_detection)
+
             serializer.set_output_audio_handler(lambda: timeline.mark("first_audio_sent"))
 
             if self.enrollment_conductor is not None:

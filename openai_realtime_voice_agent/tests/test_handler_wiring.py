@@ -6,6 +6,7 @@ serializer exactly as device frames would.
 """
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 
@@ -15,7 +16,7 @@ from app.device_registry import DeviceConnection
 from app.phase_emitter import TurnLiveness
 from app.raw_audio_serializer import RawAudioSerializer
 from app.turn_timeline import TurnTimeline
-from app.wake_events import CaptureConfig, WakeAudioCapture, WakeEventStore
+from app.wake_events import CaptureConfig, WakeAudioCapture, WakeEventStore, weekly_report
 from app.websocket_handler import WebSocketHandler
 
 
@@ -143,6 +144,14 @@ class TestHandlerWiring(unittest.IsolatedAsyncioTestCase):
         await self.send(self.kitchen, {"type": "wake", "turn": "k7"})
         await asyncio.sleep(0.05)
         self.assertEqual(self.kitchen.openai_service.resets, 0)
+
+    async def test_shadow_detection_is_metadata_only(self):
+        await self.send(self.kitchen, {"type": "shadow_detection", "model": "hey_leonard_candidate"})
+        log = os.path.join(self.tmp.name, "meta", "events-w.jsonl")
+        report = weekly_report([log])
+        self.assertEqual(report["devices"]["kitchen"]["shadow_detections"], {"hey_leonard_candidate": 1})
+        self.assertEqual(report["devices"]["kitchen"]["wakes"], 0, "shadow fires are not wakes")
+        self.assertIsNone(self.kitchen.turn_timeline.current, "no turn starts")
 
     async def test_hello_advertises_protocol_and_capture_consent(self):
         hello = self.handler.hello_payload()

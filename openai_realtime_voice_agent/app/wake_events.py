@@ -339,6 +339,19 @@ class WakeEventStore:
                 return event
         return None
 
+    def record_shadow(self, device_id: str, model: str) -> None:
+        """A candidate model running log-only on the device fired.
+
+        Shadow detections never start a session; they are metadata for the
+        candidate's live false-accept comparison against the incumbent.
+        """
+        if not self.storing_metadata():
+            return
+        event = WakeEvent(device_id=safe_token(device_id, 64) or "unknown",
+                          turn_id=uuid.uuid4().hex[:12], t_mono=self._clock(), wall=self._wall(),
+                          source="shadow", model=safe_token(model, 40))
+        self._log(event, "shadow")
+
     def set_outcome(self, device_id: str, turn_id: str, outcome: str) -> None:
         event = self.find(device_id, turn_id)
         if event is not None and not event.label:
@@ -575,6 +588,7 @@ def weekly_report(log_paths: List[str], now: Optional[float] = None, days: int =
     wakes: Dict[str, set] = {}
     labels: Dict[str, set] = {}
     candidates: Dict[str, set] = {}
+    shadows: Dict[str, Dict[str, int]] = {}
     outcomes: Dict[str, int] = {}
     models: Dict[str, int] = {}
     methods: Dict[str, int] = {}
@@ -600,11 +614,15 @@ def weekly_report(log_paths: List[str], now: Optional[float] = None, days: int =
                         methods[m] = methods.get(m, 0) + 1
                     elif rec.get("kind") == "candidate":
                         candidates.setdefault(device, set()).add(key)
+                    elif rec.get("kind") == "shadow":
+                        per_model = shadows.setdefault(device, {})
+                        model = rec.get("model") or "unknown"
+                        per_model[model] = per_model.get(model, 0) + 1
                     if rec.get("kind") in ("outcome", "label", "candidate") and rec.get("outcome"):
                         outcomes[rec["outcome"]] = outcomes.get(rec["outcome"], 0) + 1
         except FileNotFoundError:
             continue
-    devices = sorted(set(wakes) | set(labels) | set(candidates))
+    devices = sorted(set(wakes) | set(labels) | set(candidates) | set(shadows))
     per_device = {}
     for device in devices:
         n_wakes = len(wakes.get(device, ()))
@@ -615,6 +633,7 @@ def weekly_report(log_paths: List[str], now: Optional[float] = None, days: int =
             "unconfirmed_candidates": len(candidates.get(device, set()) - labels.get(device, set())),
             "flags_per_day": round(n_flags / days, 3),
             "flag_rate": round(n_flags / n_wakes, 4) if n_wakes else None,
+            "shadow_detections": shadows.get(device, {}),
         }
     total_wakes = sum(v["wakes"] for v in per_device.values())
     total_flags = sum(v["false_wake_flags"] for v in per_device.values())

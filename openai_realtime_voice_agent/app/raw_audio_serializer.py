@@ -126,6 +126,10 @@ class RawAudioSerializer(FrameSerializer):
         """Async callback(turn_id: str, metrics: dict) for device turn timings."""
         self._set("turn_metrics", handler)
 
+    def set_shadow_detection_handler(self, handler):
+        """Async callback(model: str) for a log-only candidate model detection."""
+        self._set("shadow_detection", handler)
+
     def set_trigger_audio_handler(self, handler):
         """Async callback(turn_id: str, pcm: bytes, rate: int) for the opt-in pre-wake snippet."""
         self._set("trigger_audio", handler)
@@ -228,6 +232,10 @@ class RawAudioSerializer(FrameSerializer):
                 await self._call("turn_metrics", turn_id, data)
         elif kind == "trigger_audio":
             await self._handle_trigger_chunk(data)
+        elif kind == "shadow_detection":
+            model = parse_wake_meta({"model": data.get("model")}).get("model", "")
+            if model:
+                await self._call("shadow_detection", model)
 
     def _turn_from(self, data: Dict[str, Any]) -> str:
         meta = parse_wake_meta({"turn": data.get("turn")})
