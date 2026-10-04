@@ -186,11 +186,13 @@ contracts and examples:
 
 ## 10. False-wake flagging & HA sensors
 
-Every wake's opening audio is archived locally (auto-pruned, newest 500). Flag a
-false trigger by saying *"that was a false alarm"*, **double-pressing the center
-button**, or automatically when a wake is silenced without speech. Labeled
-captures become hard negatives for wake-word retraining — see the
-[retrain flywheel](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/features.md#the-retrain-flywheel).
+Flag a false trigger by **double-pressing the center button**, pressing it
+during the wake before any reply, or saying *"that was a false alarm"*; the flag
+labels that device's own wake. By default only counters and wake metadata are
+stored (no audio). `wake_capture: audio` keeps short clips on this host for
+review, with automatic expiry. Labeled clips can become hard negatives for
+wake-word retraining — see the
+[wake-word learning loop](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/wake-word-learning.md).
 
 Set **`instance_name`** (e.g. `kitchen`) to publish
 `sensor.voicepe_kitchen_speaker`, `_active_timers`, `_wakes_today`,

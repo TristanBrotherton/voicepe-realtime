@@ -224,7 +224,7 @@ Once the basics work, the fun starts. Each of these has a full guide in
 - **Timers** — set `timer_ring_entity`. See [Voice timers](features.md#voice-timers).
 - **Sensors** — set `instance_name` to publish per-device HA sensors. See
   [HA sensors](features.md#ha-sensors).
-- **Your own wake word** — the [retrain flywheel](features.md#the-retrain-flywheel).
+- **Your own wake word** — [Wake-word learning](wake-word-learning.md).
 - **An agent** — deep recall and background task delegation. See
   [Agent Integration](agent-integration.md).
 

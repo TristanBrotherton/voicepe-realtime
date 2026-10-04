@@ -11,7 +11,7 @@ and which options drive it. Option details live in the
 - [Long-running task delegation](#long-running-task-delegation)
 - [Voice timers](#voice-timers)
 - [False-wake flagging](#false-wake-flagging)
-- [The retrain flywheel](#the-retrain-flywheel)
+- [Wake-word learning](#wake-word-learning)
 - [Web search](#web-search)
 - [HA sensors](#ha-sensors)
 - [Persona & voices](#persona--voices)
@@ -22,9 +22,9 @@ and which options drive it. Option details live in the
 ## Wake words
 
 **"Hey Leonard" ships as the default wake word** — a custom microWakeWord model
-trained by this project on real household voices (it's the worked example of the
-[retrain flywheel](#the-retrain-flywheel) below; the model lives in the firmware
-repo's [`models/`](https://github.com/TristanBrotherton/voicepe-realtime-firmware/tree/main/models)
+trained by this project on real household voices (it's the worked example of
+[wake-word learning](#wake-word-learning) below; the model and its metrics-only
+evaluation manifest live in the firmware repo's [`models/`](https://github.com/TristanBrotherton/voicepe-realtime-firmware/tree/main/models)
 directory).
 
 Detection runs entirely **on-device** — no audio leaves the Voice PE until a wake
@@ -46,12 +46,22 @@ Three ways to pick your wake word:
    on an Apple Silicon or NVIDIA machine. Use your
    [enrollment recordings](#speaker-recognition--voice-enrollment) as real positives
    and your [flagged false wakes](#false-wake-flagging) as hard negatives, then set
-   `wake_word_model` to your model. See [the flywheel](#the-retrain-flywheel) for the
-   full loop.
+   `wake_word_model` to your model. See [Wake-word learning](wake-word-learning.md)
+   for the full loop and the release gate.
 
-**Sensitivity** is a runtime select in HA too ("Wake word sensitivity": Slightly /
-Moderately / Very sensitive). Custom models come with calibrated cutoffs — set them
-via the `wake_cutoff_*` substitutions.
+**Sensitivity** is a runtime select in HA too ("Wake word sensitivity"), for every
+wake word:
+
+- **Slightly sensitive** (default) runs the model at its own calibrated cutoff —
+  the operating point that passed the release gate.
+- **Moderately** and **Very sensitive** lower the cutoff by steps derived from
+  the model's evaluation manifest. They wake more easily from across the room
+  and false-wake more often; both sit outside the validated false-accept budget.
+
+The device reports the model, its SHA-256 prefix, cutoff, window and tier with
+every wake, and shows them as the "Wake word operating point" diagnostic. A
+numeric `wake_cutoff_*` substitution still overrides a tier; leave them unset
+unless you have your own calibration.
 
 ---
 
@@ -244,41 +254,50 @@ The bell sound itself is a firmware substitution
 
 ## False-wake flagging
 
-Every wake's opening audio is archived locally (auto-pruned, newest 500 kept, in
-`/share/voice-probes/`). When the device wakes by mistake, flag it — three ways:
+When the device wakes by mistake, flag it. A flag labels the wake on **the
+device you flag it on** — never another room's:
 
-1. **By voice** — say *"that was a false alarm"* (or similar).
-2. **Double-press the center button** — works any time.
-3. **Automatically** — a wake that you silence without ever speaking is labeled
-   for you.
+1. **Double-press the center button** — labels the exact wake the device names.
+   A press while the add-on is unreachable is queued on the device and
+   delivered later (up to 10 minutes).
+2. **Press the button during the wake** — silencing a session within 12 s of
+   the wake, before any reply, labels it.
+3. **By voice** — say *"that was a false alarm"* within 30 s of the wake.
 
-Flagged captures become **hard negatives** for the next wake-word retrain — the
-model literally learns from its mistakes. The `false_wakes_today`
-[sensor](#ha-sensors) tracks how often it happens.
+A wake that ends without anyone speaking is only a *candidate* for review,
+never a training negative: people often wake the device and change their mind.
+
+What gets stored is your choice (`wake_capture`): by default only counters
+and wake metadata (time, device, model, cutoff, window, label), no audio. With
+`wake_capture: audio`, a short clip after each wake is kept on your HA host for
+review, and `trigger_capture` can add the ~1.5 s before the wake (opt-in on
+the add-on *and* on the device). Clips expire automatically (30 days
+unlabeled, 180 days labeled), and a guest-mode switch stops all storage. The
+`false_wakes_today` [sensor](#ha-sensors) counts flags per device.
 
 ---
 
-## The retrain flywheel
+## Wake-word learning
 
-The wake word improves continuously from your household's real usage. The loop:
+Labeled false wakes and enrollment recordings can train a better model — but a
+new model ships only on evidence:
 
-1. **Enroll** — say *"train my voice"*. The coach collects 25 varied repetitions
-   plus 90 s of natural speech per person. Recordings stay on your machine.
-2. **Live labeling** — real usage [flags false wakes](#false-wake-flagging) as
-   hard negatives, automatically and by hand.
-3. **Retrain** — a weekly job (or manual run) trains microWakeWord on ~50k
-   synthetic voices plus your real repetitions (triple weight) plus your labeled
-   false wakes, calibrates the detection threshold against held-out audio, and
-   quality-gates the result against the current model — recall and false-accept
-   rate must not regress.
-4. **Stage, never auto-flash** — passing models are staged with their calibration
-   and you're notified. Deployment is always a deliberate flash; the previous
-   model stays in the firmware repo's `models/previous/` for one-step rollback.
+1. **Train** outside this repository with the community
+   [microWakeWord trainer](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon)
+   (about two hours on Apple Silicon or NVIDIA).
+2. **Calibrate and gate**: every cutoff/window pair is evaluated, and one exact
+   pair must keep recall within 0.01 of the deployed model and false accepts
+   within 0.05/hour of it — and actually improve on it.
+3. **Shadow, canary, fleet**: the candidate runs log-only next to the live model
+   for a week, then live on one device for a week, with an automatic rollback
+   trigger on the false-wake flag rate. The previous model stays in the
+   firmware repo's `models/previous/` for one-step rollback.
 
-Result for this project's own model: detection cutoff 0.43 → 0.71 across three
-passes at ~97% recall — each pass trained on the mistakes of the last. Training
-runs in ~2 hours on any spare Apple Silicon or NVIDIA machine, with the
-community [microWakeWord Trainer](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon).
+Nothing trains, promotes or flashes automatically. The shipped model's numbers
+(recall 0.9749 at 0.83 false accepts/hour on the trainer's validation sets,
+up from 0.9669 at the same rate for the previous model) and what has *not*
+been measured yet (recall by distance) are in
+[Wake-word learning](wake-word-learning.md#8-the-shipped-model).
 
 ---
 
