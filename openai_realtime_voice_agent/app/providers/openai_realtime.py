@@ -103,6 +103,10 @@ class SafeRealtimeLLMService(SovlageMixin, ToolRegistrationMixin, OpenAIRealtime
         else:
             await self._connect()
 
+    async def _ar_uppkopplad(self) -> bool:  # SovlageMixin
+        # pipecat's _connect swallows a failed connect and leaves this None.
+        return self._websocket is not None
+
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
 

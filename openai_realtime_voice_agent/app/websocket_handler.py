@@ -30,6 +30,12 @@ from app.providers import (
     supports_client_events,
 )
 from app import bana0
+
+# US-018: well under EARLY_ACK_SILENCE_MS (1500 default, 2000 on core), counted
+# from the same moment, so the honest line wins the slot over "Ett ögonblick."
+OFFLINE_PROBE_S = 1.0
+# After a hit the model confirms in its own words; past this, the cached "Klart.".
+OK_VANTA_S = 2.5
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
@@ -1155,6 +1161,12 @@ class WebSocketHandler:
         # announcer `say(text, device_id)` that speaks HA's confirmation.
         self.bana0_stt: Optional[tuple[str, int]] = None
         self.bana0_timeouts: tuple[float, float] = (0.6, 4.0)
+        # "Does this engine's API answer at all?" (main.probe_engine), sync.
+        # Set by main; None = no offline line (US-018).
+        self.engine_probe: Optional[Callable[[str], bool]] = None
+        self._offline_tasks: set = set()
+        # main._ack_clip: a phrase in the engine's own voice, cached on disk.
+        self.ack_clip = None
         self.say = None
     
     def create_transport(
@@ -1596,9 +1608,43 @@ class WebSocketHandler:
             timeout_stt, timeout_comms = self.bana0_timeouts
 
             async def _say(text):
-                if self.say is None:
+                """Bana 0's own lines, in the engine's voice from the disk cache (never the
+                conductor's dry voice - the owner 2026-10-03: "hellre tyst än den torra")."""
+                if self.say is None or self.ack_clip is None:
                     raise RuntimeError("no announcer wired")
-                await self.say(text, client_id)
+                pcm = await self.ack_clip(provider, text)
+                await self.say(text, client_id, pace=False, pcm=pcm)
+
+            def _efter_miss():
+                liveness = getattr(connection, "turn_liveness", None)
+                if self.engine_probe is None or liveness is None:
+                    return
+                router = self.router
+                engines = tuple(router.chain) if router is not None else (provider,)
+                asked = time.monotonic()
+                task = asyncio.get_running_loop().create_task(bana0.vakta_natet(
+                    natet_nere=lambda: bana0.natet_nere(self.engine_probe, engines, OFFLINE_PROBE_S),
+                    claim=lambda: liveness.claim_silence_ack(asked),
+                    say=_say,
+                ))
+                # The loop keeps tasks weakly; hold it until it is done.
+                self._offline_tasks.add(task)
+                task.add_done_callback(self._offline_tasks.discard)
+
+            def _efter_traff():
+                liveness = getattr(connection, "turn_liveness", None)
+                if liveness is None:
+                    return
+                asked = time.monotonic()
+
+                # Gemini never hears a hit, so no model confirmation is coming.
+                vanta = OK_VANTA_S if supports_client_events(provider) else 0.0
+                task = asyncio.get_running_loop().create_task(bana0.vakta_bekraftelse(
+                    vanta_s=vanta, claim=lambda: bana0.ingen_bekraftelse_an(liveness, asked),
+                    say_ok=lambda: _say(bana0.OK_FALLBACK),
+                ))
+                self._offline_tasks.add(task)
+                task.add_done_callback(self._offline_tasks.discard)
 
             async def _on_user_turn_end():
                 bana = await bana0.tur(
@@ -1606,9 +1652,10 @@ class WebSocketHandler:
                     stt=lambda pcm, t: bana0.transkribera(pcm, host, port, t),
                     timeout_stt=timeout_stt,
                     timeout_comms=timeout_comms,
-                    say=_say,
                     skicka_svar_till_modellen=lambda text: bana0_hit(provider, openai_service, text),
+                    efter_traff=_efter_traff,
                     skapa_svar=lambda: bana0_miss(provider, openai_service),
+                    efter_miss=_efter_miss,
                 )
                 if bana == "bana0":
                     await phase_emitter.force_idle("bana0")

@@ -578,6 +578,8 @@ class Application:
         self.enrollment_conductor.on_finished = _auto_build_voiceprint
         # Bana 0 speaks HA's confirmation through the same guarded lane.
         self.websocket_handler.say = self._guarded_say
+        self.websocket_handler.engine_probe = probe_engine
+        self.websocket_handler.ack_clip = self._ack_clip
         self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1
@@ -1183,12 +1185,14 @@ class Application:
 
     async def _warm_early_acks(self) -> None:
         """Render every ack once per configured engine, so the first slow tool is not slower."""
+        from app.bana0 import LOKALA_REPLIKER
         from app.providers import GEMINI, OPENAI, XAI
 
         engines = [p for p, key in ((GEMINI, self.gemini_api_key), (OPENAI, self.openai_api_key),
                                     (XAI, self.xai_api_key)) if key]
         for provider in engines:
-            for text in EARLY_ACK_PHRASES:
+            # Bana 0's lines too: offline only the cached clip can speak (US-018).
+            for text in EARLY_ACK_PHRASES + LOKALA_REPLIKER:
                 try:
                     await self._ack_clip(provider, text)
                 except Exception as e:

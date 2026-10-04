@@ -297,3 +297,36 @@ def test_maxtid_standard_tio_minuter(monkeypatch):
     assert max_sekunder_per_samtal() == 600
     monkeypatch.setenv("VOICE_SESSION_MAX_SECONDS", "x")
     assert max_sekunder_per_samtal() == 600
+
+
+@pytest.mark.asyncio
+async def test_misslyckad_uppkoppling_somnar_igen_och_nasta_vakning_forsoker():
+    """Live 2026-10-04 (US-018 AC-3): offline connect failed, the service
+    counted as awake, and the question after the net came back went nowhere."""
+    class Nere(Fake):
+        uppe = False
+
+        async def _ar_uppkopplad(self):
+            return self.uppe
+
+    s = Nere()
+    assert await s.vakna() is False
+    assert s.sover is True
+    s.uppe = True  # the net is back
+    assert await s.vakna() is True
+    assert s.calls == [("upp", False), ("upp", False)]
+
+
+@pytest.mark.asyncio
+async def test_gemini_vantar_pa_sessionen_eller_dess_fel():
+    service = _service(GEMINI)
+    service._session = None
+
+    class Klar:
+        def done(self):
+            return True
+
+    service._connection_task = Klar()
+    assert await service._ar_uppkopplad(timeout=1) is False
+    service._session = object()
+    assert await service._ar_uppkopplad(timeout=1) is True

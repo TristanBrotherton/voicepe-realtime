@@ -489,6 +489,18 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         handle = getattr(self, "_session_resumption_handle", None) if forut else None
         await self._connect(handle)
 
+    async def _ar_uppkopplad(self, timeout: float = 3.0) -> bool:  # SovlageMixin
+        """pipecat connects in a background task; wait for the session or its failure."""
+        slut = time.monotonic() + timeout
+        while time.monotonic() < slut:
+            if self._session:
+                return True
+            task = getattr(self, "_connection_task", None)
+            if task is not None and task.done():
+                return bool(self._session)
+            await asyncio.sleep(0.05)
+        return bool(self._session)
+
     async def refresh_instructions(self) -> bool:
         """Reconnect to pick up a new instruction, only between turns.
 
