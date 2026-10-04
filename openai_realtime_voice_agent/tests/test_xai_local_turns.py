@@ -225,3 +225,5 @@ async def test_the_idle_close_sleeps_never_reconnects_never_a_strike():
     service._handle_evt_error.assert_not_awaited()  # no ErrorFrame carrying the timeout
     assert service.push_error.await_args_list == []  # nothing for the recovery to reconnect
     assert service.sover is True
+    await asyncio.sleep(0.05)  # the sleep task runs pipecat's _disconnect
+    assert closed.is_set()  # the socket really closed

@@ -268,6 +268,7 @@ class ConnectionRecovery(FrameProcessor):
         self._refresh_task = None
         self._recover_task = None
         self._sov_task = None
+        self._vakna_task = None
         # Last wake of this device (providers/sovlage.py): the sleep timer counts from it too.
         self._last_wake = time.monotonic()
         self._closed = False
@@ -282,6 +283,9 @@ class ConnectionRecovery(FrameProcessor):
             self._refresh_task = asyncio.create_task(self._proactive_refresh_loop())
         if self._sov_task is None and getattr(self._service, "sover", None) is not None:
             self._sov_task = asyncio.create_task(self._sov_loop())
+        if isinstance(frame, StartFrame) and self.vakna_vid_start:
+            self.vakna_vid_start = False
+            self._vakna_task = asyncio.create_task(self._vakna_efter_start())
         if isinstance(frame, InputAudioRawFrame):
             # Only kept for the proactive-refresh "is anyone interacting?" check.
             # (Stale-audio clearing is now done at the cut-off source — the device
@@ -739,15 +743,29 @@ class ConnectionRecovery(FrameProcessor):
 
     SOV_CHECK_S = 5.0
 
+    VAKNA_TIMEOUT_S = 5.0
+    # Set by serve_connection when this connection replaces one whose engine
+    # was awake: the device reconnected mid-conversation, so wake at start.
+    vakna_vid_start = False
+
     def note_wake(self) -> None:
         self._last_wake = time.monotonic()
 
     async def vakna(self) -> None:
-        """The device woke: connect the engine if it sleeps (providers/sovlage.py)."""
+        """The device woke: connect the engine if it sleeps (providers/sovlage.py).
+
+        Bounded: the serializer waits on this, so a hung connect must not
+        hold the device's frames (and its ping/pong) for more than a moment.
+        """
         self.note_wake()
         vakna = getattr(self._service, "vakna", None)
-        if vakna is not None and await vakna():
-            self._connected_at = time.monotonic()
+        if vakna is None:
+            return
+        try:
+            if await asyncio.wait_for(vakna(), self.VAKNA_TIMEOUT_S):
+                self._connected_at = time.monotonic()
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ cloud connect on wake took over {self.VAKNA_TIMEOUT_S:.0f}s — going on")
 
     def _tyst_nog(self, now: float) -> bool:
         """Quiet for SOV_EFTER_S: no mic audio, no wake, device idle, no reply under way."""
@@ -763,6 +781,10 @@ class ConnectionRecovery(FrameProcessor):
             and not busy
             and not self._reconnecting
         )
+
+    async def _vakna_efter_start(self):
+        await asyncio.sleep(0.5)  # let the engine's own start() run first
+        await self.vakna()
 
     async def _sov_loop(self):
         """Put the engine to sleep once the conversation has been quiet long enough."""
@@ -784,7 +806,7 @@ class ConnectionRecovery(FrameProcessor):
     async def close(self) -> None:
         """Stop background work owned by this pipeline processor."""
         self._closed = True
-        tasks = (self._refresh_task, self._recover_task, self._sov_task)
+        tasks = (self._refresh_task, self._recover_task, self._sov_task, self._vakna_task)
         self._refresh_task = None
         self._recover_task = None
         self._sov_task = None
@@ -1990,6 +2012,10 @@ class WebSocketHandler:
 
             displaced = await self.devices.add(connection)
             registered = True
+            # The device reconnected mid-conversation (Wi-Fi blip): the new
+            # engine would start asleep and drop the next follow-up.
+            if displaced is not None and getattr(displaced.openai_service, "sover", True) is False:
+                connection.recovery.vakna_vid_start = True
             await connection.send_json(self.hello_payload())
 
             if displaced is not None:

@@ -145,3 +145,79 @@ async def test_openai_lasloopens_slut_nar_den_sover_ar_inget_fel():
     service._websocket = Ws()
     await asyncio.wait_for(service._receive_task_handler(), 1)
     service.push_error.assert_not_awaited()
+
+
+# --- the real engines' reconnect and the wiring the review asked for ---
+
+@pytest.mark.asyncio
+async def test_openai_forsta_vakningen_ansluter_senare_aterskapar_samtalet():
+    service = _service(OPENAI)
+    service._connect = AsyncMock()
+    service.reset_conversation = AsyncMock()
+    await service._ateranslut(False)
+    service._connect.assert_awaited_once()
+    service.reset_conversation.assert_not_awaited()
+    await service._ateranslut(True)
+    service.reset_conversation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gemini_senare_vakning_ateruptar_med_handtaget():
+    service = _service(GEMINI)
+    service._connect = AsyncMock()
+    service._session_resumption_handle = "h1"
+    await service._ateranslut(False)
+    service._connect.assert_awaited_with(None)
+    await service._ateranslut(True)
+    service._connect.assert_awaited_with("h1")
+
+
+@pytest.mark.asyncio
+async def test_vakning_fran_enheten_vacker_motorn_genom_ledningen():
+    from test_bana0 import _koppling
+    import json
+
+    handler, connection, service, sent = _koppling(None)
+    connection.recovery.vakna = AsyncMock()
+    await connection.serializer.deserialize(json.dumps({"type": "wake"}))
+    connection.recovery.vakna.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_forsta_ramen_startar_sovloopen():
+    s = Fake()
+    r = _recovery(s)
+    r.push_frame = AsyncMock()
+    r._refresh_task = object()
+    await r.process_frame(ErrorFrame(error="x"), FrameDirection.UPSTREAM)
+    assert r._sov_task is not None
+    r._sov_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_vakning_som_hanger_haller_inte_enheten():
+    class Hang(Fake):
+        async def vakna(self):
+            await asyncio.sleep(10)
+
+    r = _recovery(Hang())
+    r.VAKNA_TIMEOUT_S = 0.05
+    t0 = time.monotonic()
+    await r.vakna()
+    assert time.monotonic() - t0 < 1.0
+
+
+@pytest.mark.asyncio
+async def test_ateranslutning_mitt_i_samtal_vacker_nya_motorn():
+    from pipecat.frames.frames import StartFrame
+
+    s = Fake()
+    r = _recovery(s)
+    r.push_frame = AsyncMock()
+    r._refresh_task = r._sov_task = object()
+    r.vakna_vid_start = True
+    from unittest.mock import patch
+    with patch("pipecat.processors.frame_processor.FrameProcessor.process_frame", AsyncMock()):
+        await r.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0.7)
+    assert s.sover is False
