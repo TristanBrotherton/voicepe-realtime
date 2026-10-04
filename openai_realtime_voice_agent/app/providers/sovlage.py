@@ -133,10 +133,24 @@ class SovlageMixin:
         t0 = time.monotonic()
         try:
             await self._ateranslut(self._vaknat_forut)
+            uppe = await self._ar_uppkopplad()
         except Exception as e:
             logger.error(f"❌ could not connect to the cloud engine on wake: {e!r}")
+            uppe = False
+        if not uppe:
+            # Live 2026-10-04 (US-018): the connect failed offline, the service
+            # still counted as awake, and nothing reconnected it when the net
+            # came back. Asleep again, so the next wake tries anew.
+            self.sover = True
+            self._uppkopplad_sedan = None
+            logger.warning("☁️ cloud engine did not connect on wake — asleep, the next wake retries")
+            return False
         self._vaknat_forut = True
         logger.info(f"☁️ connected to the cloud engine on wake ({time.monotonic() - t0:.1f}s)")
+        return True
+
+    async def _ar_uppkopplad(self) -> bool:
+        """Engine-specific: is there a live connection after _ateranslut? Default: assume so."""
         return True
 
     async def sova(self, reason: str) -> bool:
