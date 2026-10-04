@@ -271,3 +271,29 @@ async def test_sovloopen_kopplar_ner_nar_budgeten_tar_slut(egen_budget, monkeypa
     await asyncio.sleep(0.1)
     task.cancel()
     assert s.sover is True
+
+
+# --- a hard cap per session (0.26.3, Henrik 2026-10-04) ---
+
+@pytest.mark.asyncio
+async def test_maxtid_kopplar_ner_aven_nar_ljud_fortsatter(monkeypatch):
+    monkeypatch.setenv("VOICE_SESSION_MAX_SECONDS", "60")
+    s = Fake()
+    await s.vakna()
+    s._uppkopplad_sedan -= 61  # connected for 61 s
+    r = _recovery(s, phase="replying")
+    r.SOV_CHECK_S = 0.01
+    r._last_input_audio = r._last_wake = time.monotonic()  # audio still flowing
+    task = asyncio.create_task(r._sov_loop())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    assert s.sover is True and s.calls[-1] == "ner"
+    assert s.calls.count(("upp", False)) == 1  # nothing reconnected it
+
+
+def test_maxtid_standard_tio_minuter(monkeypatch):
+    from app.providers.sovlage import max_sekunder_per_samtal
+    monkeypatch.delenv("VOICE_SESSION_MAX_SECONDS", raising=False)
+    assert max_sekunder_per_samtal() == 600
+    monkeypatch.setenv("VOICE_SESSION_MAX_SECONDS", "x")
+    assert max_sekunder_per_samtal() == 600

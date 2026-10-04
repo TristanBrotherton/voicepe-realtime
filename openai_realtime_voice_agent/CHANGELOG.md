@@ -24,6 +24,14 @@ All notable changes to this add-on. Newest first.
   samma stund och hinner före kvittot. Ett misslyckat modellanrop efter en
   miss kraschar inte längre turen. Konduktörens TTS ger upp anslutningen
   efter 3 s (var 30), så "Klart." inte väntar på ett dött nät.
+## 0.26.3 (fork)
+
+- **Hård maxtid per molnsamtal:** `VOICE_SESSION_MAX_SECONDS` (600). Henrik
+  2026-10-04, utöver sovläget (30 s tyst) och dagstaket (60 min): en session
+  stängs efter tio minuter även om ljud fortsätter komma in (en öppen mikrofon,
+  en tv, en enhet som hängt sig), för alla tre motorerna. Ingen
+  återuppkoppling förrän nästa väckningsord. Provet faller utan spärren.
+
 ## 0.26.2 (fork)
 
 - **Tre motorer i ordning:** `VOICE_PROVIDERS=gemini,xai,openai` (Henrik
