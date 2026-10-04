@@ -1,13 +1,10 @@
-"""Prove MixedFastAPIWebsocketClient carries binary AND text, unlike the base."""
-import asyncio
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""MixedFastAPIWebsocketClient carries binary AND text, unlike the base client."""
+import unittest
 
 from starlette.websockets import WebSocketState
-from app.multi_client_transport import MixedFastAPIWebsocketClient
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketClient
+
+from app.multi_client_transport import MixedFastAPIWebsocketClient
 
 
 class FakeWebSocket:
@@ -30,11 +27,10 @@ class FakeWebSocket:
     async def send_text(self, data):
         self.sent.append(("text", data))
 
-    # The base class reads only one of these two.
     async def _iter(self, key):
-        for m in list(self._inbound):
-            if m.get(key) is not None:
-                yield m[key]
+        for message in list(self._inbound):
+            if message.get(key) is not None:
+                yield message[key]
 
     def iter_bytes(self):
         return self._iter("bytes")
@@ -54,54 +50,40 @@ INBOUND = [
 
 
 async def drain(client):
-    out = []
-    async for msg in client.receive():
-        out.append(msg)
-    return out
+    return [message async for message in client.receive()]
 
 
-async def main():
-    callbacks = object()
+class TestMixedTransport(unittest.IsolatedAsyncioTestCase):
+    async def test_receive_yields_text_and_binary_in_order(self):
+        got = await drain(MixedFastAPIWebsocketClient(FakeWebSocket(INBOUND), object()))
+        self.assertEqual(len(got), 5)
+        self.assertEqual(
+            [m for m in got if isinstance(m, str)],
+            ['{"type":"start"}', '{"type":"wake"}', '{"type":"interrupt"}'],
+        )
+        self.assertEqual(len([m for m in got if isinstance(m, (bytes, bytearray))]), 2)
 
-    # --- the mixed client -------------------------------------------------
-    ws = FakeWebSocket(INBOUND)
-    mixed = MixedFastAPIWebsocketClient(ws, callbacks)
-    got = await drain(mixed)
-    texts = [m for m in got if isinstance(m, str)]
-    binaries = [m for m in got if isinstance(m, (bytes, bytearray))]
-    print(f"mixed  -> {len(got)} frames: {len(texts)} text, {len(binaries)} binary")
-    assert len(got) == 5, got
-    assert texts == ['{"type":"start"}', '{"type":"wake"}', '{"type":"interrupt"}'], texts
-    assert len(binaries) == 2
+    async def test_send_dispatches_on_payload_type(self):
+        ws = FakeWebSocket([])
+        mixed = MixedFastAPIWebsocketClient(ws, object())
+        await mixed.send(b"\xaa\xbb")
+        await mixed.send('{"type":"phase","value":"listening"}')
+        self.assertEqual(
+            ws.sent,
+            [("bytes", b"\xaa\xbb"), ("text", '{"type":"phase","value":"listening"}')],
+        )
 
-    # send() must dispatch on payload type, not a fixed mode
-    await mixed.send(b"\xaa\xbb")
-    await mixed.send('{"type":"phase","value":"listening"}')
-    assert ws.sent == [
-        ("bytes", b"\xaa\xbb"),
-        ("text", '{"type":"phase","value":"listening"}'),
-    ], ws.sent
-    print(f"mixed  -> send dispatched correctly: {[k for k, _ in ws.sent]}")
+    async def test_stock_client_drops_control_frames(self):
+        # Documents why the mixed client exists: the stock binary-mode client
+        # silently drops every text control frame.
+        base = FastAPIWebsocketClient(FakeWebSocket(INBOUND), True, object())
+        got = await drain(base)
+        self.assertTrue(all(isinstance(m, (bytes, bytearray)) for m in got))
+        self.assertEqual(len(got), 2)
 
-    # --- the stock client, for contrast ----------------------------------
-    ws2 = FakeWebSocket(INBOUND)
-    base = FastAPIWebsocketClient(ws2, True, callbacks)  # is_binary=True, as a BINARY serializer forces
-    base_got = await drain(base)
-    print(
-        f"stock  -> {len(base_got)} frames: "
-        f"{len([m for m in base_got if isinstance(m, str)])} text, "
-        f"{len([m for m in base_got if isinstance(m, (bytes, bytearray))])} binary"
-    )
-    assert all(isinstance(m, (bytes, bytearray)) for m in base_got)
-    assert len(base_got) == 2, base_got
-    print("stock  -> DROPS all 3 control frames (start/wake/interrupt), as predicted")
-
-    # disconnect must terminate iteration, not hang
-    ws3 = FakeWebSocket([])
-    assert await drain(MixedFastAPIWebsocketClient(ws3, callbacks)) == []
-    print("mixed  -> clean stop on disconnect")
-
-    print("\nALL ASSERTIONS PASSED")
+    async def test_disconnect_terminates_iteration(self):
+        self.assertEqual(await drain(MixedFastAPIWebsocketClient(FakeWebSocket([]), object())), [])
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    unittest.main()
