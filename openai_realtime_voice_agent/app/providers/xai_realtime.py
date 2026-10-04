@@ -227,7 +227,7 @@ class XaiRealtimeLLMService(LocalTurnsMixin, SafeRealtimeLLMService):
         return "input_audio_buffer.clear"
 
     async def _maybe_handle_evt_retrieve_conversation_item_error(self, evt):  # type: ignore[override]
-        """xAI's 900 s idle close: hang up and reconnect, never a strike.
+        """xAI's 900 s idle close: go to sleep (providers/sovlage.py), never a strike.
 
         Left to pipecat it is a fatal error event: an ErrorFrame the router
         counts as an xai hiccup (live 2026-10-02 20:22:49, 1/2 after one quiet
@@ -237,9 +237,10 @@ class XaiRealtimeLLMService(LocalTurnsMixin, SafeRealtimeLLMService):
         error = getattr(evt, "error", None)
         if (getattr(error, "code", None) == IDLE_TIMEOUT_CODE
                 and IDLE_TIMEOUT_MARKER in (getattr(error, "message", "") or "")):
-            logger.info("🔁 xAI closed an idle session (900 s) — reconnecting, not counting it")
-            if self._websocket is not None:
-                asyncio.get_running_loop().create_task(self._websocket.close())
+            # Sleep, never reconnect (raawr INKAST 2026-10-04: reconnecting a
+            # quiet session all night cost ~45 dollars; xAI bills per minute).
+            logger.info("💤 xAI closed an idle session (900 s) — going to sleep, not reconnecting")
+            asyncio.get_running_loop().create_task(self.sova("xAI idle close (900 s)"))
             return True
         return await super()._maybe_handle_evt_retrieve_conversation_item_error(evt)
 

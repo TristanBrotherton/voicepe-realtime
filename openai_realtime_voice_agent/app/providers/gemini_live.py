@@ -34,6 +34,7 @@ from pipecat.services.google.gemini_live.llm import (
 from pipecat.transcriptions.language import Language
 
 from app.providers.local_turns import LocalTurns, LocalTurnsMixin
+from app.providers.sovlage import SovlageMixin
 from app.providers.tool_registration import ToolRegistrationMixin
 
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ def _build_vad_params(options) -> GeminiVADParams:
     )
 
 
-class ResilientGeminiLiveService(LocalTurnsMixin, ToolRegistrationMixin, GeminiLiveLLMService):
+class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, GeminiLiveLLMService):
     """Gemini Live that does not mistake a quiet house for a broken engine.
 
     The Voice PE is push-to-talk: it streams the microphone only during a turn
@@ -482,6 +483,11 @@ class ResilientGeminiLiveService(LocalTurnsMixin, ToolRegistrationMixin, GeminiL
             except Exception as e:
                 logger.warning(f"⚠️ instruction not re-rendered, keeping the last ({e!r})")
         await super()._connect(session_resumption_handle)
+
+    async def _ateranslut(self, forut: bool) -> None:  # SovlageMixin
+        """Resume the earlier conversation with Google's handle when there is one."""
+        handle = getattr(self, "_session_resumption_handle", None) if forut else None
+        await self._connect(handle)
 
     async def refresh_instructions(self) -> bool:
         """Reconnect to pick up a new instruction, only between turns.

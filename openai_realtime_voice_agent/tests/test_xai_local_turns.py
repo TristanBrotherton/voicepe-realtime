@@ -203,14 +203,17 @@ IDLE = json.dumps({"type": "error", "event_id": "87e0", "error": {
 
 
 @pytest.mark.asyncio
-async def test_the_idle_close_reconnects_without_a_strike():
+async def test_the_idle_close_sleeps_never_reconnects_never_a_strike():
+    """raawr INKAST 2026-10-04: reconnecting each 900 s idle close all night
+    cost ~45 dollars (xAI bills per connected minute). Now it goes to sleep."""
     service = build_service(XAI, _options(), [])
+    service.sover = False  # awake, mid-session
     closed = asyncio.Event()
 
     class Ws:
         async def __aiter__(self):
             yield IDLE
-            await closed.wait()  # the server would hang up; our close ends it
+            await closed.wait()  # our own disconnect ends it
 
         async def close(self):
             closed.set()
@@ -220,9 +223,7 @@ async def test_the_idle_close_reconnects_without_a_strike():
     service._handle_evt_error = AsyncMock()
     await asyncio.wait_for(service._receive_task_handler(), 1)
     service._handle_evt_error.assert_not_awaited()  # no ErrorFrame carrying the timeout
-    errors = [c.kwargs.get("error_msg", "") for c in service.push_error.await_args_list]
-    assert errors == ["realtime receive loop ended — connection closed"]
-
-    from app.websocket_handler import ConnectionRecovery
-    recovery = object.__new__(ConnectionRecovery)
-    assert recovery._is_dead_socket(errors[0])  # repaired first, never reported
+    assert service.push_error.await_args_list == []  # nothing for the recovery to reconnect
+    assert service.sover is True
+    await asyncio.sleep(0.05)  # the sleep task runs pipecat's _disconnect
+    assert closed.is_set()  # the socket really closed

@@ -45,6 +45,7 @@ def _pushed(service):
 def _connect_config(service):
     """Run pipecat's _connect and hand back the LiveConnectConfig it built."""
     seen = []
+    service.sover = False  # awake: these tests read what a real connect sends
     service._connection_task_handler = lambda config: config
     service.create_task = lambda c: seen.append(c)
     asyncio.run(service._connect())
