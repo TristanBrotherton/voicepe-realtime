@@ -2,6 +2,57 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.0 (fork)
+
+**Upgrade notes.** New options default to the previous behaviour or to the
+conservative choice, with one deliberate exception: unlocking locks, opening
+garage doors, gates and doors, and alarm-panel actions now need a spoken yes
+(`confirm_actions`; empty it to opt out). Setting a `device_token` is
+recommended. Firmware 1.3.0 (wake protocol 2) adds wake metadata and device
+timings; older firmware keeps working.
+
+- **Per-turn latency timeline**, correlated between the device and the add-on
+  by turn id: wake, first mic audio, the server's end-of-turn decision
+  (measured from OpenAI's own audio timestamps), first model audio, first
+  audio sent, tools and the device's own timings. One `⏱️ turn` log line per
+  turn (no words) and `sensor.voicepe_<instance>_latency` with rolling p50/p90.
+- **The wake path no longer waits for Home Assistant.** Sensor updates go
+  through one shared client and a background worker; daily counters survive
+  restarts and count per device.
+- **Wake-word observability**: every wake records the model, SHA-256 prefix,
+  cutoff, window and sensitivity tier (`sensor.voicepe_<instance>_wake_word`).
+- **False-wake labels you can trust**: flags label the exact device and turn
+  (double-press, button during the wake, or voice within 30 s); presses made
+  while offline are delivered later; silent wakes are only candidates, never
+  training negatives; labeled clips have their own retention pool.
+- **Privacy controls**: `wake_capture` (default: counters and metadata only),
+  opt-in trigger audio that needs consent on both the add-on and the device,
+  guest mode, retention limits, `log_transcripts` (off), and speaker
+  identification no longer writes probe audio. A metadata-only weekly report
+  (`python3 -m app.wake_events report`) counts wakes, flags and shadow-model
+  detections per device.
+- **Security**: optional device token with a migration mode and address
+  allowlist; `/healthz` reports only counts unless authorized; spoken-yes
+  confirmations for risky actions, enforced below the model.
+- **Conversation**: a single "One moment." when a slow lookup is still running
+  after about a second (fast commands never get one); failed turns you started
+  are explained out loud; the speaking style and voice for timers,
+  announcements and the enrollment coach are options instead of a hard-coded
+  persona; English fallback messages.
+- **Recovery**: a silent wake checks the OpenAI socket instead of always
+  reconnecting; a request cut off by a dropped connection is replayed once the
+  session is back; the Home Assistant MCP session is reused; web search is
+  bounded (`web_search_timeout_s`).
+- **Routing**: agent escalations carry the asking `device_id`, and
+  announcements can target it, so report-backs play on the device that asked.
+- **Tests and CI**: every test file is a discoverable unittest suite (194
+  tests); CI scans the whole repository for private data and broken doc links
+  and refuses a shrinking suite.
+- **Docs and demo**: claims corrected (no unmeasured latency figures; memory
+  notes are sent to OpenAI as part of the instructions; speaker gating is a
+  convenience check), new guides for wake-word learning and every option, and
+  a reproducible, measured demo with a simulated device (`demo/`).
+
 ## 0.16.12 (fork)
 
 - Fixed missing spoken acknowledgements after a proactive Realtime reconnect.

@@ -122,6 +122,23 @@ class TestHandlerWiring(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.find("office", "o3").label, "")
         self.assertEqual(self.kitchen.turn_timeline.find("k3").outcome, "false_wake")
 
+    async def test_firmware_before_protocol_2_still_works(self):
+        # Devices not yet reflashed send bare messages: no turn id, no model
+        # metadata, no turn_metrics. Turns, labels and acks must still work.
+        await self.send(self.kitchen, {"type": "wake"})
+        turn = self.kitchen.turn_timeline.current
+        self.assertTrue(turn.turn_id, "a generated turn id")
+        self.assertEqual(turn.meta, {})
+        await self.kitchen.serializer.deserialize(b"\x00\x00" * 160)
+        self.assertIn('{"type":"ack"}', self.kitchen.transport.client.sent)
+        await self.send(self.kitchen, {"type": "button_cancel"})
+        self.assertEqual(self.store.find("kitchen", turn.turn_id).label, "false_wake")
+        await self.send(self.kitchen, {"type": "wake"})
+        second = self.kitchen.turn_timeline.current
+        await self.send(self.kitchen, {"type": "false_flag"})
+        self.assertEqual(self.store.find("kitchen", second.turn_id).label, "false_wake")
+        self.assertEqual(self.store.find("kitchen", second.turn_id).label_method, "double_press")
+
     async def test_double_press_without_turn_is_bounded_to_this_device(self):
         await self.send(self.office, {"type": "wake", "turn": "o4"})
         await self.send(self.kitchen, {"type": "false_flag"})
