@@ -1,7 +1,7 @@
 """LAN announce endpoint: a route back to the device for external agents.
 
-The household's agent (OpenClaw) can finish long-running work minutes after
-the voice request that started it. This endpoint lets it speak the outcome in
+An external agent (for example OpenClaw) can finish long-running work minutes
+after the voice request that started it. This endpoint lets it speak the outcome in
 the room: POST /announce {"message": "..."} → the text plays through the
 device's TTS announcement lane (the same guarded path timers use, so the
 assistant can't hear itself and reply).
@@ -9,7 +9,7 @@ assistant can't hear itself and reply).
 Enabled only when BOTH announce_port and announce_token options are set.
 Auth is a bearer token; binding is on the host network, so treat the token
 as the only lock and keep it long. 503 when no device is connected — the
-caller (an agent) can fall back to iMessage.
+caller (an agent) can fall back to a text channel.
 """
 import asyncio
 import difflib
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 600
 # Repeat guard: agents monitoring for a result can re-announce the same news
-# every poll cycle (observed live: the same "Julie said yes" three times, a
+# every poll cycle (observed live: the same reply announced three times, a
 # minute apart, in three phrasings). Near-duplicates within the window are
 # accepted-but-not-spoken so the caller doesn't retry.
 DUPLICATE_WINDOW_S = 600

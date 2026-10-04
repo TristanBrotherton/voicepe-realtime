@@ -53,16 +53,32 @@ do it for latency, not money); each web search adds a few cents.
 
 ### What about privacy — what leaves my network?
 
-- **Wake-word detection runs on the device.** Nothing streams anywhere until a
-  wake fires.
-- **After a wake**, mic audio goes to OpenAI's Realtime API for the conversation
-  (that's the product), and web-search queries go to OpenAI when used.
-- **Everything else stays home**: enrollment recordings
-  (`/share/voice-enrollment/`), wake captures (`/share/voice-probes/`), voice
-  prints (`/share/voice-prints/`), and memory notes (`/share/voice-memory/`)
-  live on your HA box and are never uploaded by this add-on. Speaker
-  identification runs locally in the add-on. During voice enrollment, OpenAI
-  hears nothing at all — mic audio flows only to the local recorder.
+- **Wake-word detection runs on the device.** No audio leaves the Voice PE until
+  a wake word or a button press starts a turn.
+- **Sent to OpenAI**, because the conversation needs it:
+  - your microphone audio after a wake and during follow-up windows;
+  - the session instructions: your `instructions`, **your memory notes** (that is
+    how the assistant knows them) and the list of tools;
+  - results of the tools the assistant uses: Home Assistant states and answers,
+    web-search answers, your agent's answers;
+  - the recognized speaker's name, as a short note, when speaker recognition is on;
+  - the text of timer, announcement, acknowledgement and enrollment-coach
+    messages, for speech synthesis (each phrase is synthesized once and cached
+    on your box).
+
+  OpenAI's API data policies apply to all of it.
+- **Stays on your Home Assistant host**, never uploaded by this add-on:
+  enrollment recordings (`/share/voice-enrollment/`), voice prints
+  (`/share/voice-prints/`), the memory file (`/share/voice-memory/`), wake data
+  (`/share/voice-probes/`: counters and metadata by default; audio clips only
+  with `wake_capture: audio`, and they expire), latency metrics (timings only),
+  and debug recordings (only with `enable_recording`). Speaker identification
+  runs locally. During voice enrollment OpenAI hears nothing: mic audio goes
+  only to the local recorder.
+- **The add-on log** contains what you said only with `log_transcripts` on (off
+  by default).
+- **Your agent**, if you connect one, receives the questions the assistant
+  escalates and the id of the device that asked.
 
 ### What are the secrets in the firmware config?
 
@@ -93,7 +109,7 @@ coach prompts are English (PRs welcome).
 
 ### Do I need the agent integration?
 
-No. Everything except instant deep recall and long-running task delegation works
+No. Everything except deep recall and long-running task delegation works
 standalone: conversation, smart-home control, web search, timers, memory notes,
 speaker recognition, enrollment, sensors. When you want those superpowers,
 [OpenClaw](https://openclaw.ai) is what this project is built around and pairs
@@ -168,9 +184,22 @@ Quick hits:
 - Mishears in noise → try `noise_reduction: far_field` (default off; the
   device's XMOS already filters).
 - Wake word too eager or too deaf → the device's "Wake word sensitivity" select
-  in HA.
+  in HA. "Slightly sensitive" is the calibrated default; the other two wake more
+  easily from a distance and false-wake more often. Flag false wakes with a
+  double-press so you can see the rate per device.
 - Rarely, the assistant may stop itself on a word in its own reply that sounds
   like "stop" — just ask again.
+
+### How fast is it?
+
+Measure it on your own setup rather than trusting a number in a README: every
+turn's timeline is published as `sensor.voicepe_<instance>_latency` (end of
+speech to first reply audio, the server's end-of-turn decision, tool time,
+and rolling p50/p90), and the device reports its own share (wake to mic open,
+reply audio to speaker). The biggest levers are the network, the model,
+`vad_eagerness` (how long the server waits before deciding you've finished)
+and slow tools such as web search. The [demo](../demo/README.md) shows how to
+measure a scripted run.
 
 ### Why does it briefly reconnect about once an hour?
 

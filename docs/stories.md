@@ -10,7 +10,7 @@ agent. Everything else works out of the box.
 
 ---
 
-## Instant household knowledge
+## Household knowledge
 
 > "What's the wifi password?"
 > "What size shoes does Sam wear?"
@@ -18,8 +18,9 @@ agent. Everything else works out of the box.
 
 Anything the household has taught it by voice — *"remember the wifi password
 is…"*, said once — is folded into its standing instructions, so the answer comes
-back instantly, with no lookup at all. Notes live in a plain markdown file on
-your box, and only identified household voices can add or remove them.
+back with no lookup at all. Notes live in a plain markdown file on your box (and
+travel to OpenAI as part of those instructions), and changes need a recognized
+household voice.
 
 *Built in — [Voice-instructed memory](features.md#voice-instructed-memory).*
 
@@ -27,10 +28,10 @@ your box, and only identified household voices can add or remove them.
 > "What's the plumber's number?"
 
 Facts nobody explicitly taught the assistant — but your agent knows — come back
-in **under a second** via `recall_memory`: a deterministic search of the agent's
-memory files, tried first for every personal-recall question, read straight back.
+via `recall_memory`: a plain text search of the agent's memory files (no agent
+turn), tried first for every personal-recall question, read straight back.
 
-*Needs an agent — [Instant recall & agent escalation](features.md#instant-recall--agent-escalation).*
+*Needs an agent — [Memory recall & agent escalation](features.md#memory-recall--agent-escalation).*
 
 ## Decisions and history, not just facts
 
@@ -83,8 +84,8 @@ The assistant hands the task over and tells you it's on it. If the work outruns
 the voice turn (~2 minutes), the bridge answers *"still working"* and the turn
 ends gracefully — no timeout error, no standing at the speaker. The agent
 browses for as long as it takes, then delivers: spoken in your room via the
-announce endpoint, or — as asked here — texted. The request carries the room
-name, so the report-back finds the device you asked from.
+announce endpoint, or — as asked here — texted. The request carries the id of
+the device you asked from, and the announcement plays on that device.
 
 *Needs an agent — [the full delegation loop](agent-integration.md#the-full-delegation-loop), step by step.*
 
@@ -108,8 +109,8 @@ your agent or automation does.
 > "Add everything for lasagna to the shopping list."
 > "Set a pasta timer for 9 minutes."
 
-Lists are native Home Assistant tools through the MCP Server integration —
-instant, no agent involved. Timers are personal: nine minutes later it says
+Lists are native Home Assistant tools through the MCP Server integration — no
+agent involved. Timers are personal: nine minutes later it says
 *"Alex, your pasta timer is done"* to whoever set it (speaker recognition),
 waits 20 seconds for any sign of life, and only then rings a gentle bell —
 dismissed with "stop" or the button.
@@ -126,7 +127,8 @@ dismissed with "stop" or the button.
 
 One sentence, permanent. Notes take effect from the next session, are attributed
 to whoever said them, and are listed back on request ("what do you remember?").
-Guests can't rewrite your house rules — memory writes are speaker-gated below
-the model.
+Memory writes are speaker-gated below the model, so an unrecognized voice is
+politely refused. Voice matching is a convenience check, not a lock: with the
+pitch heuristic, a guest with a similar voice passes.
 
 *Built in — [Voice-instructed memory](features.md#voice-instructed-memory).*

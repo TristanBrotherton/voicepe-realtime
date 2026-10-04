@@ -27,12 +27,16 @@ drop-in for the stock HA voice pipeline.
 - **Knows who's speaking** — local voice-print identification, guided enrollment
   by voice ("train my voice"), speaker-gated tools.
 - **Remembers what you teach it** — "remember that…" notes persist across
-  sessions, stored locally, writable only by identified household voices.
+  sessions, stored on your Home Assistant host and included in the assistant's
+  instructions; changes need a recognized household voice.
 - **Voice timers** — personal spoken announcement, then a gentle bell only if
   unacknowledged.
 - **Web search** (on by default) — weather, news, facts via a single OpenAI call.
-- **Agent-ready** — connect any external agent for instant memory recall and
-  background tasks that announce their results in the room that asked.
+- **Agent-ready** — connect any external agent for memory recall and
+  background tasks that announce their results on the device that asked.
+- **Measurable and careful** — per-turn latency sensors, spoken-yes
+  confirmations for locks, garage doors, gates and alarms, a device token, and
+  privacy controls for what is stored (counters and metadata by default).
 - **Tunable from the UI** — model, voice, speed, turn detection, follow-up window,
   language, and more; every option has inline help.
 

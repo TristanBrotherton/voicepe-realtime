@@ -15,7 +15,7 @@
  *   POST <secret path>  {"recall": "grandma phone"} → {"matches": ["..."]}
  *       No agent turn: greps OpenClaw's own memory markdown (MEMORY.md, the
  *       most recent dailies, person-files) and returns matching lines. This is
- *       what makes voice recall sub-second.
+ *       what makes voice recall fast (no model call).
  *
  * Configuration (environment, all optional unless marked):
  *   ASK_PORT            listen port                        (default 3338)

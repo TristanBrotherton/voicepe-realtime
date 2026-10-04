@@ -2,7 +2,7 @@
 
 Connect an external agent to the assistant for three superpowers:
 
-1. **Instant memory recall** — sub-second answers from your agent's long-term memory.
+1. **Memory recall** — answers from your agent's long-term memory without a full agent turn.
 2. **Deep escalation** — questions and tasks the smart home can't handle itself.
 3. **Voice report-back** — long-running work that announces its result in the room
    that asked.
@@ -10,8 +10,8 @@ Connect an external agent to the assistant for three superpowers:
 **This project is built around [OpenClaw](https://openclaw.ai)** — the
 open-source personal agent platform — and OpenClaw is what these features were
 designed and tested against. OpenClaw brings the pieces a voice assistant can't:
-months of long-term memory in plain markdown (which the instant-recall path
-greps directly), channels (iMessage, Telegram, WhatsApp, Discord, …) for
+months of long-term memory in plain markdown (which the recall path greps
+directly), channels (iMessage, Telegram, WhatsApp, Discord, …) for
 delivering details, scheduled jobs that can speak through the announce endpoint,
 a browser for real research, and — with the
 [openclaw-voice-call-realtime](https://github.com/TristanBrotherton/openclaw-voice-call-realtime)
@@ -30,18 +30,20 @@ works.
 Node file plus a setup README (secrets, service files for macOS/Linux, the
 TOOLS.md snippet that teaches OpenClaw to announce, smoke tests). What it does:
 
-- `{"question", "room"}` → spawn `openclaw agent --agent main --session-key
-  voicepe-<unique> --message "<voice directive> <question>"` and return its
-  stdout as `answer`. The directive tells the agent to act immediately, reply in
-  one spoken sentence, be thorough on lookups, save found facts to memory, and
-  report long work back via the announce endpoint for the asking `room`.
+- `{"question", "room", "device_id"}` → spawn `openclaw agent --agent main
+  --session-key voicepe-<unique> --message "<voice directive> <question>"` and
+  return its stdout as `answer`. The directive tells the agent to act on lookups
+  and easily reversible tasks, to ask for confirmation before anything
+  irreversible or security-sensitive (unlocking, payments, messaging someone
+  new, deleting data), to reply in one spoken sentence, and to report long work
+  back via the announce endpoint for the asking device.
 - `{"recall"}` → grep OpenClaw's own memory files (`MEMORY.md`, recent
   `memory/*.md` dailies and person-files) and return matching lines. No agent
-  turn — that's the whole trick behind sub-second recall.
+  turn — that's why recall is fast.
 - If a turn outlives ~120 s, reply `{"answer": "Still working on that — I'll
   tell you when it's ready."}`, let the turn finish, and POST the eventual
-  answer to the room's announce endpoint yourself — report-back becomes a
-  guarantee, not a hope.
+  answer to the announce endpoint yourself, with the asking `device_id` —
+  report-back becomes a guarantee, not a hope.
 
 Teach OpenClaw the announce endpoint once (a short note in its workspace
 `TOOLS.md` with the curl command and the per-room ports) and its own scheduled
@@ -59,7 +61,7 @@ operation:
 POST <openclaw_url>
 Content-Type: application/json
 
-{"question": "Research flight prices to London for October", "room": "kitchen"}
+{"question": "Research flight prices to London for October", "room": "kitchen", "device_id": "kitchen-voice-pe"}
 ```
 
 ```
@@ -68,9 +70,11 @@ Content-Type: application/json
 ```
 
 - `question` — the user's request, with context the model added.
-- `room` — the add-on's `instance_name`, lowercased. Your bridge should remember
-  it: if the work outlasts the voice turn, deliver the eventual answer to that
-  room's [announce endpoint](#the-announce-endpoint).
+- `room` — the add-on's `instance_name`, lowercased.
+- `device_id` — the device that asked. Your bridge should remember it: if the
+  work outlasts the voice turn, deliver the eventual answer through the
+  [announce endpoint](#the-announce-endpoint) with that `device_id`, so it plays
+  on the device that asked (one add-on instance can serve several devices).
 - The add-on waits up to **145 seconds** for the answer. If your agent needs
   longer, have the bridge reply at ~120 s with a "still working on it — I'll
   report back" style `answer`, keep the task running, and deliver the real result
@@ -86,7 +90,7 @@ which kills longer agent turns — the direct route is what gives you the
 2.5-minute budget. Speaker gating (`male_only_tools`) applies to the direct
 route exactly as it does to MCP tools.
 
-### Instant recall — `recall_memory`
+### Memory recall — `recall_memory`
 
 ```
 POST <openclaw_url>
@@ -103,8 +107,8 @@ Content-Type: application/json
 - Return an array of matching lines from your agent's memory/notes files —
   a plain deterministic text search is exactly right. Speed is the point:
   this is the assistant's **first stop** for "what's X's number" / "when is Y's
-  birthday" / "what did we decide about Z", and it should answer in well under a
-  second.
+  birthday" / "what did we decide about Z", so keep it a search, not an agent
+  turn.
 - Return `{"matches": []}` when nothing matches — the assistant then falls back
   to a full `ask_openclaw` turn.
 
@@ -119,18 +123,25 @@ POST http://<ha-host>:<announce_port>/announce
 Authorization: Bearer <announce_token>
 Content-Type: application/json
 
-{"message": "Your London flight research is done: direct flights start at ..."}
+{"message": "Your London flight research is done: direct flights start at ...",
+ "device_id": "kitchen-voice-pe"}
 ```
+
+`device_id` is optional. With it, the message plays on that device (or fails
+with `503` if it is offline — it never falls back to another room). Without it,
+the device used most recently speaks.
 
 Responses:
 
 | Status | Body | Meaning |
 |---|---|---|
-| `200` | `{"status": "announced"}` | Spoken on the device |
+| `200` | `{"status": "announced", "device_id": ...}` | Spoken on the device |
+| `200` | `{"status": "duplicate_suppressed"}` | A near-identical message was already spoken in the last 10 minutes — do not retry |
 | `400` | `{"error": ...}` | Invalid JSON or empty message |
 | `401` | `{"error": "unauthorized"}` | Bad/missing bearer token |
-| `503` | `{"error": "no device connected"}` | Device offline — **fall back to a text channel** |
-| `500` | `{"error": "announcement failed"}` | Playback failed |
+| `503` | `{"error": "no device connected"}` / `"device not connected"` | Device offline — **fall back to a text channel** |
+| `503` | `{"error": "announcement failed"}` | The device did not play it |
+| `500` | `{"error": "announcement failed"}` | Internal error while playing |
 
 Details:
 
@@ -139,9 +150,9 @@ Details:
   the assistant can't hear its own announcement and reply to it.
 - The add-on runs on the **host network** — the bearer token is the only lock.
   Generate a long random one and treat it as a secret.
-- One endpoint per add-on instance (per room). A multi-room setup gives your
-  agent one announce URL per room; the `room` field on escalations tells it
-  which one to use.
+- One endpoint per add-on instance. When one instance serves several devices,
+  pass the `device_id` from the escalation; with one instance per room, the
+  `room` field tells your agent which URL to use.
 
 ## The full delegation loop
 
@@ -149,12 +160,12 @@ Putting it together — what a long-running task looks like end to end:
 
 ```
 You (kitchen): "Research flight prices to London for October."
-  └─ add-on → bridge: {"question": "...", "room": "kitchen"}      (ask_openclaw)
+  └─ add-on → bridge: {"question": "...", "room": "kitchen", "device_id": "..."}  (ask_openclaw)
        └─ agent starts working…
   ┌─ bridge → add-on at ~120 s: {"answer": "Still working on it — I'll report back."}
 Assistant: "I'm still looking into it — I'll let you know."
        └─ agent finishes (5 minutes later, or 50)
-  ┌─ agent → kitchen announce endpoint: {"message": "Flights to London in October…"}
+  ┌─ agent → announce endpoint: {"message": "Flights to London in October…", "device_id": "..."}
 Device (kitchen): speaks the result out loud.
        └─ (503? The agent texts you the details instead.)
 ```

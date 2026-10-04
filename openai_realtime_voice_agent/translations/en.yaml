@@ -405,7 +405,8 @@ configuration:
     description: >-
       Direct endpoint of your external agent bridge (POST {"question"} →
       {"answer"}, {"recall"} → {"matches"}). Enables ask_openclaw without the
-      60-second Home Assistant MCP cap, plus the instant recall_memory tool.
+      60-second Home Assistant MCP cap, plus the recall_memory tool (a text
+      search of your agent's memory, no agent turn).
       Leave empty to use whatever your MCP server exposes.
   announce_port:
     name: "🧩 Fork · Announce port"

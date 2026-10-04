@@ -7,7 +7,7 @@ and which options drive it. Option details live in the
 - [Wake words](#wake-words)
 - [Speaker recognition & voice enrollment](#speaker-recognition--voice-enrollment)
 - [Voice-instructed memory](#voice-instructed-memory)
-- [Instant recall & agent escalation](#instant-recall--agent-escalation)
+- [Memory recall & agent escalation](#memory-recall--agent-escalation)
 - [Long-running task delegation](#long-running-task-delegation)
 - [Voice timers](#voice-timers)
 - [False-wake flagging](#false-wake-flagging)
@@ -136,7 +136,7 @@ session per person feeds both systems.
 
 ## Voice-instructed memory
 
-Teach it standing rules by voice; they persist forever.
+Teach it standing rules by voice; they persist until you remove them.
 
 - **"Remember that we park at the north lot"** / **"From now on, use Celsius"** —
   the note becomes a standing instruction in every future conversation. It takes
@@ -144,28 +144,32 @@ Teach it standing rules by voice; they persist forever.
 - **"Forget about the north lot"** — removes matching notes.
 - **"What do you remember?"** — reads them back.
 
-Notes are stored locally in `/share/voice-memory/memory.md` — plain markdown you
-can also edit by hand — capped at 60 notes, each attributed to the household
-member whose voice gave it. The file is shared by all device instances and
-survives rebuilds.
+Notes are stored in `/share/voice-memory/memory.md` on your HA host — plain
+markdown you can also edit by hand — capped at 60 notes, each attributed to the
+household member whose voice gave it. The file is shared by all device
+instances and survives rebuilds. To follow them, the assistant receives the
+notes as part of its instructions at the start of every OpenAI session, so they
+are sent to OpenAI with each conversation.
 
-**Writes are speaker-gated**: only identified household voices can add or remove
-notes. Guests and unidentified voices are politely refused.
+**Writes are speaker-gated**: only voices the add-on recognizes as a configured
+household member can add or remove notes; others are politely refused. This is
+a convenience check, not a lock — with the pitch heuristic (tier 1) a guest
+with the same voice type passes; voice prints (tier 2) are stricter.
 
 This is the assistant's *rule* memory. For deep factual recall (contacts, dates,
 history), see the next section.
 
 ---
 
-## Instant recall & agent escalation
+## Memory recall & agent escalation
 
 With an agent like [OpenClaw](https://openclaw.ai) connected (`openclaw_url` — see
 [Agent Integration](agent-integration.md) for the full contract), the assistant
 gets a two-speed memory path:
 
 **`recall_memory` — the fast path.** *"What's Grandma's number?"*, *"When is Sam's
-birthday?"*, *"What did we decide about the fence?"* — an instant (sub-second),
-deterministic search of your agent's memory files. The bridge answers
+birthday?"*, *"What did we decide about the fence?"* — a deterministic text
+search of your agent's memory files, with no agent turn. The bridge answers
 `{"recall": "<query>"}` with matching lines and the assistant reads the answer
 straight back. The model is instructed to try this **first** for any personal or
 household recall question.
@@ -181,7 +185,7 @@ simple POST contract works — OpenClaw is just one example. The contract is two
 JSON shapes:
 
 ```
-POST <openclaw_url>  {"question": "...", "room": "kitchen"}  →  {"answer": "..."}
+POST <openclaw_url>  {"question": "...", "room": "kitchen", "device_id": "..."}  →  {"answer": "..."}
 POST <openclaw_url>  {"recall": "..."}                        →  {"matches": ["...", ...]}
 ```
 
@@ -200,9 +204,10 @@ anyone wants to stand by a speaker. The delegation flow:
    working"** instead of failing — the assistant tells you it will report back,
    and the voice turn ends.
 3. The agent keeps working as long as it takes, then **announces the result out
-   loud in the room you asked from** — the request carries the room name
-   (`instance_name`), so the report-back finds the right device. If no device is
-   reachable, the agent can fall back to a text channel.
+   loud on the device you asked from** — the request carries that device's id,
+   and the announcement names it, so with several devices on one add-on the
+   result still plays in the right room. If that device is offline the endpoint
+   answers `503` and the agent can fall back to a text channel.
 
 The report-back lands through the **announce endpoint**: with `announce_port` and
 `announce_token` both set, the add-on exposes
@@ -210,7 +215,7 @@ The report-back lands through the **announce endpoint**: with `announce_port` an
 ```
 POST http://<ha-host>:<announce_port>/announce
 Authorization: Bearer <announce_token>
-{"message": "Flights to London in October start at ..."}
+{"message": "Flights to London in October start at ...", "device_id": "..."}
 ```
 
 which speaks the message through the device's guarded TTS lane — the same path
@@ -311,7 +316,10 @@ built-in, on `web_search_model`) and reads a short spoken answer back.
 - Uses your existing OpenAI key — no extra account.
 - Default model `gpt-5.5` (best quality); mini/nano variants are cheaper. A few
   cents per search.
-- Adds ~1–3 s while it searches (the device shows "thinking").
+- Adds the search's own time (the device shows "thinking"). If it is still
+  running after about a second, the device says "One moment." once; searches
+  stop after `web_search_timeout_s` (20 s). Each call's duration appears in the
+  latency sensor's `tools` attribute.
 - A rejected model name won't crash the session — the assistant just says it
   couldn't search; fix `web_search_model` and retry.
 
@@ -342,8 +350,8 @@ automations on it, e.g. pause the kitchen speaker the instant a wake fires.
 
 The assistant's character lives in the `instructions` option — rewrite it freely:
 personality, language, house rules, tone. The shipped default is a practical
-English voice-tuned prompt (short spoken replies, silent tool calls, varied
-confirmations, strict language pinning); the "Leonard" persona this project runs
+English voice-tuned prompt (short spoken replies, no narration of tool calls,
+varied confirmations, strict language pinning); the "Leonard" persona this project runs
 is a dry British butler built the same way.
 
 What you can and can't change:

@@ -95,7 +95,7 @@ def get_recall_tool_definition() -> dict:
         "type": "function",
         "name": "recall_memory",
         "description": (
-            "INSTANT (under a second) search of the household's long-term memory: "
+            "FAST search (a text search, no agent turn) of the household's long-term memory: "
             "people, contact phone numbers, birthdays, preferences, history, past "
             "decisions. ALWAYS try this FIRST for any personal or household recall "
             "question ('what is X's number', 'when is Y's birthday', 'what did we "
