@@ -33,10 +33,10 @@ class FakeWS:
 
 class TestIdentity(unittest.TestCase):
     def test_query_param_wins_over_ip(self):
-        self.assertEqual(device_id_from_websocket(FakeWS("device_id=kitchen", "10.0.3.9")), "kitchen")
+        self.assertEqual(device_id_from_websocket(FakeWS("device_id=kitchen", "192.0.2.9")), "kitchen")
 
     def test_ip_fallback_and_unknown(self):
-        self.assertEqual(device_id_from_websocket(FakeWS("", "10.0.3.9")), "10.0.3.9")
+        self.assertEqual(device_id_from_websocket(FakeWS("", "192.0.2.9")), "192.0.2.9")
         self.assertEqual(device_id_from_websocket(FakeWS("", None)), "unknown")
 
     def test_hostile_ids_are_sanitized(self):
