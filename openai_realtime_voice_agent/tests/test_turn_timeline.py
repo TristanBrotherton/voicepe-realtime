@@ -88,6 +88,17 @@ class TestTurnTimeline(unittest.TestCase):
         turn = self.timeline.find("d1-7")
         self.assertEqual(turn.device, {"fire_to_mic_ms": 1250, "first_audio_to_audible_ms": 212, "seq": 0})
 
+    def test_metrics_for_another_reply_never_overwrite(self):
+        run_turn(self.timeline, self.clock, turn_id="d1-8")
+        self.timeline.merge_device_metrics("d1-8", {"total_ms": 4000, "seq": 0})
+        # A follow-up reply the add-on never saw (seq 1) must not touch seq 0.
+        self.timeline.merge_device_metrics("d1-8", {"total_ms": 9000, "seq": 1})
+        self.assertEqual(self.timeline.find("d1-8").device["total_ms"], 4000)
+        follow = self.timeline.ensure_active()
+        self.timeline.finish("replied")
+        self.timeline.merge_device_metrics("d1-8", {"total_ms": 1500, "seq": 1})
+        self.assertEqual(follow.device["total_ms"], 1500)
+
     def test_follow_up_turns_get_derived_ids(self):
         run_turn(self.timeline, self.clock, turn_id="d1-9")
         follow = self.timeline.ensure_active()

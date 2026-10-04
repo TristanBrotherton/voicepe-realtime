@@ -279,14 +279,20 @@ class TurnTimeline:
         candidates = list(self.history)
         if self.current is not None and self.current not in candidates:
             candidates.append(self.current)
-        target = None
+        # seq names the reply within the device session: 0 = the wake turn,
+        # n = the n-th follow-up. Merge only into that exact turn, so metrics
+        # for one reply can never overwrite another's.
         seq = metrics.get("seq")
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            seq = None
+        want = None if seq is None else (base if seq == 0 else f"{base}.f{seq}")
+        target = None
         for turn in reversed(candidates):
-            if turn.turn_id == base or turn.turn_id.split(".f")[0] == base:
-                if seq is None or turn.turn_id == base or turn.turn_id.endswith(f".f{seq}"):
-                    target = turn
-                    break
-                target = target or turn
+            if turn.turn_id.split(".f")[0] != base:
+                continue
+            if want is None or turn.turn_id == want:
+                target = turn
+                break
         if target is None:
             return
         for key in DEVICE_FIELDS:
