@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.2 (fork)
+
+- **En väckning utan tal kopplar ner molnmotorn.** Sovloopen kopplade bara ner
+  i fasen idle, så en väckning där ingen talade kunde lämna motorn vaken till
+  tiominuterstaket om fasen fastnade i lyssning eller svar. Nu sover den när
+  väckningen är äldre än `VAKNA_TIMEOUT_S` och ingen riktig tur har börjat,
+  oavsett fas. Öppen mikrofon räknas inte som tal, och ett samtal där någon
+  talat bryts inte av taket.
+
 ## 0.27.1 (fork)
 
 - **Dygnstaket bokförs när sessionen rivs.** Minuterna skrevs bara i `sova()`.

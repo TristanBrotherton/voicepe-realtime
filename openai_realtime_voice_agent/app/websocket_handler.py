@@ -773,6 +773,25 @@ class ConnectionRecovery(FrameProcessor):
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ cloud connect on wake took over {self.VAKNA_TIMEOUT_S:.0f}s — going on")
 
+    def _tal_sedan_vakning(self) -> bool:
+        """A real utterance since this wake, not the open mic.
+
+        The device streams the mic as soon as it wakes, silence included, so
+        _last_input_audio moves without anyone speaking. PhaseEmitter.note_wake
+        clears _speech_since_wake; UserStartedSpeaking sets it.
+        """
+        emitter = self._phase_emitter
+        if emitter is not None and hasattr(emitter, "_speech_since_wake"):
+            return bool(emitter._speech_since_wake)
+        return self._last_input_audio > self._last_wake
+
+    def _vakning_utan_tal(self, now: float) -> bool:
+        """Wake nobody answered within VAKNA_TIMEOUT_S, whatever phase stuck."""
+        return (
+            now - self._last_wake >= self.VAKNA_TIMEOUT_S
+            and not self._tal_sedan_vakning()
+        )
+
     def _tyst_nog(self, now: float) -> bool:
         """Quiet for SOV_EFTER_S: no mic audio, no wake, device idle, no reply under way."""
         from app.providers.sovlage import sov_efter_s
@@ -809,6 +828,10 @@ class ConnectionRecovery(FrameProcessor):
                     # Even mid-sentence: the next wake word connects again.
                     logger.warning("⏱️ cloud session reached its maximum length — disconnecting")
                     await self._service.sova("maximum session length")
+                elif self._vakning_utan_tal(time.monotonic()):
+                    # Stuck in listening or replying must not keep the engine
+                    # awake: nobody has spoken since this wake.
+                    await self._service.sova(f"wake without speech for {self.VAKNA_TIMEOUT_S:.0f}s")
                 elif self._tyst_nog(time.monotonic()):
                     await self._service.sova(f"quiet for {sov_efter_s():.0f}s")
             except asyncio.CancelledError:

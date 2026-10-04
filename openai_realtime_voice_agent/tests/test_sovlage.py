@@ -330,3 +330,47 @@ async def test_gemini_vantar_pa_sessionen_eller_dess_fel():
     assert await service._ar_uppkopplad(timeout=1) is False
     service._session = object()
     assert await service._ar_uppkopplad(timeout=1) is True
+
+
+async def _kor_sovloopen(r):
+    r.SOV_CHECK_S = 0.01
+    task = asyncio.create_task(r._sov_loop())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_vakning_utan_tal_somnar_aven_om_fasen_fastnat():
+    """A wake nobody answers must drop the engine even if the phase stuck.
+
+    The device streams the open mic after a wake, silence included, so a
+    fresh audio timestamp is not speech. Speech is a real utterance since
+    the wake (_speech_since_wake).
+    """
+    s = Fake()
+    s.sover = False
+    r = _recovery(s, phase="listening")
+    r._phase_emitter._speech_since_wake = False
+    now = time.monotonic()
+    r._last_wake = now - (r.VAKNA_TIMEOUT_S + 1)
+    r._last_input_audio = now  # mic open, nobody spoke
+    await _kor_sovloopen(r)
+    assert s.sover is True and s.calls == ["ner"]
+
+
+@pytest.mark.asyncio
+async def test_pagande_samtal_bryts_inte_av_vakningstaket():
+    """The user spoke after the wake: a stuck reply is still their conversation."""
+    s = Fake()
+    s.sover = False
+    r = _recovery(s, phase="replying")
+    r._phase_emitter._speech_since_wake = True
+    now = time.monotonic()
+    r._last_wake = now - (r.VAKNA_TIMEOUT_S + 1)
+    r._last_input_audio = now
+    await _kor_sovloopen(r)
+    assert s.sover is False and s.calls == []
