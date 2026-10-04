@@ -37,7 +37,7 @@ Home Assistant Voice PE          Home Assistant (your box)             Cloud
 3. Find **OpenAI Realtime 2 Voice Agent** in the store and click **Install**.
    Home Assistant builds it locally — this takes a few minutes the first time.
 
-> **One add-on instance serves one device.** For a second Voice PE, see
+> **One add-on instance can serve several Voice PE devices.** See
 > [Part 6 — Multiple devices](#part-6--multiple-devices).
 
 ### 1.2 Add your OpenAI API key
@@ -80,8 +80,11 @@ state?" tool — keep it; it's what answers *"is the light on?"*.
 | `openai_api_key` | your key |
 | `transcription_language` | your ISO code (e.g. `en`, `nl`) — optional but recommended |
 
-Everything else can wait. The full reference — every option, its default, and when
-to change it — is in the [Configuration Reference](configuration.md).
+Everything else can wait. The privacy defaults are conservative: only counters
+and wake metadata are stored (no audio), and what you say is not written to the
+log. Locks, garage doors, gates and alarm panels need a spoken yes. The full
+reference — every option, its default, and when to change it — is in the
+[Configuration Reference](configuration.md).
 
 ### 1.5 Start it
 
@@ -131,8 +134,8 @@ ota_password: "the-OTA-password-from-step-2.2"
 api_key: "the-API-encryption-key-from-step-2.2"   # 44-char base64
 
 # Optional — ONLY if you want a fixed IP (otherwise the device uses DHCP):
-# static_ip: "192.168.1.50"
-# gateway:   "192.168.1.1"
+# static_ip: "192.0.2.50"     # use your own LAN's values
+# gateway:   "192.0.2.1"
 # subnet:    "255.255.255.0"
 # dns1:      "1.1.1.1"
 # dns2:      "1.0.0.1"
@@ -172,6 +175,22 @@ Two of these confuse people, so to be clear:
 
 That's it — the device boots, connects to the add-on, and you're ready to talk to it.
 
+### 2.5 Lock the device connection (recommended)
+
+Without a token, any computer on your network can open a voice session on the
+add-on (spending your OpenAI credit and using the tools you exposed). To require
+a shared secret:
+
+1. Generate one, e.g. `openssl rand -hex 24`.
+2. Add-on Configuration → 🔐 Privacy & safety: set **`device_token`** to it and
+   **`device_auth`** to `permissive`. Restart the add-on.
+3. In ESPHome Builder → Secrets add `va_token: "<the same value>"`, and in the
+   device stub under `substitutions:` add `va_token: !secret va_token`. Install
+   (OTA).
+4. The add-on log now shows the device connecting with a valid token. Set
+   `device_auth` back to `auto` and restart: devices without the token are
+   refused.
+
 ---
 
 ## Part 3 — First conversation
@@ -189,8 +208,9 @@ That's it — the device boots, connects to the add-on, and you're ready to talk
 
 **If something's off, check the logs:**
 
-- Add-on **Log** tab: `🗣️ user:` / `🤖 assistant:` lines, tool calls, and
-  `🔌 reconnecting` / `✅ reconnected`.
+- Add-on **Log** tab: tool calls, one `⏱️ turn` timing line per turn, and
+  `🔌 reconnecting` / `✅ reconnected`. Turn on `log_transcripts` to also see
+  `🗣️ user:` / `🤖 assistant:` lines while debugging.
 - Device logs: ESPHome Builder → your device → **Logs**.
 - Tools missing? Re-check Part 1.3. A 401/403 in the log means set `longlived_token`
   (HA profile → Security).
@@ -239,6 +259,8 @@ speaker-recognition state, and enrollment flow, so people can use different
 rooms at the same time.
 
 All devices in an instance share its configuration: persona, voice, Home
-Assistant access, and `instance_name` sensor prefix. Run separate add-on
-instances only when rooms need different configuration; assign each extra
-instance a unique `websocket_port` (avoid `8081`, used by dev builds).
+Assistant access, device token, and `instance_name` sensor prefix (the sensors
+carry per-device detail in their attributes). Give each device its own timer
+bell with `timer_ring_entities`. Run separate add-on instances only when rooms
+need different configuration; assign each extra instance a unique
+`websocket_port` (avoid `8081`, used by dev builds).

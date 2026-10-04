@@ -80,6 +80,24 @@ do it for latency, not money); each web search adds a few cents.
 - **Your agent**, if you connect one, receives the questions the assistant
   escalates and the id of the device that asked.
 
+### Can someone else on my network use it?
+
+Not if you set a device token. Without one, any host on your network can open
+a voice session on the add-on's port — spending your OpenAI credit and using
+the tools you exposed — and the add-on logs a warning at startup. Set
+`device_token` in the add-on and the same `va_token` in each device stub
+([step by step](getting-started.md#25-lock-the-device-connection-recommended)),
+or restrict addresses with `device_allowlist`. The announce endpoint has its own
+bearer token.
+
+### Why does it ask me to confirm before unlocking?
+
+Unlocking, opening garage doors, gates and doors, and alarm-panel actions run
+only after a spoken yes (`confirm_actions`). The add-on holds the action until
+you answer on the same device within 30 seconds, so a misheard phrase or a TV in
+the background can't open the house. Remove categories from `confirm_actions`
+if you prefer.
+
 ### What are the secrets in the firmware config?
 
 Neither is a cloud credential — both are device-local, and you generate your own:
@@ -92,6 +110,8 @@ Neither is a cloud credential — both are device-local, and you generate your o
   choose; keep it matching what the device was last flashed with.
 
 Your OpenAI key lives only in the add-on configuration, never on the device.
+The optional `va_token` is the third device-side secret: the same value as the
+add-on's `device_token`.
 
 ### Which wake word do new installs get?
 

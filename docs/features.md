@@ -13,6 +13,8 @@ and which options drive it. Option details live in the
 - [False-wake flagging](#false-wake-flagging)
 - [Wake-word learning](#wake-word-learning)
 - [Web search](#web-search)
+- [Latency you can measure](#latency-you-can-measure)
+- [Confirmations & device access](#confirmations--device-access)
 - [HA sensors](#ha-sensors)
 - [Persona & voices](#persona--voices)
 - [On the device](#on-the-device)
@@ -325,17 +327,67 @@ built-in, on `web_search_model`) and reads a short spoken answer back.
 
 ---
 
+## Latency you can measure
+
+Every turn gets one timeline, stamped where things happen and correlated
+between the add-on and the device by a turn id:
+
+| Interval | From → to |
+|---|---|
+| `wake_to_first_frame_ms` | wake message → first microphone audio |
+| `vad_endpoint_delay_ms` | real end of speech → the server deciding you finished (from OpenAI's own audio timestamps) |
+| `speech_end_to_first_model_audio_ms` | that decision → first reply audio from OpenAI |
+| `speech_end_to_first_audio_sent_ms` | that decision → first reply audio sent to the device |
+| `true_speech_end_to_first_audio_sent_ms` | the two above combined: real end of speech → reply audio on its way |
+| `tool_ms_total` and `tools` | each tool's name and duration |
+| device: `fire_to_mic_ms`, `first_audio_to_audible_ms`, … | what only the device sees: wake word → mic open, reply audio received → first sample accepted by the speaker |
+
+The add-on logs one `⏱️ turn` line per turn (timings, ids and the wake model —
+never words or voices) and publishes the newest turn plus rolling p50/p90 as
+`sensor.voicepe_<instance>_latency`. `vad_eagerness` trades the end-of-speech
+delay against being cut off; `wake_open_delay_ms` trades the wake-to-mic gap
+against echo. The [demo](../demo/README.md) measures the same turns from the
+client side.
+
+---
+
+## Confirmations & device access
+
+**Risky actions need a spoken yes.** Unlocking a lock, opening a garage door,
+gate or door, and any alarm-panel action are held by the add-on until you
+answer the assistant's question with a yes in the follow-up window — on the
+same device, in the same conversation, within 30 seconds. The check sits below
+the model, so a misheard request or a persuasive prompt can't skip it.
+`confirm_actions` chooses the categories, and `confirm_tools` adds your own
+scripts.
+
+**Only your devices can connect.** Set `device_token` in the add-on and the same
+`va_token` in each device's firmware stub; `device_auth: permissive` lets you
+migrate without locking anyone out, and `device_allowlist` restricts by address
+without reflashing. `/healthz` reports only counts unless the request carries a
+token.
+
+**When something fails, it says so.** A rate limit or failed response on a turn
+you started is explained out loud (or signalled with the error chime) instead of
+the device silently going idle, and a request interrupted by a dropped
+connection is replayed once the session is back.
+
+---
+
 ## HA sensors
 
-Set `instance_name` (e.g. `kitchen`) and the add-on publishes per-device sensors
-for dashboards and automations:
+Set `instance_name` (e.g. `kitchen`) and the add-on publishes sensors for
+dashboards and automations (with several devices on one instance, attributes
+carry the per-device detail):
 
 | Entity | State |
 |---|---|
+| `sensor.voicepe_kitchen_latency` | the last turn's end of speech → first reply audio sent (ms); attributes hold the full timeline, tools, device timings and rolling p50/p90 |
+| `sensor.voicepe_kitchen_wake_word` | the active wake model, with SHA-256 prefix, cutoff, window, sensitivity tier and firmware version |
 | `sensor.voicepe_kitchen_speaker` | who spoke last (name / `unknown` / `none`), with score and method attributes |
 | `sensor.voicepe_kitchen_active_timers` | count of running timers, with next-expiry attributes |
-| `sensor.voicepe_kitchen_wakes_today` | wakes since midnight |
-| `sensor.voicepe_kitchen_false_wakes_today` | flagged false wakes since midnight |
+| `sensor.voicepe_kitchen_wakes_today` | wakes since midnight (per-device counts in `by_device`; kept across restarts) |
+| `sensor.voicepe_kitchen_false_wakes_today` | flagged false wakes since midnight (per device, kept across restarts) |
 | `sensor.voicepe_kitchen_openai_cost_today` | estimated OpenAI spend today ($, per-response accounting) |
 | `sensor.voicepe_kitchen_voice_prints` | enrolled voice prints (attribute `active` = enrolled **and** configured) |
 | `binary_sensor.voicepe_kitchen_enrollment_active` | an enrollment session is running |
@@ -391,8 +443,12 @@ Firmware niceties worth knowing about (all in the
   firmware compensates (single-attenuation volume path) so replies match the
   device's own chimes at every knob position.
 - **Silent connection errors** — LED-only (red twinkle), no spoken "cloud
-  unavailable" announcements at night; the wake-time error chime (user-initiated
-  feedback) is kept.
+  unavailable" announcements at night. Failures of a turn *you* started are
+  explained by the add-on or signalled with the error chime.
+- **Wake metadata and turn timings** — every wake reports the model, its
+  SHA-256 prefix, cutoff, window and sensitivity tier; every reply reports the
+  device-side timings. A double-press made while offline is queued and
+  delivered on reconnect.
 - **Stock niceties preserved** — LED ring language, volume dial, mute switch
   (ring dark with red markers; muting also ends an open listening window), and
   the media player for Music Assistant.

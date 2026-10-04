@@ -31,9 +31,9 @@ This page covers setup and day-to-day essentials.
    which takes a few minutes.)
 4. Open the add-on's **Configuration** tab to set it up (next sections).
 
-**One add-on instance serves one Voice PE device.** For multiple devices, run one
-instance per device (a local-add-on copy with its own `slug`, `name` and
-`websocket_port`) — see the
+**One add-on instance serves several Voice PE devices**, each with its own
+OpenAI session. Run separate instances only when rooms need different
+configuration — see the
 [Getting Started guide](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/getting-started.md#part-6--multiple-devices).
 
 ## 2. Get an OpenAI API key
@@ -75,14 +75,14 @@ blank to expose all, or trim to just what you use, e.g.:
 **The defaults are the recommended settings** — for a first run you only need the
 API key, the MCP integration (section 3), and ideally your language. The
 Configuration tab is grouped: **🔑 Basics → 🗣️ Model & voice → 💬 Conversation →
-🌐 Web search → 🎚️ Audio → 🏠 Home Assistant → ⚙️ Advanced → 🔍 Debug**, and every
-option has plain-language inline help.
+🌐 Web search → 🎚️ Audio → 🏠 Home Assistant → ⚙️ Advanced → 🔐 Privacy & safety →
+🔍 Debug**, and every option has plain-language inline help.
 
 | Option | Default | Note |
 |---|---|---|
 | `openai_model` | `gpt-realtime-2` | newest speech-to-speech model |
 | `openai_voice` | `marin` | `marin`/`cedar` are the newest voices |
-| `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language + logs the user transcript |
+| `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language (the transcript is logged only with `log_transcripts`) |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
 | `follow_up_listen_seconds` | `8` | mic stays open this long so you can answer back |
 | `follow_up_open_delay_ms` | `700` | echo guard before the follow-up mic opens; lower = snappier but risks ghost turns |
@@ -101,6 +101,21 @@ The **complete option reference** (every option, purpose, default, when to chang
 it) is in the
 [Configuration Reference](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/configuration.md).
 
+### Privacy & safety defaults
+
+- **What is stored** (`wake_capture`, default `auto`): counters and wake
+  metadata only, no audio, unless you opt in. `log_transcripts` is off, so what
+  you say is not written to the log.
+- **Confirmations** (`confirm_actions`): unlocking, opening garage doors, gates
+  and doors, and any alarm-panel action run only after a spoken yes, enforced
+  in the add-on.
+- **Device token** (`device_token`, recommended): without one, any host on your
+  network can open a session. Set it with `device_auth: permissive`, flash each
+  device with the same `va_token`, then switch `device_auth` back to `auto`.
+- **What OpenAI receives**: audio after a wake, your instructions and memory
+  notes, tool results, and the recognized speaker's name — see the
+  [privacy FAQ](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/faq.md#what-about-privacy--what-leaves-my-network).
+
 ## 5. Web search
 
 When **`enable_web_search`** is on (**the default**), the assistant gets a `web_search`
@@ -112,7 +127,9 @@ answer back.
 - Uses your **existing OpenAI key** — no extra account.
 - Default model `gpt-5.5` (best quality). Cheaper options trade price/quality
   (`gpt-5.4`, `gpt-5-mini`, the nano models, …) — a few cents per search.
-- Adds ~1–3 s while it searches (the device shows "thinking").
+- Adds the search's own time (the device shows "thinking", and says "One
+  moment." if it runs past about a second). Searches stop after 20 s
+  (`web_search_timeout_s`).
 - If the model name is rejected, the assistant just says it couldn't search — it
   won't crash the session, so you can change `web_search_model` and retry.
 
@@ -157,26 +174,30 @@ Full guide:
 Say "remember that..." / "from now on..." and the note becomes a standing
 instruction in every future conversation (it takes effect at the next session —
 minutes, at most an hour). "Forget about..." removes matching notes; "what do you
-remember" reads them back. Notes are stored locally in
-`/share/voice-memory/memory.md` (plain markdown — you can edit it by hand), capped
-at 60 notes, each attributed to the household member whose voice gave it. Guests
-and unidentified voices cannot change memory.
+remember" reads them back. Notes are stored in `/share/voice-memory/memory.md`
+on this host (plain markdown — you can edit it by hand), capped at 60 notes,
+each attributed to the household member whose voice gave it, and sent to OpenAI
+as part of the assistant's instructions in every session. Only a recognized
+household voice can change them — a convenience check, not a lock (with the
+pitch heuristic a similar voice passes).
 
 ## 9. Agent integration (optional)
 
 **`openclaw_url`**: direct endpoint for an external agent
-(`POST {"question", "room"}` → `{"answer"}`). When set, the add-on registers the
+(`POST {"question", "room", "device_id"}` → `{"answer"}`). When set, the add-on registers the
 `ask_openclaw` escalation tool natively and calls the endpoint directly with a
 ~2.5-minute timeout — bypassing Home Assistant's hard 60-second MCP request cap
 that kills long agent turns. You also get **`recall_memory`**: the bridge answers
-`{"recall": "<query>"}` with `{"matches": [...]}` — instant, deterministic recall
-(contacts, dates, preferences) with the full agent turn as fallback.
+`{"recall": "<query>"}` with `{"matches": [...]}` — a deterministic text search
+(contacts, dates, preferences), no agent turn, with the full agent turn as
+fallback.
 
 **`announce_port` + `announce_token`** (set both): a LAN route *back to the
 device*. `POST http://<ha-host>:<announce_port>/announce` with
-`Authorization: Bearer <announce_token>` and body `{"message": "..."}` speaks the
-message aloud through the device's guarded TTS lane — this is what lets a
-delegated task report back by voice minutes later. Returns 503 when no device is
+`Authorization: Bearer <announce_token>` and body `{"message": "..."}` (plus
+`"device_id"` to pick the device that asked) speaks the message aloud through
+the device's guarded TTS lane — this is what lets a delegated task report back
+by voice minutes later. Returns 503 when that device (or any device) is not
 connected, so callers can fall back to a text channel. Generate a long random
 token; the add-on runs on the host network, so the token is the lock.
 
@@ -195,16 +216,19 @@ wake-word retraining — see the
 [wake-word learning loop](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/wake-word-learning.md).
 
 Set **`instance_name`** (e.g. `kitchen`) to publish
-`sensor.voicepe_kitchen_speaker`, `_active_timers`, `_wakes_today`,
-`_false_wakes_today` and `binary_sensor.voicepe_kitchen_enrollment_active` for
-dashboards and automations.
+`sensor.voicepe_kitchen_latency` (the last turn's timeline, with rolling
+p50/p90), `_wake_word` (the active model, cutoff, window and sensitivity),
+`_speaker`, `_active_timers`, `_wakes_today`, `_false_wakes_today` (both with
+per-device counts, kept across restarts), `_openai_cost_today`, `_voice_prints`
+and `binary_sensor.voicepe_kitchen_enrollment_active` for dashboards and
+automations.
 
 ## 11. Reading the logs
 
-The add-on log shows each turn: `🗣️ user:` (when transcription language is set),
-`🤖 assistant:` (the reply text), `📞 phase ->` (device state), tool calls, and
-`🔌 …reconnecting` / `✅ reconnected` on a connection recovery. View it on the add-on
-**Log** tab.
+The add-on log shows each turn: one `⏱️ turn` line with its timings (no words),
+`📞 phase ->` (device state), tool calls, and `🔌 …reconnecting` / `✅ reconnected`
+on a connection recovery. With `log_transcripts` on it also shows `🗣️ user:` and
+`🤖 assistant:` lines. View it on the add-on **Log** tab.
 
 ## Known limitations
 
@@ -215,6 +239,10 @@ The add-on log shows each turn: `🗣️ user:` (when transcription language is 
   refresh).
 - **Rarely, the assistant may stop itself** on a word in its own reply that sounds
   like "stop" — just ask again.
+- **The default "Hey Leonard" model** was trained with the maintainer's household
+  voices. Recall for other voices and from across the room has not been
+  measured; if it is hard to wake, try "Moderately sensitive" and flag false
+  wakes so you can see the trade-off.
 
 **Using "stop":** say "stop" (or press the center button) to interrupt the assistant
 *while it's speaking* — during a reply, or during the short listening window right

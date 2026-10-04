@@ -57,6 +57,11 @@ class TestAddonConfig(unittest.TestCase):
         unread = sorted(name for name in exported if f'"{name}"' not in self.app_source)
         self.assertEqual(unread, [])
 
+    def test_every_option_is_in_the_configuration_reference(self):
+        reference = (ADDON.parent / "docs" / "configuration.md").read_text(encoding="utf-8")
+        documented = set(re.findall(r"^\| `([a-z0-9_]+)`", reference, re.M))
+        self.assertEqual(sorted(set(self.schema) - documented), [])
+
     def test_new_privacy_defaults_are_conservative(self):
         self.assertFalse(self.options["log_transcripts"])
         self.assertFalse(self.options["trigger_capture"])
