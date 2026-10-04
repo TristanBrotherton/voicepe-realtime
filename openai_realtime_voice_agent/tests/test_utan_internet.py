@@ -149,3 +149,26 @@ def test_proben_hinner_fore_tystnadskvittot():
     from app import websocket_handler
     from app.providers.tool_registration import _silence_ack_ms
     assert websocket_handler.OFFLINE_PROBE_S * 1000 < _silence_ack_ms()
+
+
+def test_traffens_kvitto_tystas_inte_av_att_turen_avslutas():
+    """Live 2026-10-04 17:14: force_idle after the hit marked the turn over,
+    claim_silence_ack said no, and "Klart." never played."""
+    import time as _t
+    from app.phase_emitter import TurnLiveness
+    liv = TurnLiveness()
+    asked = _t.monotonic()
+    liv.turn_over()  # what force_idle("bana0") does right after the hit
+    assert bana0.ingen_bekraftelse_an(liv, asked) is True
+    liv.bot_started()
+    assert bana0.ingen_bekraftelse_an(liv, asked) is False
+
+
+def test_ny_fras_efter_traffen_far_inget_klart():
+    import time as _t
+    from app.phase_emitter import TurnLiveness
+    liv = TurnLiveness()
+    asked = _t.monotonic()
+    _t.sleep(0.01)
+    liv.user_started()
+    assert bana0.ingen_bekraftelse_an(liv, asked) is False

@@ -1640,7 +1640,7 @@ class WebSocketHandler:
                 # Gemini never hears a hit, so no model confirmation is coming.
                 vanta = OK_VANTA_S if supports_client_events(provider) else 0.0
                 task = asyncio.get_running_loop().create_task(bana0.vakta_bekraftelse(
-                    vanta_s=vanta, claim=lambda: liveness.claim_silence_ack(asked),
+                    vanta_s=vanta, claim=lambda: bana0.ingen_bekraftelse_an(liveness, asked),
                     say_ok=lambda: _say(bana0.OK_FALLBACK),
                 ))
                 self._offline_tasks.add(task)

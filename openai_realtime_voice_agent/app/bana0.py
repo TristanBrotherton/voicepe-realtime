@@ -169,6 +169,16 @@ def gjort(text: str, svar: str) -> str:
     )
 
 
+def ingen_bekraftelse_an(liveness, asked: float) -> bool:
+    """The model has not spoken since the hit and he has not started a new utterance.
+
+    Not claim_silence_ack: bana 0 forces the phase idle right after a hit,
+    which counts as "turn over" there and silenced the net every time
+    (live 2026-10-04 17:14, Gemini: the lamp went off, nothing was said).
+    """
+    return not liveness.model_spoke_since(asked, 0.0) and liveness.user_started_at <= asked
+
+
 async def vakta_bekraftelse(
     *,
     vanta_s: float,
