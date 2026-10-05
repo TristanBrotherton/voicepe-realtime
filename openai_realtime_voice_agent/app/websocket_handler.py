@@ -241,6 +241,12 @@ class ConnectionRecovery(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if self._closed:
+            # Torn down (e.g. displaced by the same device reconnecting): frames
+            # still pass, but a late frame must never restart the refresh loop
+            # or act on an error — that resurrected a dead connection's session.
+            await self.push_frame(frame, direction)
+            return
         if self._refresh_task is None:
             self._refresh_task = asyncio.create_task(self._proactive_refresh_loop())
         if isinstance(frame, InputAudioRawFrame):
@@ -332,6 +338,9 @@ class ConnectionRecovery(FrameProcessor):
         await self._recover_task
 
     async def _recover(self, reason: str, unstick: bool = True):
+        if self._closed:
+            self._reconnecting = False
+            return
         t0 = time.monotonic()
         age_s = t0 - self._connected_at
         replay = self._replay
@@ -387,9 +396,11 @@ class ConnectionRecovery(FrameProcessor):
         audio for REFRESH_QUIET_S — so it can never fire during a turn, a
         reply, or an open follow-up window.
         """
-        while True:
+        while not self._closed:
             try:
                 await asyncio.sleep(self.REFRESH_CHECK_S)
+                if self._closed:
+                    return
                 if self._reconnecting:
                     continue
                 now = time.monotonic()
@@ -440,6 +451,8 @@ class ConnectionRecovery(FrameProcessor):
         The session is still alive (no reconnect needed) — we just nudge the
         device out of its stuck `thinking` blink so the user can retry.
         """
+        if self._closed:
+            return
         try:
             logger.warning(f"⚠️ turn ended on error, emitting idle to unstick device ({reason[:90]})")
             await self._go_idle(f"turn ended on error: {reason[:60]}")
@@ -1384,17 +1397,22 @@ class WebSocketHandler:
         Args:
             connection: The connection to tear down.
         """
-        if connection.task is not None:
-            try:
-                await connection.task.cancel()
-            except Exception as e:
-                logger.debug(f"task cancel for {connection.device_id}: {e!r}")
+        # Stop this connection's own background work FIRST. Cancelling the
+        # pipeline can block for pipecat's whole cancel timeout (20 s) when a
+        # CancelFrame cannot reach its end; meanwhile a live recovery or phase
+        # emitter would still act on the dead connection (refresh its OpenAI
+        # session, send phases to its closed socket).
         recovery = connection.recovery
         if recovery is not None:
             await recovery.close()
         phase_emitter = connection.phase_emitter
         if phase_emitter is not None:
             await phase_emitter.close()
+        if connection.task is not None:
+            try:
+                await connection.task.cancel()
+            except Exception as e:
+                logger.debug(f"task cancel for {connection.device_id}: {e!r}")
         timeline = connection.turn_timeline
         if timeline is not None:
             if timeline.current is not None and not timeline.current.done:

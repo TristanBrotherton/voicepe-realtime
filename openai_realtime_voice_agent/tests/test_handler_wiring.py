@@ -10,8 +10,11 @@ import os
 import tempfile
 import unittest
 
+from loguru import logger as loguru_logger
+from pipecat.frames.frames import InputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameProcessor
 
+from app.audio_recording_service import AudioRecordingService
 from app.device_registry import DeviceConnection
 from app.phase_emitter import TurnLiveness
 from app.raw_audio_serializer import RawAudioSerializer
@@ -174,6 +177,95 @@ class TestHandlerWiring(unittest.IsolatedAsyncioTestCase):
         hello = self.handler.hello_payload()
         self.assertEqual(hello["proto"], 2)
         self.assertEqual(hello["trigger_capture"], 0, "metadata mode never asks for trigger audio")
+
+
+class PassThrough(FrameProcessor):
+    """Forwards every frame, like a real transport end would."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self.started.set()
+        await self.push_frame(frame, direction)
+
+
+class ForwardingService(FakeService):
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+
+class RunnableTransport(FakeTransport):
+    def __init__(self):
+        super().__init__()
+        self._input = PassThrough()
+        self._output = PassThrough()
+
+
+def build_runnable(handler, device_id):
+    serializer = RawAudioSerializer(device_id)
+    connection = DeviceConnection(device_id=device_id, websocket=object(), serializer=serializer)
+    connection.transport = RunnableTransport()
+    connection.turn_timeline = TurnTimeline(device_id)
+    connection.wake_capture = WakeAudioCapture(handler.wake_events)
+    connection.turn_liveness = TurnLiveness()
+    connection.openai_service = ForwardingService()
+    _pipeline, runner, task = handler.build_pipeline(connection)
+    connection.runner, connection.task = runner, task
+    return connection
+
+
+class TestDisplacedSessionWithRecording(unittest.IsolatedAsyncioTestCase):
+    """A device reconnecting over its own half-open session, recording on.
+
+    Observed live after every OTA reboot: the replacement pipeline reused the
+    recorder processors of the one being cancelled, so the old pipeline's
+    frames and CancelFrame ran into processors that had not started (~490
+    "_FrameProcessor__input_queue" errors, a RecursionError), and cancelling
+    the old pipeline hung for pipecat's full 20 s cancel timeout.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.recording = AudioRecordingService(enable_recording=True, output_dir=self.tmp.name)
+        store = WakeEventStore(CaptureConfig(mode="off", probe_dir=self.tmp.name), instance="d")
+        self.handler = WebSocketHandler(wake_events=store, audio_recording_service=self.recording)
+        self.handler.WEDGE_TIMEOUT_S = 60
+        self.errors = []
+        self.sink = loguru_logger.add(lambda message: self.errors.append(str(message)), level="ERROR")
+
+    async def asyncTearDown(self):
+        loguru_logger.remove(self.sink)
+        for task in list(self.handler._background):
+            task.cancel()
+        self.recording.cleanup()
+        self.tmp.cleanup()
+
+    def test_each_pipeline_gets_its_own_recorders(self):
+        self.assertIsNot(self.recording.get_input_recorder(), self.recording.get_input_recorder())
+        self.assertIsNot(self.recording.get_output_recorder(), self.recording.get_output_recorder())
+
+    async def test_displaced_pipeline_cancels_promptly_and_cleanly(self):
+        old = build_runnable(self.handler, "kitchen")
+        running = asyncio.create_task(old.runner.run(old.task))
+        await asyncio.wait_for(old.transport.output().started.wait(), 5)
+        frame = InputAudioRawFrame(audio=b"\x01\x00" * 320, sample_rate=16000, num_channels=1)
+        await old.task.queue_frames([frame] * 10)
+        await asyncio.sleep(0.1)
+
+        # The same device reconnects before its old socket is noticed dead.
+        new = build_runnable(self.handler, "kitchen")
+        self.assertTrue(new.records_audio, "the reconnecting device keeps recording")
+
+        await asyncio.wait_for(old.task.cancel(), 5)
+        await asyncio.wait_for(running, 5)
+        leaked = [e for e in self.errors if "_FrameProcessor__input_queue" in e or "recursion" in e]
+        self.assertEqual(leaked, [], "old pipeline frames reached the replacement pipeline")
+        self.assertFalse(new.transport.output().started.is_set(), "replacement pipeline was touched")
 
 
 if __name__ == "__main__":

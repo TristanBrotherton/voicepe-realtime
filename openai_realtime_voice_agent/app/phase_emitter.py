@@ -151,6 +151,9 @@ class PhaseEmitter(FrameProcessor):
         self._idle_debounce_s = max(0.0, idle_debounce_s)
         self._idle_task = None
         self._watchdog_task = None
+        # Set by close(): the connection is gone, so nothing may be sent or
+        # re-armed any more (late frames and callbacks still arrive).
+        self._closed = False
         self._current = None  # last phase actually sent, to dedupe redundant emits
         # Set by force_idle(): the turn was declared dead, so a VAD stop event
         # that is still in flight must NOT re-emit `thinking` and re-stick the
@@ -201,6 +204,8 @@ class PhaseEmitter(FrameProcessor):
         activity follows — see the module docstring for the race this
         prevents.
         """
+        if self._closed:
+            return
         self._cancel_pending_idle()
         self._cancel_watchdog()
         self._cancel_silent()
@@ -227,6 +232,8 @@ class PhaseEmitter(FrameProcessor):
         # device (re-lifts suppress, re-opens the mic gate; the barge-in cut-over
         # is a no-op because the mic is gated during a reply so a real
         # UserStartedSpeaking never coincides with queued TTS).
+        if self._closed:
+            return
         if value == self._current and value != "listening" and not force:
             return
         self._current = value
@@ -269,7 +276,7 @@ class PhaseEmitter(FrameProcessor):
         Close the turn after SILENT_GRACE_S unless the user speaks again or a
         reply starts, and ask the device not to open a follow-up window.
         """
-        if self._current != "thinking" or self._liveness.in_flight > 0:
+        if self._closed or self._current != "thinking" or self._liveness.in_flight > 0:
             return
         self._cancel_silent()
         self._silent_task = asyncio.create_task(self._silent_idle_after_grace())
@@ -292,7 +299,8 @@ class PhaseEmitter(FrameProcessor):
         self._watchdog_task = asyncio.create_task(self._thinking_watchdog())
 
     async def close(self) -> None:
-        """Stop idle and watchdog tasks owned by this connection."""
+        """Stop idle and watchdog tasks owned by this connection, for good."""
+        self._closed = True
         tasks = (self._idle_task, self._watchdog_task, self._silent_task)
         self._idle_task = None
         self._watchdog_task = None
@@ -365,6 +373,10 @@ class PhaseEmitter(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if self._closed:
+            await self.push_frame(frame, direction)
+            return
 
         if isinstance(frame, UserStartedSpeakingFrame):
             # Liveness stamp for the wedge watchdog: the server VAD is alive.

@@ -1,7 +1,7 @@
 """Audio recording service."""
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, InputAudioRawFrame, OutputAudioRawFrame, StartFrame
@@ -13,18 +13,18 @@ logger = logging.getLogger(__name__)
 class AudioFrameRecorder(FrameProcessor):
     """Processor that records specific audio frame types directly."""
     
-    def __init__(self, frame_type, audio_recorder, record_func, **kwargs):
+    def __init__(self, frame_type, record_func: Callable[[bytes], None], **kwargs):
         """
         Initialize audio frame recorder.
         
         Args:
             frame_type: Type of frame to record (InputAudioRawFrame or OutputAudioRawFrame)
-            audio_recorder: AudioRecorder instance
-            record_func: Function to call for recording (record_input_audio or record_output_audio)
+            record_func: Called with each recorded frame's audio. It resolves the
+                current recording file itself, so a new recording session needs
+                no rewiring of the processors.
         """
         super().__init__(**kwargs)
         self.frame_type = frame_type
-        self.audio_recorder = audio_recorder
         self.record_func = record_func
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -41,7 +41,7 @@ class AudioFrameRecorder(FrameProcessor):
         await self.push_frame(frame, direction)
         
         # Then record if this is the right audio frame type
-        if isinstance(frame, self.frame_type) and self.audio_recorder:
+        if isinstance(frame, self.frame_type):
             try:
                 audio_bytes = frame.audio
                 if audio_bytes and len(audio_bytes) > 0:
@@ -76,8 +76,6 @@ class AudioRecordingService:
         self.output_dir = output_dir
         
         self.audio_recorder: Optional[AudioRecorder] = None
-        self.input_recorder: Optional[AudioFrameRecorder] = None
-        self.output_recorder: Optional[AudioFrameRecorder] = None
         
         if self.enable_recording:
             self._initialize_recording()
@@ -89,28 +87,36 @@ class AudioRecordingService:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.audio_recorder.start_recording(client_id=f"session_{timestamp}")
         
-        # Create audio frame recorders for input and output
-        self.input_recorder = AudioFrameRecorder(
-            InputAudioRawFrame,
-            self.audio_recorder,
-            self.audio_recorder.record_input_audio
-        )
-        
-        self.output_recorder = AudioFrameRecorder(
-            OutputAudioRawFrame,
-            self.audio_recorder,
-            self.audio_recorder.record_output_audio
-        )
-        
         logger.info("✅ AudioRecordingService initialized")
     
+    def _record_input(self, audio: bytes) -> None:
+        recorder = self.audio_recorder
+        if recorder is not None:
+            recorder.record_input_audio(audio)
+
+    def _record_output(self, audio: bytes) -> None:
+        recorder = self.audio_recorder
+        if recorder is not None:
+            recorder.record_output_audio(audio)
+
+    # A pipecat processor links to exactly one predecessor and successor, so
+    # every pipeline needs its OWN recorders. Shared ones were relinked into the
+    # replacement pipeline when a device reconnected over its own half-open
+    # session, while the old pipeline was still being cancelled: its frames and
+    # CancelFrame then ran into processors that had not started (an error storm,
+    # then a cancel that hung for pipecat's whole cancel timeout). Every
+    # recorder still writes into the one current recording file.
     def get_input_recorder(self) -> Optional[AudioFrameRecorder]:
-        """Get the input audio recorder for pipeline integration."""
-        return self.input_recorder if self.enable_recording else None
+        """A new input-audio recorder for one pipeline."""
+        if not self.enable_recording:
+            return None
+        return AudioFrameRecorder(InputAudioRawFrame, self._record_input)
     
     def get_output_recorder(self) -> Optional[AudioFrameRecorder]:
-        """Get the output audio recorder for pipeline integration."""
-        return self.output_recorder if self.enable_recording else None
+        """A new output-audio recorder for one pipeline."""
+        if not self.enable_recording:
+            return None
+        return AudioFrameRecorder(OutputAudioRawFrame, self._record_output)
     
     def start_new_session(self, client_id: Optional[str] = None):
         """Start a new recording session."""
@@ -121,20 +127,12 @@ class AudioRecordingService:
         if self.audio_recorder:
             self.audio_recorder.stop_recording()
         
-        # Create new recorder for this session
+        # Create new recorder for this session; the recorder processors pick
+        # it up on their next frame.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_id = client_id or f"session_{timestamp}"
         self.audio_recorder = AudioRecorder(output_dir=self.output_dir)
         self.audio_recorder.start_recording(client_id=session_id)
-        
-        # Update recorders with new audio_recorder instance
-        if self.input_recorder:
-            self.input_recorder.audio_recorder = self.audio_recorder
-            self.input_recorder.record_func = self.audio_recorder.record_input_audio
-        
-        if self.output_recorder:
-            self.output_recorder.audio_recorder = self.audio_recorder
-            self.output_recorder.record_func = self.audio_recorder.record_output_audio
         
         logger.info(f"🎙️ Started new recording session: {session_id}")
     

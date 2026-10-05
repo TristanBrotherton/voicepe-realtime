@@ -3,6 +3,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from pipecat.frames.frames import ErrorFrame, InputAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from app.device_registry import DeviceConnection
@@ -69,6 +71,85 @@ class TestTeardown(unittest.IsolatedAsyncioTestCase):
         await handler._teardown(live_connection)
         with self.assertRaises(asyncio.CancelledError):
             await wedge_task
+
+
+class TestClosedRecoveryStaysClosed(unittest.IsolatedAsyncioTestCase):
+    """A displaced connection's recovery must never act again after close().
+
+    Observed live: a device rebooted and reconnected while its old socket was
+    still half-open; 19 minutes later the OLD connection's proactive refresh
+    fired, re-opened an OpenAI session nobody used and sent `idle` to the dead
+    socket. Late frames (e.g. the dying service's ErrorFrame) restarted the
+    refresh loop after teardown had closed it.
+    """
+
+    async def test_late_frames_do_not_restart_work_after_close(self):
+        resets, phases = [], []
+
+        class Service:
+            _current_assistant_response = None
+
+            async def reset_conversation(self):
+                resets.append(1)
+
+        async def send(value, **_extra):
+            phases.append(value)
+
+        recovery = ConnectionRecovery(Service(), emit_idle=send)
+        recovery.push_frame = AsyncMock()
+        await recovery.close()
+        with patch.object(FrameProcessor, "process_frame", new=AsyncMock()):
+            await recovery.process_frame(
+                ErrorFrame("SafeRealtimeLLMService error: realtime receive loop ended — connection closed"),
+                FrameDirection.UPSTREAM,
+            )
+            await recovery.process_frame(ErrorFrame("Rate limit reached"), FrameDirection.UPSTREAM)
+            await recovery.process_frame(
+                InputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await asyncio.sleep(0.01)
+        self.assertIsNone(recovery._refresh_task, "refresh loop restarted after close")
+        self.assertIsNone(recovery._recover_task)
+        await recovery.force_reconnect("late wedge check")
+        await recovery._recover("late recovery")
+        self.assertEqual((resets, phases), ([], []))
+        # Frames still flow through: only the processor's own work stops.
+        self.assertEqual(recovery.push_frame.await_count, 3)
+
+    async def test_refresh_loop_exits_once_closed(self):
+        recovery = ConnectionRecovery(object())
+        recovery.REFRESH_CHECK_S = 0.01
+        task = asyncio.create_task(recovery._proactive_refresh_loop())
+        recovery._closed = True
+        await asyncio.wait_for(task, 1.0)
+
+    async def test_teardown_stops_background_work_before_a_blocking_cancel(self):
+        # PipelineTask.cancel() can block for its whole cancel timeout (20 s)
+        # when a CancelFrame cannot reach the end of the pipeline. The
+        # recovery and phase emitter must already be stopped by then.
+        cancel_started, release = asyncio.Event(), asyncio.Event()
+
+        class SlowTask:
+            async def cancel(self):
+                cancel_started.set()
+                await release.wait()
+
+        recovery = ConnectionRecovery(object())
+        refresh_task = asyncio.create_task(asyncio.Event().wait())
+        recovery._refresh_task = refresh_task
+        phase_emitter = PhaseEmitter(None)
+        connection = DeviceConnection("kitchen", object(), recovery=recovery, phase_emitter=phase_emitter)
+        connection.task = SlowTask()
+        teardown = asyncio.create_task(WebSocketHandler()._teardown(connection))
+        await asyncio.wait_for(cancel_started.wait(), 1.0)
+        self.assertTrue(recovery._closed, "recovery still live while the pipeline cancel blocks")
+        await asyncio.sleep(0)
+        self.assertTrue(refresh_task.cancelled())
+        self.assertTrue(phase_emitter._closed)
+        release.set()
+        await asyncio.wait_for(teardown, 1.0)
+        self.assertIsNone(connection.task)
 
 
 class FakeRecovery:

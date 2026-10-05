@@ -2,6 +2,22 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.1 (fork)
+
+- **Fixed: a device reconnecting over its own half-open session.** When a
+  device rebooted (an OTA update, a power blip) and reconnected before its old
+  socket was noticed dead, the replacement pipeline reused the audio-recorder
+  processors of the pipeline being torn down. With recording on, the old
+  pipeline's frames and its CancelFrame then ran into processors that had not
+  started: hundreds of errors, a RecursionError, and a cancel that hung for
+  20 s. Every pipeline now gets its own recorder processors.
+- **Fixed: a replaced connection's session coming back.** A late frame could
+  restart the replaced connection's reconnect handler after teardown; at the
+  next hourly refresh it re-opened an OpenAI session for the dead connection
+  and sent `idle` to its closed socket. The connection's recovery and phase
+  emitter are now stopped before its pipeline is cancelled and stay inert
+  once closed.
+
 ## 0.17.0 (fork)
 
 **Upgrade notes.** New options default to the previous behaviour or to the
