@@ -69,6 +69,23 @@ class TestClassification(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(corrected["domain"], ["input_boolean"])
 
+    async def test_unique_named_cover_reconciles_wrong_device_class_and_stays_gated(self):
+        async def gate_states():
+            return [
+                {"entity_id": "cover.garage", "attributes": {
+                    "friendly_name": "Garage Door", "device_class": "gate"
+                }}
+            ]
+
+        g = ActionGate(directory=EntityDirectory(gate_states))
+        corrected = await g.reconcile_arguments(
+            "intent__HassTurnOn", {"name": "Garage Door", "device_class": ["garage"]}
+        )
+        self.assertEqual(corrected["device_class"], ["gate"])
+        decision = await g.check("intent__HassTurnOn", corrected)
+        self.assertTrue(decision.requires_confirmation)
+        self.assertEqual(decision.rule, "gate")
+
     async def test_reconciliation_preserves_ambiguity_and_strengthens_safety(self):
         async def ambiguous_states():
             return STATES + [

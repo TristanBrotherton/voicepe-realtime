@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.3 (fork)
+
+- **Fixed: exact named covers failing when the model supplies the wrong Home
+  Assistant device class.** A unique entity match now corrects `device_class`
+  before execution and before the safety check. A cover named Garage Door that
+  Home Assistant exposes as a gate therefore still requires confirmation and
+  no longer misses after the user confirms.
+
 ## 0.17.2 (fork)
 
 - **Fixed: ordinary Home Assistant actions being mistaken for consequential

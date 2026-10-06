@@ -180,14 +180,15 @@ class ActionGate:
         return bool(self.rules or self.extra_tools)
 
     async def reconcile_arguments(self, function_name: str, arguments: Optional[dict]) -> Dict[str, Any]:
-        """Correct a model-supplied HA domain when the named entity is unambiguous.
+        """Correct stale HA target constraints when the named entity is unambiguous.
 
-        Assist intent tools accept a domain constraint, but models occasionally
-        label helpers as switches (or vice versa).  Passing that stale constraint
-        makes Home Assistant reject an otherwise exact friendly-name match.  Use
-        the entity directory only when it yields one target; ambiguous and
-        unresolved names are left untouched.  Reconciliation happens before the
-        safety check, so a mislabeled lock becomes *more* restricted, never less.
+        Assist intent tools accept domain and device-class constraints, but models
+        occasionally label helpers as switches or a gate as a garage. Passing a
+        stale constraint makes Home Assistant reject an otherwise exact friendly-
+        name match. Use the entity directory only when it yields one target;
+        ambiguous and unresolved names are left untouched. Reconciliation happens
+        before the safety check, so a mislabeled lock or gate becomes *more*
+        restricted, never less.
         """
         args = dict(arguments or {})
         canonical_name = _canonical_tool_name(function_name)
@@ -199,19 +200,29 @@ class ActionGate:
         if len(matches) != 1:
             return args
         actual_domain = matches[0].domain
+        actual_device_class = matches[0].device_class
         supplied_domains = {domain.lower() for domain in _as_list(args.get("domain"))}
-        if not supplied_domains:
-            return args
-        if supplied_domains == {actual_domain}:
-            return args
+        if supplied_domains and supplied_domains != {actual_domain}:
+            args["domain"] = [actual_domain]
+            logger.info(
+                "reconciled Home Assistant target domain for %s: %s -> %s",
+                canonical_name,
+                sorted(supplied_domains),
+                actual_domain,
+            )
 
-        args["domain"] = [actual_domain]
-        logger.info(
-            "reconciled Home Assistant target domain for %s: %s -> %s",
-            canonical_name,
-            sorted(supplied_domains),
-            actual_domain,
-        )
+        supplied_classes = {
+            device_class.lower() for device_class in _as_list(args.get("device_class"))
+        }
+        if (supplied_classes and actual_device_class
+                and supplied_classes != {actual_device_class.lower()}):
+            args["device_class"] = [actual_device_class]
+            logger.info(
+                "reconciled Home Assistant target device class for %s: %s -> %s",
+                canonical_name,
+                sorted(supplied_classes),
+                actual_device_class,
+            )
         return args
 
     # -- classification ---------------------------------------------------
