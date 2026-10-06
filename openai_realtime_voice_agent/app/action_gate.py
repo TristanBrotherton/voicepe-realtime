@@ -63,6 +63,19 @@ _AGENT_REQUEST_HINTS = re.compile(
 )
 
 
+def _canonical_tool_name(function_name: str) -> str:
+    """Return the MCP tool name without an optional server namespace.
+
+    Home Assistant may expose intent tools as either ``HassTurnOff`` or a
+    namespaced form such as ``intent__HassTurnOff``.  Safety classification
+    must use the actual intent name; otherwise a namespaced intent falls
+    through to the generic description scanner, where words such as "lock"
+    in the broad tool description can incorrectly gate every ordinary switch
+    or helper action.
+    """
+    return str(function_name or "").rsplit("__", 1)[-1]
+
+
 def _as_list(value: Any) -> List[str]:
     if value is None:
         return []
@@ -166,6 +179,41 @@ class ActionGate:
     def enabled(self) -> bool:
         return bool(self.rules or self.extra_tools)
 
+    async def reconcile_arguments(self, function_name: str, arguments: Optional[dict]) -> Dict[str, Any]:
+        """Correct a model-supplied HA domain when the named entity is unambiguous.
+
+        Assist intent tools accept a domain constraint, but models occasionally
+        label helpers as switches (or vice versa).  Passing that stale constraint
+        makes Home Assistant reject an otherwise exact friendly-name match.  Use
+        the entity directory only when it yields one target; ambiguous and
+        unresolved names are left untouched.  Reconciliation happens before the
+        safety check, so a mislabeled lock becomes *more* restricted, never less.
+        """
+        args = dict(arguments or {})
+        canonical_name = _canonical_tool_name(function_name)
+        name = str(args.get("name") or "").strip()
+        if not canonical_name.startswith("Hass") or not name:
+            return args
+
+        matches = await self.directory.lookup(name)
+        if len(matches) != 1:
+            return args
+        actual_domain = matches[0].domain
+        supplied_domains = {domain.lower() for domain in _as_list(args.get("domain"))}
+        if not supplied_domains:
+            return args
+        if supplied_domains == {actual_domain}:
+            return args
+
+        args["domain"] = [actual_domain]
+        logger.info(
+            "reconciled Home Assistant target domain for %s: %s -> %s",
+            canonical_name,
+            sorted(supplied_domains),
+            actual_domain,
+        )
+        return args
+
     # -- classification ---------------------------------------------------
     def _target_rule(self, domain: str, device_class: str, intent: str, args: dict) -> str:
         domain = domain.lower()
@@ -205,34 +253,35 @@ class ActionGate:
 
     async def check(self, function_name: str, arguments: Optional[dict]) -> GateDecision:
         args = dict(arguments or {})
-        if function_name == "confirm_action" or not self.enabled:
+        canonical_name = _canonical_tool_name(function_name)
+        if canonical_name == "confirm_action" or not self.enabled:
             return GateDecision(False)
-        if function_name in self.extra_tools:
+        if function_name in self.extra_tools or canonical_name in self.extra_tools:
             return GateDecision(True, f"run {function_name}", "confirm_tools")
-        if function_name == "ask_openclaw":
+        if canonical_name == "ask_openclaw":
             question = str(args.get("question") or "")
             if self.rules and _AGENT_REQUEST_HINTS.search(question):
                 return GateDecision(True, f"ask the agent to: {question[:120]}", "agent_request")
             return GateDecision(False)
-        if function_name.startswith("Hass"):
+        if canonical_name.startswith("Hass"):
             domains = _as_list(args.get("domain"))
             classes = _as_list(args.get("device_class"))
             name = str(args.get("name") or "")
             for domain in domains or [""]:
                 for device_class in classes or [""]:
-                    rule = self._target_rule(domain, device_class, function_name, args)
+                    rule = self._target_rule(domain, device_class, canonical_name, args)
                     if rule:
-                        return GateDecision(True, self._summary(function_name, name or domain, rule), rule)
+                        return GateDecision(True, self._summary(canonical_name, name or domain, rule), rule)
             if name:
                 matches = await self.directory.lookup(name)
                 for entity in matches:
-                    rule = self._target_rule(entity.domain, entity.device_class, function_name, args)
+                    rule = self._target_rule(entity.domain, entity.device_class, canonical_name, args)
                     if rule:
-                        return GateDecision(True, self._summary(function_name, entity.name, rule), rule)
+                        return GateDecision(True, self._summary(canonical_name, entity.name, rule), rule)
                 if not matches:
-                    rule = self._name_rule(name, function_name)
+                    rule = self._name_rule(name, canonical_name)
                     if rule:
-                        return GateDecision(True, self._summary(function_name, name, rule), rule)
+                        return GateDecision(True, self._summary(canonical_name, name, rule), rule)
             return GateDecision(False)
         # Exposed scripts and other tools: judge by name + description.
         text = f"{function_name} {self.tool_descriptions.get(function_name, '')}".replace("_", " ")

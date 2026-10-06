@@ -424,6 +424,10 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
             # calls are held until the user answers a confirmation question.
             # Enforced here, below the model, like the speaker gate.
             gate = getattr(self, "action_gate", None)
+            if gate is not None:
+                reconciled = await gate.reconcile_arguments(function_name, params.arguments)
+                if reconciled != dict(params.arguments or {}):
+                    params = replace_arguments(params, function_name, reconciled)
             if gate is not None and gate.enabled and function_name != "confirm_action":
                 decision = await gate.check(function_name, params.arguments)
                 if decision.requires_confirmation:

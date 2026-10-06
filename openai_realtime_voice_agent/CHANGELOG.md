@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.2 (fork)
+
+- **Fixed: ordinary Home Assistant actions being mistaken for consequential
+  ones when MCP namespaces tool names.** Namespaced intent tools are now
+  classified by their canonical intent, so broad tool descriptions do not
+  force a confirmation for routine lights, switches, or helpers.
+- **Fixed: exact named targets failing when the model supplies the wrong Home
+  Assistant domain.** A unique entity match now corrects the domain before
+  execution and before the safety check. Ambiguous targets remain unchanged;
+  a mislabeled lock is still recognized as a lock and requires confirmation.
+
 ## 0.17.1 (fork)
 
 - **Fixed: a device reconnecting over its own half-open session.** When a

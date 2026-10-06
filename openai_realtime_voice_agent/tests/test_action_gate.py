@@ -14,6 +14,7 @@ STATES = [
     {"entity_id": "cover.garage", "attributes": {"friendly_name": "Garage Door", "device_class": "garage"}},
     {"entity_id": "cover.blinds", "attributes": {"friendly_name": "Office Blinds", "device_class": "blind"}},
     {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen Light"}},
+    {"entity_id": "input_boolean.vacation_mode", "attributes": {"friendly_name": "Vacation Mode"}},
     {"entity_id": "alarm_control_panel.home", "attributes": {"friendly_name": "Home Alarm"}},
 ]
 
@@ -46,6 +47,44 @@ class TestClassification(unittest.IsolatedAsyncioTestCase):
         g = gate()
         for args in ({"name": "Kitchen Light"}, {"name": "Office Blinds"}, {"area": "kitchen", "domain": ["light"]}):
             self.assertFalse((await g.check("HassTurnOn", args)).requires_confirmation, args)
+
+    async def test_namespaced_intent_is_classified_as_the_intent_not_its_description(self):
+        g = gate(tool_descriptions={
+            "intent__HassTurnOff": "Turns off switches, locks, doors, garage doors, and helpers",
+        })
+        ordinary = await g.check(
+            "intent__HassTurnOff", {"name": "Vacation Mode", "domain": ["switch"]}
+        )
+        self.assertFalse(ordinary.requires_confirmation)
+        consequential = await g.check(
+            "intent__HassTurnOff", {"name": "Front Door", "domain": ["lock"]}
+        )
+        self.assertTrue(consequential.requires_confirmation)
+        self.assertEqual(consequential.rule, "lock")
+
+    async def test_unique_named_target_reconciles_wrong_domain(self):
+        g = gate()
+        corrected = await g.reconcile_arguments(
+            "intent__HassTurnOff", {"name": "Vacation Mode", "domain": ["switch"]}
+        )
+        self.assertEqual(corrected["domain"], ["input_boolean"])
+
+    async def test_reconciliation_preserves_ambiguity_and_strengthens_safety(self):
+        async def ambiguous_states():
+            return STATES + [
+                {"entity_id": "switch.vacation_lamp", "attributes": {"friendly_name": "Vacation Lamp"}},
+            ]
+
+        ambiguous = ActionGate(directory=EntityDirectory(ambiguous_states))
+        original = {"name": "Vacation", "domain": ["switch"]}
+        self.assertEqual(await ambiguous.reconcile_arguments("intent__HassTurnOff", original), original)
+
+        g = gate()
+        corrected = await g.reconcile_arguments(
+            "intent__HassTurnOff", {"name": "Front Door", "domain": ["switch"]}
+        )
+        self.assertEqual(corrected["domain"], ["lock"])
+        self.assertTrue((await g.check("intent__HassTurnOff", corrected)).requires_confirmation)
 
     async def test_alarm_actions_are_gated(self):
         self.assertTrue((await gate().check("HassTurnOff", {"name": "Home Alarm"})).requires_confirmation)
@@ -151,6 +190,7 @@ class TestWrapperIntegration(unittest.IsolatedAsyncioTestCase):
             await params.result_callback({"status": "done"})
 
         service.register_function("HassTurnOff", unlock_handler)
+        service.register_function("intent__HassTurnOff", unlock_handler)
         app = Application()
         app.action_gate = service.action_gate
         service.register_function("confirm_action", app._create_confirm_handler(service))
@@ -186,6 +226,19 @@ class TestWrapperIntegration(unittest.IsolatedAsyncioTestCase):
         result = await self.call("HassTurnOff", {"name": "Kitchen Light"})
         self.assertEqual(result, {"status": "done"})
         self.assertEqual(self.executed, [{"name": "Kitchen Light"}])
+
+    async def test_namespaced_call_corrects_domain_and_runs_without_confirmation(self):
+        self.service.action_gate.tool_descriptions["intent__HassTurnOff"] = (
+            "Turns off switches, locks, doors, garage doors, and helpers"
+        )
+        result = await self.call(
+            "intent__HassTurnOff", {"name": "Vacation Mode", "domain": ["switch"]}
+        )
+        self.assertEqual(result, {"status": "done"})
+        self.assertEqual(
+            self.executed,
+            [{"name": "Vacation Mode", "domain": ["input_boolean"]}],
+        )
 
     def test_replace_arguments_clones_dataclass(self):
         params = Params("confirm_action", "c", {"confirm_id": "x"})
