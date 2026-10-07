@@ -69,7 +69,14 @@ class Budget:
     def __init__(self, path=None, today=None):
         self.path = path or os.environ.get("MOLN_LEDGER", "/data/moln_minuter.json")
         self._today = today or (lambda: datetime.date.today().isoformat())
-        self._kand: float | None = None  # last good total for today; a bad read must not become 0
+        self._kand: float | None = None  # last good total; only valid on _kand_dag
+        self._kand_dag: str | None = None
+
+    def _kvar(self) -> dict:
+        """Reuse the last good total only on the day it was read."""
+        if self._kand is None or self._kand_dag != self._today():
+            return {}
+        return {self._today(): self._kand}
 
     def _read(self) -> dict:
         try:
@@ -77,18 +84,23 @@ class Budget:
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError(f"not an object: {type(data).__name__}")
-            self._kand = float(data.get(self._today(), 0.0))
+            day = self._today()
+            self._kand = float(data.get(day, 0.0))
+            self._kand_dag = day
             return data
         except FileNotFoundError:
-            if self._kand is None:
+            kvar = self._kvar()
+            if not kvar:
                 return {}
             logger.error("❌ cloud budget file is missing, keeping last known value")
-            return {self._today(): self._kand}
+            return kvar
         except (OSError, ValueError) as e:
-            logger.error(f"❌ cloud budget file is unreadable, keeping last known value: {e!r}")
-            if self._kand is None:
-                return {}
-            return {self._today(): self._kand}
+            kvar = self._kvar()
+            if kvar:
+                logger.error(f"❌ cloud budget file is unreadable, keeping last known value: {e!r}")
+                return kvar
+            logger.error(f"❌ cloud budget file is unreadable: {e!r}")
+            return {}
 
     def _skriv(self, data: dict) -> None:
         directory = os.path.dirname(self.path) or "."
@@ -123,6 +135,7 @@ class Budget:
             logger.warning(f"⚠️ cloud budget not saved: {e!r}")
             return
         self._kand = total
+        self._kand_dag = day
 
 
 BUDGET = Budget()

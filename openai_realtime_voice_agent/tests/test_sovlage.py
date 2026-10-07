@@ -258,6 +258,22 @@ def test_budgeten_overlever_omstart_och_nollas_nasta_dag(tmp_path):
     assert Budget(path=path, today=lambda: "2026-10-05").anvant() == 0
 
 
+@pytest.mark.parametrize("fel", ["borta", "trasig"])
+def test_gardagens_kand_foljer_inte_med_over_midnatt(tmp_path, fel):
+    """Same Budget across midnight. A missing or torn ledger must not reuse
+    yesterday's in-memory total: that total has no date of its own."""
+    dag = {"idag": "2026-10-04"}
+    path = tmp_path / "m.json"
+    b = Budget(path=str(path), today=lambda: dag["idag"])
+    b.lagg_till(3000)
+    dag["idag"] = "2026-10-05"
+    if fel == "borta":
+        path.unlink()
+    else:
+        path.write_text("{trasig")
+    assert b.anvant() == 0
+
+
 @pytest.mark.asyncio
 async def test_sovloopen_kopplar_ner_nar_budgeten_tar_slut(egen_budget, monkeypatch):
     monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "1")

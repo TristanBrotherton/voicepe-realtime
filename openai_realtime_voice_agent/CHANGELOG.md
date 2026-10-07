@@ -2,6 +2,13 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.3 (fork)
+
+- **Dagssumman bär sitt datum.** När filen med dagens molnminuter saknades eller
+  var trasig återanvändes senast kända summa, även om den lästes i går. Över
+  midnatt kunde gårdagens minuter då räknas mot dagens tak. Nu gäller det
+  sparade värdet bara samma dag som det lästes.
+
 ## 0.27.2 (fork)
 
 - **En väckning utan tal kopplar ner molnmotorn.** Sovloopen kopplade bara ner
