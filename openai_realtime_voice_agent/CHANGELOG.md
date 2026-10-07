@@ -2,6 +2,22 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.7 (fork)
+
+- **Klockan svarar utan moln (raawr US-032 AC-7).** "Vad är klockan", "hur
+  mycket är klockan", "hur dags är det" och några till känns igen i den lokala
+  STT:ns text, före comms och modellen. Svaret är två förrenderade klipp i
+  motorns röst ("Klockan är fjorton" + "och tjugotvå minuter"), 83 klipp i
+  allt, på disk.
+  Modellen hör aldrig frågan (Gemini: turen släpps). Fungerar utan internet.
+  Väckningen kopplar fortfarande upp motorn som förut.
+- **Klippen renderas i Googles takt.** Gemini TTS tillåter 10 anrop i minuten
+  per projekt (429 efter 12 klipp 2026-10-07): ett nytt klipp väntar 8 s, ett
+  klipp på disk väntar inte. Ett klipp som inte blir av hoppas över; tre i rad
+  betyder att motorn är nere. Saknas ett klipp går klockfrågan till modellen.
+  Minuten heter "och två minuter": för ett ensamt tal ("tjugo") eller "noll
+  två" gav Gemini inget ljud.
+
 ## 0.27.6 (fork)
 
 - **Ett avvisat Gemini-handtag ger ett nytt samtal i samma väckning.** Live

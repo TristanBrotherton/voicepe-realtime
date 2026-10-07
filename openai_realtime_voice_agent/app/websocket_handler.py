@@ -29,7 +29,7 @@ from app.providers import (
     input_sample_rate,
     supports_client_events,
 )
-from app import bana0
+from app import bana0, klockan
 
 # US-018: well under EARLY_ACK_SILENCE_MS (1500 default, 2000 on core), counted
 # from the same moment, so the honest line wins the slot over "Ett ögonblick."
@@ -1684,6 +1684,21 @@ class WebSocketHandler:
                 self._offline_tasks.add(task)
                 task.add_done_callback(self._offline_tasks.discard)
 
+            async def _klockan(fraga):
+                """The time from cached clips; the model never answers the question (AC-7)."""
+                if self.say is None or self.ack_clip is None:
+                    raise RuntimeError("no announcer wired")
+                delar = klockan.delar()
+                pcm = b"".join([await self.ack_clip(provider, d, fallback=False) for d in delar])
+                await self.say(" ".join(delar), client_id, pace=False, pcm=pcm)
+                try:
+                    if supports_client_events(provider):  # it heard the turn
+                        await bana0.redan_besvarat(openai_service, fraga, " ".join(delar))
+                    else:
+                        await openai_service.drop_turn()  # Gemini held the turn back
+                except Exception as e:
+                    logger.warning(f"⚠️ clock: settling the turn with the model failed: {e!r}")
+
             async def _on_user_turn_end():
                 bana = await bana0.tur(
                     serializer.take_turn_audio(),
@@ -1694,9 +1709,10 @@ class WebSocketHandler:
                     efter_traff=_efter_traff,
                     skapa_svar=lambda: bana0_miss(provider, openai_service),
                     efter_miss=_efter_miss,
+                    klockan=_klockan,
                 )
-                if bana == "bana0":
-                    await phase_emitter.force_idle("bana0")
+                if bana in ("bana0", "klockan"):
+                    await phase_emitter.force_idle(bana)
 
             openai_service.on_user_turn_end = _on_user_turn_end
             openai_service.on_user_turn_start = serializer.start_turn_audio

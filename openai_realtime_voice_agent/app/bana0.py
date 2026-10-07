@@ -20,6 +20,7 @@ import httpx
 from pipecat.services.openai.realtime import events
 
 from app import ha_api
+from app import klockan as klocka
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +128,12 @@ async def tur(
     skapa_svar: Callable[[], Awaitable[None]],
     efter_miss: Optional[Callable[[], None]] = None,
     efter_traff: Optional[Callable[[], None]] = None,
+    klockan: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> str:
-    """One finished user turn. Returns 'bana0' on a hit, 'modell' otherwise.
+    """One finished user turn. Returns 'klockan', 'bana0' on a hit, 'modell' otherwise.
+
+    `klockan(text)` says the time from cached clips (US-032 AC-7): a clock question
+    reaches neither comms nor the model. If it fails, the turn goes on as before.
 
     `stt(pcm, timeout)` is typically transkribera bound to host/port.
     On a hit HA's own reply is NOT spoken (the owner 2026-10-03: "hellre tyst
@@ -139,6 +144,13 @@ async def tur(
     """
     try:
         text = await stt(pcm, timeout_stt) if pcm else None
+        if klockan is not None and klocka.ar_klockfraga(text):
+            try:
+                await klockan(text)
+                logger.info(f"bana0: clock {text!r}")
+                return "klockan"
+            except Exception as e:
+                logger.warning(f"bana0: the clock failed, the turn goes on: {e!r}")
         svar = await prova(text, timeout_comms) if text else None
     except Exception as e:
         logger.warning(f"bana0: turn failed, model answers: {e!r}")
@@ -268,6 +280,20 @@ async def be_om_bekraftelse(service, besked: str) -> None:
     ))
     await service.send_client_event(events.ResponseCreateEvent(
         response=events.ResponseProperties(tool_choice="none")
+    ))
+
+
+async def redan_besvarat(service, fraga: str, svar: str) -> None:
+    """After the clock (US-032 AC-7): the model heard the question; tell it it is
+    answered, with no response.create, so the next turn does not answer it again."""
+    await service.send_client_event(events.ConversationItemCreateEvent(
+        item=events.ConversationItem(
+            type="message", role="system",
+            content=[events.ItemContent(type="input_text", text=(
+                f"Användaren frågade \"{fraga}\" och har redan fått svaret: \"{svar}\". "
+                "Svara inte på den frågan igen."
+            ))],
+        )
     ))
 
 

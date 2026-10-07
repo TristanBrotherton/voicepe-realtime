@@ -365,9 +365,45 @@ async def test_speech_stopped_med_traff_ber_modellen_bekrafta_utan_verktyg(comms
 
 
 @pytest.mark.asyncio
+async def test_openai_klockan_besvaras_lokalt_och_modellen_svarar_inte_igen(comms, monkeypatch):
+    """US-032 AC-7 on OpenAI: the clips speak, comms is not asked, no response is
+    created, and the model is told the question is answered (no double answer)."""
+    from app import klockan
+
+    monkeypatch.setattr(klockan, "delar", lambda nu=None: ["Klockan är fjorton", "och tjugotvå minuter"])
+    server, port, _ = await _wyoming(_transcript("Vad är klockan just nu?"))
+    handler, connection, service, sent = _koppling(("127.0.0.1", port))
+    said, idle, flaggor = [], [], []
+
+    async def say(text, device_id=None, pace=True, pcm=None):
+        said.append((text, pcm))
+
+    async def clip(provider, text, fallback=True):
+        flaggor.append(fallback)
+        return text.encode()
+
+    async def force_idle(reason=""):
+        idle.append(reason)
+
+    handler.say, handler.ack_clip = say, clip
+    connection.phase_emitter.force_idle = force_idle
+    await connection.serializer.deserialize(PCM)
+    async with server:
+        await service._handle_evt_speech_stopped(None)
+        await service._turn_end_task
+
+    assert said == [("Klockan är fjorton och tjugotvå minuter", "Klockan är fjortonoch tjugotvå minuter".encode())]
+    assert flaggor == [False, False]  # never the conductor's dry voice
+    assert comms.seen == []
+    assert [e.type for e in sent] == ["conversation.item.create"]
+    assert "redan fått svaret" in sent[0].item.content[0].text
+    assert idle == ["klockan"]
+
+
+@pytest.mark.asyncio
 async def test_speech_stopped_med_miss_ber_modellen_svara(comms):
     comms.svar = httpx.Response(204)
-    server, port, _ = await _wyoming(_transcript("vad är klockan"))
+    server, port, _ = await _wyoming(_transcript("hur varmt är det ute"))
     handler, connection, service, sent = _koppling(("127.0.0.1", port))
     await connection.serializer.deserialize(PCM)
     async with server:
@@ -460,7 +496,9 @@ def _gemini_koppling(stt, events):
     async def force_idle(reason=""):
         idle.append(reason)
 
-    async def clip(provider, text):
+    async def clip(provider, text, fallback=True):
+        if text.startswith("Klockan är") or text.startswith("och "):
+            assert fallback is False  # the clock never plays the dry voice
         return b"pcm"
 
     handler.say = say
@@ -500,11 +538,31 @@ async def test_gemini_traff_google_hor_aldrig_ordern(ha_svarar):
 
 
 @pytest.mark.asyncio
+async def test_gemini_klockan_google_hor_aldrig_fragan(ha_svarar, monkeypatch):
+    """US-032 AC-7: "vad är klockan" on Gemini is said from the cached clips;
+    neither comms nor Google hears it, so it works offline."""
+    from app import klockan
+    from test_gemini_provider import _kinds
+
+    monkeypatch.setattr(klockan, "delar", lambda nu=None: ["Klockan är fjorton", "och tjugotvå minuter"])
+    server, port, _ = await _wyoming(_transcript("Vad är klockan?"))
+    connection, service, google, said, idle = _gemini_koppling(
+        ("127.0.0.1", port), [None, "start", None, "end"])
+    async with server:
+        await _speak(connection, service, 4)
+        await service._turn_end_task
+        await asyncio.sleep(0.05)
+    assert said == [("Klockan är fjorton och tjugotvå minuter", "kontoret")]
+    assert idle == ["klockan"]
+    assert _kinds(google) == []
+
+
+@pytest.mark.asyncio
 async def test_gemini_miss_ger_modellen_hela_turen(ha_svarar):
     from test_gemini_provider import _frame, _kinds
 
     ha_svarar.append(None)
-    server, port, _ = await _wyoming(_transcript("vad är klockan"))
+    server, port, _ = await _wyoming(_transcript("hur varmt är det ute"))
     connection, service, google, said, idle = _gemini_koppling(
         ("127.0.0.1", port), [None, "start", None, "end"])
     async with server:

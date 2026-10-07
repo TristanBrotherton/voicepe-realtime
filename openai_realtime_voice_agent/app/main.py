@@ -14,6 +14,8 @@ from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
 from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, xai_tts
+
+KLOCK_TAKT_S = 8.0  # ponytail: 7.5 renders/min under Gemini TTS's 10/min; ask for more quota if it bites
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -1153,7 +1155,7 @@ class Application:
         logger.info(f"⏱ early ack: {text}")
         await self._guarded_say(text, connection.device_id, pace=False, pcm=pcm)
 
-    async def _ack_clip(self, provider, text) -> bytes:
+    async def _ack_clip(self, provider, text, fallback: bool = True) -> bytes:
         """The ack in the voice of the engine that answers (0.23.3).
 
         Gemini: its own TTS with the session's prebuilt voice (Charon).
@@ -1175,6 +1177,8 @@ class Application:
             else:
                 pcm = await self.enrollment_conductor._tts(text, voice=self.voice)
         except Exception as e:
+            if not fallback:
+                raise
             logger.warning(
                 f"⚠️ early ack '{text}' not rendered in {provider or 'openai'}'s voice "
                 f"({e!r}) — using the old clip"
@@ -1197,7 +1201,44 @@ class Application:
                     await self._ack_clip(provider, text)
                 except Exception as e:
                     logger.warning(f"⚠️ early ack clip not cached: {e!r}")
-                    return
+                    break  # this engine; the others and the clock still warm
+        for provider in engines:
+            await self._warm_klockan(provider)
+
+    async def _warm_klockan(self, provider, takt_s: float = KLOCK_TAKT_S) -> None:
+        """The clock's 83 clips in the engine's own voice (US-032 AC-7).
+
+        Paced: Gemini TTS allows 10 requests a minute per project (429 on
+        2026-10-07 after 12 clips), and live replies share that quota. A clip
+        on disk costs no request and no wait. No fallback voice: a clip that
+        fails is tried once more a minute later, then skipped (Gemini gave no
+        audio for "noll två" twice, 2026-10-07); three skipped in a row means
+        the engine is down, so it is left for the next start. A time with a
+        missing clip goes to the model, as before.
+        """
+        from app.klockan import alla_delar
+
+        saknas, i_rad = [], 0
+        for text in alla_delar():
+            for forsok in (1, 2):
+                start = time.monotonic()
+                try:
+                    await self._ack_clip(provider, text, fallback=False)
+                    i_rad = 0
+                    break
+                except Exception as e:
+                    logger.warning(f"⚠️ clock clip {text!r} not cached ({provider}): {e!r}")
+                    if forsok == 2:
+                        saknas.append(text)
+                        i_rad += 1
+                    else:
+                        await asyncio.sleep(60)
+            if i_rad >= 3:
+                logger.warning(f"⚠️ clock clips stopped ({provider}): three failed in a row")
+                return
+            if time.monotonic() - start > 0.5:  # a real render, not the disk
+                await asyncio.sleep(takt_s)
+        logger.info(f"🕐 clock clips ready ({provider}), missing: {saknas or 'none'}")
 
     def _markera_ha_verktyg(self, connection, schema) -> None:
         """A list Home Assistant returned is the truth, even when it is shorter.
