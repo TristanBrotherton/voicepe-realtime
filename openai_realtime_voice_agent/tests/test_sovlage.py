@@ -4,6 +4,8 @@ The cost: xAI bills per connected minute, and the agent reconnected a quiet
 session every 900 s, all night. Each test here fails on 0.25.6.
 """
 import asyncio
+import datetime as dt
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -632,3 +634,97 @@ async def test_sovloopen_bokfor_lopande(egen_budget):
     await asyncio.sleep(0.1)
     task.cancel()
     assert s.sover is False and 89 < egen_budget.anvant() < 92
+
+
+# --- the stand-in has its own ledger and cap (Henrik 2026-10-08) -------------------
+
+def _prov_och_riktig(tmp_path):
+    prov = Budget(path=str(tmp_path / "prov.json"), today=lambda: "2026-10-04", prov=True)
+    riktig = Budget(path=str(tmp_path / "riktig.json"), today=lambda: "2026-10-04")
+    return prov, riktig
+
+
+def test_attrappen_far_sin_egen_bok_och_riktiga_hogtalare_den_vanliga():
+    from app.providers.sovlage import BUDGET, BUDGET_PROV, budget_for
+
+    assert budget_for("attrapp") is BUDGET_PROV and budget_for("attrapp2") is BUDGET_PROV
+    assert budget_for("kontoret") is BUDGET and budget_for("koket") is BUDGET and budget_for("") is BUDGET
+    assert BUDGET_PROV.path != BUDGET.path and BUDGET_PROV.etikett == "prov"
+
+
+@pytest.mark.asyncio
+async def test_attrappens_minuter_rors_inte_henriks_tak(tmp_path):
+    prov, riktig = _prov_och_riktig(tmp_path)
+    attrapp, kontoret = Fake(), Fake()
+    attrapp.budget, kontoret.budget = prov, riktig
+    await attrapp.vakna()
+    await kontoret.vakna()
+    _oppen_sedan(attrapp, 59 * 60)
+    _oppen_sedan(kontoret, 5 * 60)
+    assert kontoret.over_budget() is False  # 59 test minutes OPEN do not count against him (5 + 59 > 60)
+    attrapp.bokfor_lopande()
+    await attrapp.sova("tyst")
+    assert prov.anvant() > 58 * 60 and riktig.anvant() == 0  # not a second of it in the owner's ledger
+    assert kontoret.over_budget() is False  # 50 test minutes open or booked do not count against him
+
+
+@pytest.mark.asyncio
+async def test_attrappen_har_sitt_eget_tak_och_det_stoppar_inte_kontoret(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PROV_PER_DAG", "10")
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "60")
+    prov, riktig = _prov_och_riktig(tmp_path)
+    prov.lagg_till(10 * 60)
+    attrapp, kontoret = Fake(), Fake()
+    attrapp.budget, kontoret.budget = prov, riktig
+    assert await attrapp.vakna() is False  # its own 10 minutes are used
+    assert await kontoret.vakna() is True  # the owner's 60 are untouched
+
+
+def test_taken_ar_olika_och_kan_stallas_in(monkeypatch):
+    from app.providers.sovlage import max_sekunder_per_dag
+
+    assert max_sekunder_per_dag() == 3600.0 and max_sekunder_per_dag(prov=True) == 1800.0
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PROV_PER_DAG", "5")
+    assert max_sekunder_per_dag(prov=True) == 300.0 and max_sekunder_per_dag() == 3600.0
+
+
+def test_attrapp_pipelinen_far_den_egna_boken():
+    """build_pipeline hands the stand-in's service the prov ledger (G: wiring, not just budget_for)."""
+    import inspect
+    from app.websocket_handler import WebSocketHandler
+
+    kalla = inspect.getsource(WebSocketHandler.build_pipeline)
+    assert "openai_service.budget = budget_for(client_id)" in kalla
+
+
+@pytest.mark.asyncio
+async def test_loggtaggen_far_minutkoll_att_para_upp_och_nerkoppling(tmp_path, caplog):
+    """G's review of PR #20: the tag lost its book name once id() had more than six hex
+    digits, so tools/minutkoll.py summed 0 against a real journal."""
+    import importlib.util
+    import pathlib
+    import re
+
+    spec = importlib.util.spec_from_file_location(
+        "minutkoll", pathlib.Path(__file__).parent.parent / "tools" / "minutkoll.py")
+    mk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mk)
+    caplog.set_level(logging.INFO)
+    prov = Budget(path=str(tmp_path / "p.json"), today=lambda: "2026-10-04", prov=True)
+    riktig = Budget(path=str(tmp_path / "r.json"), today=lambda: "2026-10-04")
+    a, b = Fake(), Fake()
+    a.budget, b.budget = prov, riktig
+    for s_ in (a, b):
+        await s_.vakna()
+        _oppen_sedan(s_, 60)
+        await s_.sova("tyst")
+    rader = [(dt.datetime(2026, 10, 4, 12, 0, 0) + dt.timedelta(seconds=60 * i), r.getMessage())
+             for i, r in enumerate(r for r in caplog.records if mk.TAGG.search(r.getMessage()))]
+    assert len(rader) == 4  # connect + close, for each of the two books
+    assert {mk.TAGG.search(t).group(1) for _, t in rader} == {"moln", "prov"}
+    # Paired connect/close = the 60 s between them; an unpaired connect would run to `slut` (3600 s+).
+    assert mk.summera(rader, dt.datetime(2026, 10, 4, 13), typ="prov") == 60
+    assert mk.summera(rader, dt.datetime(2026, 10, 4, 13), typ="moln") == 60
+    assert len(a._tagg()) == len(b._tagg()) == 11 and a._tagg().startswith("prov ")
+    # A fake id() with many hex digits (64-bit addresses) keeps the book name.
+    assert re.fullmatch(r"(moln|prov) [0-9a-f]{6}", b._tagg())

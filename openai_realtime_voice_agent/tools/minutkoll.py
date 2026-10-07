@@ -21,20 +21,24 @@ import re
 import subprocess
 import sys
 
-LEDGER = "/var/lib/raawr-rostagent/data/moln_minuter.json"
+LEDGERS = {"moln": "/var/lib/raawr-rostagent/data/moln_minuter.json",
+           "prov": "/var/lib/raawr-rostagent/data/moln_minuter_prov.json"}
 UNIT = "raawr-rostagent"
-TAGG = re.compile(r"\[moln (\w+)\]")
+TAGG = re.compile(r"\[(moln|prov) (\w+)\]")
 
 
-def summera(rader, slut: dt.datetime, fran: dt.datetime | None = None) -> float:
-    """Connected seconds in (timestamp, text) lines, in time order."""
+def summera(rader, slut: dt.datetime, fran: dt.datetime | None = None, typ: str = "moln") -> float:
+    """Connected seconds of one ledger kind ("moln" real speakers, "prov" the
+    stand-in) in (timestamp, text) lines, in time order."""
     oppna, total = {}, 0.0
     for ts, text in rader:
         m = TAGG.search(text)
+        if m and m.group(1) != typ:
+            continue
         if m and "connected to the cloud engine" in text:
-            oppna[m.group(1)] = ts
+            oppna[m.group(2)] = ts
         elif m and "cloud session closed" in text:
-            start = oppna.pop(m.group(1), None)
+            start = oppna.pop(m.group(2), None)
             if start is None and fran is not None:
                 # Open before the span began: count only its part inside it.
                 efter = re.search(r"after (\d+)s", text)
@@ -77,12 +81,13 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--fran", help="start, UTC 'YYYY-MM-DD HH:MM:SS' (default: midnight today)")
     p.add_argument("--start-varde", type=float, default=0.0, help="the ledger's seconds at --fran")
-    p.add_argument("--ledger", default=LEDGER)
+    p.add_argument("--typ", choices=("moln", "prov"), default="moln", help="real speakers or the stand-in")
+    p.add_argument("--ledger", help="default: the typ's ledger")
     a = p.parse_args()
     nu = dt.datetime.utcnow()
     fran = dt.datetime.fromisoformat(a.fran) if a.fran else nu.replace(hour=0, minute=0, second=0, microsecond=0)
-    journalen = summera(journal(fran, nu), nu, fran)
-    ledgern = ledger_varde(a.ledger, fran.date().isoformat()) - a.start_varde
+    journalen = summera(journal(fran, nu), nu, fran, a.typ)
+    ledgern = ledger_varde(a.ledger or LEDGERS[a.typ], fran.date().isoformat()) - a.start_varde
     skillnad = ledgern - journalen
     print(f"journalen {journalen / 60:.2f} min, minutfilen {ledgern / 60:.2f} min, skillnad {skillnad / 60:+.2f} min")
     return 0 if abs(skillnad) <= 60 else 1

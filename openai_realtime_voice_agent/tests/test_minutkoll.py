@@ -36,3 +36,14 @@ def test_session_som_var_oppen_nar_spannet_borjade_raknas_fran_starten():
     """23:55-00:05: run from midnight, only the 5 min after it count."""
     rader = [(_t(300), "🧾 cloud session closed after 600s [moln fff666]")]
     assert minutkoll.summera(rader, _t(400), fran=_t(0)) == 300
+
+
+def test_attrappens_sessioner_raknas_inte_i_riktiga_hogtalares_summa():
+    rader = [
+        (_t(0), "☁️ connected to the cloud engine on wake (0.6s) [moln aaa111]"),
+        (_t(5), "☁️ connected to the cloud engine on wake (0.6s) [prov bbb222]"),
+        (_t(65), "🧾 cloud session closed after 60s [prov bbb222]"),
+        (_t(100), "🧾 cloud session closed after 100s [moln aaa111]"),
+    ]
+    assert minutkoll.summera(rader, _t(200), typ="moln") == 100
+    assert minutkoll.summera(rader, _t(200), typ="prov") == 60

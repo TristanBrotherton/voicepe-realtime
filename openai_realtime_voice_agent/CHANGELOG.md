@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.11 (fork)
+
+- **Attrappens molnminuter har en egen bok och ett eget tak (Henrik 2026-10-08).**
+  Provens falska högtalare (`device_id` som börjar på `attrapp`) räknas i
+  `moln_minuter_prov.json` mot `MOLN_MAX_MINUTER_PROV_PER_DAG` (30 min), och inte
+  mot Henriks dygnstak på 60 min. Förra kvällen åt mina prov upp 58 av hans 60
+  minuter. Öppna provsessioner räknas inte heller in i hans tak. En riktig högtalare
+  kan inte kalla sig `attrapp`: comms stämplar `device_id` från rummet, och agenten
+  lyssnar bara på loopback. `tools/minutkoll.py --typ prov` jämför provboken med
+  journalens `[prov ...]`-rader.
+
 ## 0.27.10 (fork)
 
 - **En tillståndsmaskin per session (raawr US-032 AC-9).** `app/session_state.py`

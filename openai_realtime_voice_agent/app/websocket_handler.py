@@ -1310,6 +1310,8 @@ class WebSocketHandler:
 
         # An engine that closes itself (xAI, 900 s idle) sleeps through the machine too.
         openai_service._maskin = maskin
+        from app.providers.sovlage import budget_for
+        openai_service.budget = budget_for(client_id)  # the stand-in has its own cap
         connection.recovery = ConnectionRecovery(
             openai_service=openai_service, emit_idle=send_phase, maskin=maskin,
             phase_emitter=connection.phase_emitter,

@@ -56,11 +56,14 @@ def max_sekunder_per_samtal() -> float:
         return 600.0
 
 
-def max_sekunder_per_dag() -> float:
+def max_sekunder_per_dag(prov: bool = False) -> float:
+    """The owner's cap (60 min) for the real speakers; the test stand-ins have
+    their own (MOLN_MAX_MINUTER_PROV_PER_DAG, 30 min), US-032."""
+    namn, standard = ("MOLN_MAX_MINUTER_PROV_PER_DAG", 30.0) if prov else ("MOLN_MAX_MINUTER_PER_DAG", 60.0)
     try:
-        return max(0.0, float(os.environ.get("MOLN_MAX_MINUTER_PER_DAG", "60"))) * 60.0
+        return max(0.0, float(os.environ.get(namn, standard))) * 60.0
     except ValueError:
-        return 3600.0
+        return standard * 60.0
 
 
 KOPIA = ".kopia"
@@ -72,8 +75,12 @@ BOKFOR_VAR_S = 20.0
 class Budget:
     """Connected seconds per local day, on disk so a restart does not reset them."""
 
-    def __init__(self, path=None, today=None):
-        self.path = path or os.environ.get("MOLN_LEDGER", "/data/moln_minuter.json")
+    def __init__(self, path=None, today=None, prov: bool = False):
+        self.prov = prov  # a test stand-in's own ledger and cap (Henrik 2026-10-08)
+        self.etikett = "prov" if prov else "moln"
+        self.path = path or os.environ.get(
+            "MOLN_LEDGER_PROV" if prov else "MOLN_LEDGER",
+            "/data/moln_minuter_prov.json" if prov else "/data/moln_minuter.json")
         self._today = today or (lambda: datetime.date.today().isoformat())
         self._kand: float | None = None  # last good total; only valid on _kand_dag
         self._kand_dag: str | None = None
@@ -145,6 +152,9 @@ class Budget:
     def anvant(self) -> float:
         return float(self._read().get(self._today(), 0.0))
 
+    def tak_s(self) -> float:
+        return max_sekunder_per_dag(self.prov)
+
     def lagg_till(self, sekunder: float) -> None:
         if sekunder <= 0:
             return
@@ -161,6 +171,16 @@ class Budget:
 
 
 BUDGET = Budget()
+BUDGET_PROV = Budget(prov=True)
+PROV_PREFIX = "attrapp"
+
+
+def budget_for(device_id: str) -> "Budget":
+    """The ledger a speaker's cloud minutes count against. The stand-in
+    (tools/satellit_attrapp.py, device_id "attrapp...") has its own, so tests
+    never eat the owner's cap. A real speaker cannot claim the name: comms
+    stamps the device_id from the room, and the agent listens on loopback only."""
+    return BUDGET_PROV if (device_id or "").startswith(PROV_PREFIX) else BUDGET
 
 
 class SovlageMixin:
@@ -177,7 +197,8 @@ class SovlageMixin:
         return 0.0 if self._uppkopplad_sedan is None else time.monotonic() - self._uppkopplad_sedan
 
     def _tagg(self) -> str:
-        return f"{id(self):x}"[-6:]
+        """'moln 1a2b3c' or 'prov 1a2b3c': tools/minutkoll.py pairs the journal lines by it."""
+        return f"{self.budget.etikett} {id(self) & 0xFFFFFF:06x}"
 
     def _obokfort(self) -> float:
         if self._uppkopplad_sedan is None:
@@ -193,7 +214,7 @@ class SovlageMixin:
         sekunder, oppen = self._obokfort(), self.oppen_tid()
         if self._uppkopplad_sedan is not None:
             # Every close path passes here; tools/minutkoll.py pairs it with the connect.
-            logger.info(f"🧾 cloud session closed after {oppen:.0f}s [moln {self._tagg()}]")
+            logger.info(f"🧾 cloud session closed after {oppen:.0f}s [{self._tagg()}]")
         self._uppkopplad_sedan = None
         self._bokfort_till = None
         self._oppna.discard(self)
@@ -221,8 +242,8 @@ class SovlageMixin:
         return self.oppen_tid() >= max_sekunder_per_samtal()
 
     def over_budget(self) -> bool:
-        oppet = sum(m._obokfort() for m in list(self._oppna))
-        return self.budget.anvant() + oppet >= max_sekunder_per_dag()
+        oppet = sum(m._obokfort() for m in list(self._oppna) if m.budget is self.budget)
+        return self.budget.anvant() + oppet >= self.budget.tak_s()
 
     async def _connect(self, *args, **kwargs):  # type: ignore[override]
         if self.sover:
@@ -237,7 +258,7 @@ class SovlageMixin:
         if self.over_budget():
             logger.warning(
                 f"💸 cloud budget for today used ({self.budget.anvant() / 60:.0f} of "
-                f"{max_sekunder_per_dag() / 60:.0f} min) — not connecting"
+                f"{self.budget.tak_s() / 60:.0f} min) — not connecting"
             )
             return False
         self.sover = False
@@ -268,7 +289,7 @@ class SovlageMixin:
             logger.warning("☁️ cloud engine did not connect on wake — asleep, the next wake retries")
             return False
         self._vaknat_forut = True
-        logger.info(f"☁️ connected to the cloud engine on wake ({time.monotonic() - t0:.1f}s) [moln {self._tagg()}]")
+        logger.info(f"☁️ connected to the cloud engine on wake ({time.monotonic() - t0:.1f}s) [{self._tagg()}]")
         return True
 
     async def _ar_uppkopplad(self) -> bool:
