@@ -82,42 +82,40 @@ def _resolve_choice(env_var: str, custom_env_var: str, default: str) -> str:
     return choice or default
 
 
-def probe_engine(provider: str) -> bool:
+async def probe_engine(provider: str) -> bool:
     """Does this engine's API answer our key at all? One cheap GET, 2 s cap.
 
     Asked only when a switch to the backup is on the table. A 200 on the
     model list proves the key and the network, not that a realtime session
-    will hear -- the cheapest honest signal there is.
+    will hear -- the cheapest honest signal there is. Awaited: the same GET
+    used to block the event loop for the whole timeout, once per backup.
     """
-    import urllib.request
+    import httpx
 
     from app.providers import GEMINI, OPENAI, XAI
 
+    params = None
     if provider == XAI:
         key = (os.environ.get("XAI_API_KEY") or "").strip()
-        req = urllib.request.Request(
-            "https://api.x.ai/v1/models", headers={"Authorization": f"Bearer {key}"}
-        )
+        url = "https://api.x.ai/v1/models"
+        headers = {"Authorization": f"Bearer {key}"}
     elif provider == OPENAI:
         key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
-        )
+        url = "https://api.openai.com/v1/models"
+        headers = {"Authorization": f"Bearer {key}"}
     elif provider == GEMINI:
         key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-        req = urllib.request.Request(
-            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
-            headers={"x-goog-api-key": key},
-        )
+        url = "https://generativelanguage.googleapis.com/v1beta/models"
+        headers = {"x-goog-api-key": key}
+        params = {"pageSize": "1"}
     else:
         return False
     if not key:
         return False
-    # ponytail: blocking 2 s at most, once per switch decision while the
-    # primary is already failing; move to an async probe if that ever shows.
     try:
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            ok = resp.status == 200
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            ok = resp.status_code == 200
     except Exception as e:
         logger.warning(f"⚠️ {provider} probe failed: {type(e).__name__}")
         return False
@@ -254,9 +252,9 @@ class Application:
         self.male_only_tools: set[str] = set()
         # Bana 0 (raawr US-016): the local Wyoming STT, None = off.
         self.bana0_stt: Optional[tuple[str, int]] = None
-        # device_id -> monotonic time of the last HA-recovery recycle, so a
-        # flapping HA cannot bounce a device again and again (raawr D-72).
-        self._last_recycle: dict[str, float] = {}
+        # Most HA tools a fetch in this process has returned. A later fetch
+        # with fewer is incomplete and is tried again on the next wake.
+        self._bast_ha_verktyg = 0
         # Date, time, weather and the next events, at the end of the prompt.
         self.idag = Idag()
 
@@ -894,12 +892,14 @@ class Application:
                     mcp_tools_schema = await self._fetch_ha_tools_schema()
                     ha_tools = self._ha_tool_definitions(mcp_tools_schema)
                     all_tools.extend(ha_tools)
+                    self._markera_ha_verktyg(connection, mcp_tools_schema)
                     if self.mcp_tool_allowlist:
                         logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {len(ha_tools)} per allow-list")
                     else:
                         logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools")
                 except Exception as e:
                     mcp_tools_schema = None
+                    connection.ha_verktyg_saknas = True
                     logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
             
             from app.providers import GEMINI, build_service
@@ -1000,14 +1000,9 @@ class Application:
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:
                 await self._register_ha_handlers(service, mcp_tools_schema)
-            elif self.mcp_client:
-                # HA was down (restart) while this session was built. The
-                # connection can live for hours, so fetch again in the
-                # background rather than waiting for the device to reconnect
-                # (raawr D-70).
-                connection.ha_tools_task = asyncio.create_task(
-                    self._recover_ha_tools(connection, service)
-                )
+            # A failed or short list is fetched again on the next wake
+            # (hamta_verktyg_vid_vakning). The speaker stays connected: closing
+            # it woke the cloud on the new socket (granskning 2026-10-04, fynd 8).
             
             # Register service with session manager
             if client_id:
@@ -1199,72 +1194,74 @@ class Application:
                     logger.warning(f"⚠️ early ack clip not cached: {e!r}")
                     return
 
-    async def _recover_ha_tools(self, connection, service) -> None:
-        """Retry the HA tool fetch; once HA answers, recycle the connection.
-
-        Runs outside the pipeline lock, and each attempt keeps the fetch
-        timeout, so a turn never waits on HA. When HA is back the device's
-        socket is closed (normal close) as soon as the device is idle; the
-        firmware reconnects and create_service builds a fresh session with
-        the full tool list through the normal path. 0.21.1 pushed the tools
-        into the live OpenAI session instead (session.update), and live
-        2026-10-01 that left the session deaf until the device reconnected.
-
-        At most one recycle per device per MCP_RECYCLE_MIN_INTERVAL_SECONDS
-        (600): if HA flaps, keep fetching and recycle once the interval is
-        over. "Idle" includes announcements and the follow-up window
-        (_device_idle).
-
-        Cancelled by WebSocketHandler._teardown when the device disconnects.
-        """
-        retry_s = _env_seconds("MCP_TOOLS_RETRY_SECONDS", 15.0)
-        poll_s = _env_seconds("MCP_RECYCLE_POLL_SECONDS", 3.0)
-        follow_up_s = getattr(self.websocket_handler, "follow_up_ms", 0) / 1000.0
-        quiet_s = _env_seconds("MCP_RECYCLE_QUIET_SECONDS", 30.0) + follow_up_s
-        min_interval_s = _env_seconds("MCP_RECYCLE_MIN_INTERVAL_SECONDS", 600.0)
-        device_id = connection.device_id
-        held_back = False
-        try:
-            while True:
-                await asyncio.sleep(retry_s)
-                if connection.openai_service is not service:
-                    return
-                try:
-                    schema = await self._fetch_ha_tools_schema()
-                except Exception as e:
-                    logger.debug(f"HA tools still unavailable for {device_id}: {e}")
-                    continue
-                since = time.monotonic() - self._last_recycle.get(device_id, float("-inf"))
-                if since < min_interval_s:
-                    # HA is flapping: keep fetching, recycle once the interval is over.
-                    if not held_back:
-                        logger.warning(
-                            f"⚠️ HA back, but {device_id} was recycled {since:.0f} s ago — "
-                            f"holding off until {min_interval_s:.0f} s have passed"
-                        )
-                        held_back = True
-                    continue
-                break
-            exposed = len(self._ha_tool_definitions(schema))
-            while not _device_idle(connection, quiet_s):
-                await asyncio.sleep(poll_s)
-                if connection.openai_service is not service:
-                    return
+    def _markera_ha_verktyg(self, connection, schema) -> None:
+        """A list shorter than the best this process has seen is incomplete."""
+        antal = len(schema.standard_tools)
+        if antal < self._bast_ha_verktyg:
+            connection.ha_verktyg_saknas = True
             logger.info(
-                f"✅ HA back — recycling connection for {connection.device_id} "
-                f"to load {exposed} tools"
+                f"HA tools short for {connection.device_id}: {antal} < {self._bast_ha_verktyg}"
             )
-            # Off the connection before closing: the close leads to
-            # _teardown, which would otherwise cancel this very task.
-            connection.ha_tools_task = None
-            self._last_recycle[device_id] = time.monotonic()
-            try:
-                await connection.websocket.close(code=1000)
-            except Exception as e:
-                logger.warning(f"⚠️ could not recycle {connection.device_id}'s connection: {e!r}")
-        finally:
-            if connection.ha_tools_task is asyncio.current_task():
-                connection.ha_tools_task = None
+            return
+        self._bast_ha_verktyg = antal
+        connection.ha_verktyg_saknas = False
+
+    async def hamta_verktyg_vid_vakning(self, connection) -> None:
+        """Refetch HA tools on wake when the last fetch failed or was short.
+
+        The tools land on the service the wake is about to connect, so the
+        new cloud socket is born with them. The speaker is not closed, and
+        nothing is pushed into a live session (session.update left OpenAI
+        deaf, 2026-10-01). Sleep, the per-call cap and the daily budget are
+        untouched: this method does not connect or disconnect the engine.
+        """
+        if not getattr(connection, "ha_verktyg_saknas", False):
+            return
+        service = getattr(connection, "openai_service", None)
+        if service is None or not self.mcp_client:
+            return
+        try:
+            schema = await self._fetch_ha_tools_schema()
+        except Exception as e:
+            logger.debug(f"HA tools still unavailable for {connection.device_id}: {e}")
+            return
+        antal = len(schema.standard_tools)
+        if antal < self._bast_ha_verktyg:
+            logger.info(
+                f"HA tools still short for {connection.device_id}: {antal} < {self._bast_ha_verktyg}"
+            )
+            return
+        await self._ladda_ha_verktyg(service, schema)
+        self._bast_ha_verktyg = antal
+        connection.ha_verktyg_saknas = False
+        logger.info(f"✅ HA tools on wake for {connection.device_id}: {antal}")
+
+    async def _ladda_ha_verktyg(self, service, schema) -> None:
+        """Add HA's tools to the service object. The next connect sends them."""
+        from app.early_ack import with_ack_hint
+        from app.providers.gemini_live import to_gemini_tools
+
+        ha_tools = with_ack_hint(self._ha_tool_definitions(schema))
+        props = getattr(service, "_session_properties", None)
+        tools = getattr(props, "tools", None) if props is not None else None
+        if isinstance(tools, list):
+            have = {t.get("name") for t in tools if isinstance(t, dict)}
+            tools.extend(t for t in ha_tools if t.get("name") not in have)
+        gemini = getattr(service, "_tools_from_init", None)
+        if isinstance(gemini, list):
+            decls = to_gemini_tools(ha_tools)
+            slot = next(
+                (t for t in gemini if isinstance(t, dict) and "function_declarations" in t),
+                None,
+            )
+            if slot is None:
+                gemini.insert(0, {"function_declarations": decls})
+            else:
+                have = {d.get("name") for d in slot["function_declarations"]}
+                slot["function_declarations"].extend(
+                    d for d in decls if d.get("name") not in have
+                )
+        await self._register_ha_handlers(service, schema)
 
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
@@ -1361,6 +1358,7 @@ class Application:
         # to build one around: each device brings its own when it connects.
         self.websocket_handler.openai_service_factory = self.create_service
         self.websocket_handler.router = self.router
+        self.websocket_handler.hamta_verktyg = self.hamta_verktyg_vid_vakning
 
     async def run(self) -> None:
         """Run the application."""

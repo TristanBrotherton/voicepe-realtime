@@ -92,10 +92,11 @@ def test_the_wait_is_read_from_the_message_and_capped():
     assert retry_after_s("Please try again in 20s.") == 5.0
 
 
-def test_a_rate_limit_is_never_a_strike():
+@pytest.mark.asyncio
+async def test_a_rate_limit_is_never_a_strike():
     router = ProviderRouter("openai", "gemini")
     for _ in range(3):
-        assert router.report_failure("openai", _RATE_LIMIT) == "openai"
+        assert await router.report_failure("openai", _RATE_LIMIT) == "openai"
     assert not router._strikes.get("openai")
 
 
@@ -139,47 +140,52 @@ def _has_probe():
     return "probe" in inspect.signature(ProviderRouter.__init__).parameters
 
 
-def test_a_backup_nobody_has_seen_working_is_not_switched_to():
+@pytest.mark.asyncio
+async def test_a_backup_nobody_has_seen_working_is_not_switched_to():
     router = ProviderRouter("openai", "gemini", clock=FakeClock())
-    assert router.report_failure("openai", "insufficient_quota") == "openai"
+    assert await router.report_failure("openai", "insufficient_quota") == "openai"
 
 
-def test_a_backup_that_fails_its_probe_is_not_switched_to():
+@pytest.mark.asyncio
+async def test_a_backup_that_fails_its_probe_is_not_switched_to():
     assert _has_probe()
     router = ProviderRouter("openai", "gemini", clock=FakeClock(), probe=lambda p: False)
-    assert router.report_failure("openai", "insufficient_quota") == "openai"
+    assert await router.report_failure("openai", "insufficient_quota") == "openai"
 
 
-def test_a_backup_that_passes_its_probe_is_switched_to():
+@pytest.mark.asyncio
+async def test_a_backup_that_passes_its_probe_is_switched_to():
     assert _has_probe()
     asked = []
     router = ProviderRouter("openai", "gemini", clock=FakeClock(),
                             probe=lambda p: asked.append(p) or True)
-    assert router.report_failure("openai", "insufficient_quota") == "gemini"
+    assert await router.report_failure("openai", "insufficient_quota") == "gemini"
     assert asked == ["gemini"]
 
 
-def test_a_backup_that_answered_within_the_cooldown_needs_no_probe():
+@pytest.mark.asyncio
+async def test_a_backup_that_answered_within_the_cooldown_needs_no_probe():
     clock = FakeClock()
     router = ProviderRouter("openai", "gemini", clock=clock, probe=lambda p: False)
     router.note_success("gemini")
     clock.t += 600
-    assert router.report_failure("openai", "insufficient_quota") == "gemini"
+    assert await router.report_failure("openai", "insufficient_quota") == "gemini"
     # ... but not once that proof is older than the cooldown.
     router2 = ProviderRouter("openai", "gemini", clock=clock, probe=lambda p: False)
     router2.note_success("gemini")
     clock.t += router2.cooldown_s + 1
-    assert router2.report_failure("openai", "insufficient_quota") == "openai"
+    assert await router2.report_failure("openai", "insufficient_quota") == "openai"
 
 
-def test_the_add_on_wires_a_real_probe(monkeypatch):
+@pytest.mark.asyncio
+async def test_the_add_on_wires_a_real_probe(monkeypatch):
     import app.main as main
 
     monkeypatch.setenv("VOICE_PROVIDER", "openai")
     monkeypatch.setenv("VOICE_PROVIDER_BACKUP", "gemini")
     monkeypatch.setattr(main, "probe_engine", lambda p: p == "gemini")
     router = main.build_router()
-    assert router.report_failure("openai", "insufficient_quota") == "gemini"
+    assert await router.report_failure("openai", "insufficient_quota") == "gemini"
 
 
 @pytest.mark.asyncio

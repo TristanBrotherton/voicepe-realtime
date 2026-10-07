@@ -7,7 +7,8 @@ import pytest
 from app.provider_router import ProviderRouter
 
 
-def test_a_backup_of_none_means_no_failover(monkeypatch):
+@pytest.mark.asyncio
+async def test_a_backup_of_none_means_no_failover(monkeypatch):
     from app.main import build_router
     monkeypatch.setenv("VOICE_PROVIDER", "gemini")
     monkeypatch.setenv("VOICE_PROVIDER_BACKUP", "none")
@@ -15,7 +16,7 @@ def test_a_backup_of_none_means_no_failover(monkeypatch):
     r = build_router()
     assert r.primary == "gemini"
     assert r.backup is None
-    assert r.report_failure("gemini", "insufficient_quota") == "gemini"
+    assert await r.report_failure("gemini", "insufficient_quota") == "gemini"
 
 
 def test_the_cooldown_is_read_in_minutes(monkeypatch):

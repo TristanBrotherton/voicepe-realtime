@@ -11,6 +11,7 @@ wiring (main.py / websocket_handler.py) stays a few lines and the tests need
 no live HA, STT or model.
 """
 import asyncio
+import inspect
 import json
 import logging
 from typing import Awaitable, Callable, Optional
@@ -203,14 +204,18 @@ async def vakta_bekraftelse(
 
 
 async def natet_nere(probe: Callable[[str], bool], engines, timeout: float) -> bool:
-    """True when NO engine's API answers within `timeout` (sync `probe`, in threads).
+    """True when NO engine's API answers within `timeout`.
 
-    Every engine, not just the one running: an xAI-only outage is a failover
-    for the router, not "no internet" for the room. A probe that hangs or
-    raises counts as down for that engine.
+    An async probe is awaited on this loop. A sync probe still runs in a
+    thread, so a blocking GET cannot freeze the loop. Every engine, not just
+    the one running: an xAI-only outage is a failover for the router, not
+    "no internet" for the room. A probe that hangs or raises counts as down
+    for that engine.
     """
     async def one(engine) -> bool:
         try:
+            if inspect.iscoroutinefunction(probe):
+                return bool(await asyncio.wait_for(probe(engine), timeout))
             return bool(await asyncio.wait_for(asyncio.to_thread(probe, engine), timeout))
         except Exception:
             return False

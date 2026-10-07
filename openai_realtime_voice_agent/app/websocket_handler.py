@@ -495,7 +495,7 @@ class ConnectionRecovery(FrameProcessor):
         """
         if self._router is None:
             return False
-        after = self._router.report_failure(self._provider, message)
+        after = await self._router.report_failure(self._provider, message)
         if after == self._provider:
             return False
         logger.warning(f"🔀 failing over {self._provider} → {after}")
@@ -1165,6 +1165,10 @@ class WebSocketHandler:
         # per-device tools (e.g. disconnect_client) can bind to that device's
         # transport rather than to a process-wide one.
         self.openai_service_factory: Optional[Callable[[DeviceConnection], Awaitable[Any]]] = None
+        # Application.hamta_verktyg_vid_vakning. Called on the device wake,
+        # before the cloud engine connects. None in tests that build a handler
+        # by hand.
+        self.hamta_verktyg = None
         # Set by main.py, alongside openai_service_factory, to the same
         # ProviderRouter the application holds. Used to pick the engine for a
         # brand-new connection's transport (before a session exists to ask),
@@ -1184,7 +1188,7 @@ class WebSocketHandler:
         # announcer `say(text, device_id)` that speaks HA's confirmation.
         self.bana0_stt: Optional[tuple[str, int]] = None
         self.bana0_timeouts: tuple[float, float] = (0.6, 4.0)
-        # "Does this engine's API answer at all?" (main.probe_engine), sync.
+        # "Does this engine's API answer at all?" (main.probe_engine). Async.
         # Set by main; None = no offline line (US-018).
         self.engine_probe: Optional[Callable[[str], bool]] = None
         self._offline_tasks: set = set()
@@ -1572,9 +1576,15 @@ class WebSocketHandler:
                 logger.debug(f"🧽 mic-flush input drop no-op ({e!r})")
 
         async def _on_device_wake():
-            # Connect the cloud engine first, awaited: the serializer holds the
-            # mic audio after the wake until this returns, so nothing is lost
+            # Tools first, then the cloud. A fetch that failed or came back
+            # short is tried again here, on the service the wake is about to
+            # connect. The serializer holds the mic audio until this returns
             # (providers/sovlage.py, raawr INKAST 2026-10-04).
+            if self.hamta_verktyg is not None:
+                try:
+                    await self.hamta_verktyg(connection)
+                except Exception as e:
+                    logger.warning(f"⚠️ HA tools on wake failed: {e!r}")
             await connection.recovery.vakna()
             asyncio.create_task(
                 self._wedge_check(connection, phase_emitter, time.monotonic())
@@ -2153,9 +2163,9 @@ class WebSocketHandler:
             await phase_emitter.close()
         service = connection.openai_service
         if service is not None:
-            # sova() is not the only close: HA recycle (socket 1000), a
-            # displacing reconnect and cleanup all land here. bokfor() clears
-            # the clock, so a session that already slept is not counted twice.
+            # sova() is not the only close: a displacing reconnect and cleanup
+            # land here too. bokfor() clears the clock, so a session that
+            # already slept is not counted twice.
             bokfor = getattr(service, "bokfor", None)
             if bokfor is not None:
                 try:

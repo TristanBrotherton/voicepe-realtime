@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.4 (fork)
+
+- **Home Assistant tillbaka: verktygen hämtas vid nästa väckning.** Förut
+  stängdes högtalarens anslutning när HA kom tillbaka, och den nya anslutningen
+  väckte molnet. Nu hämtas en misslyckad eller kort verktygslista om vid nästa
+  väckning, innan molnmotorn kopplas upp. Högtalaren stannar uppkopplad.
+- **Provet av reservmotorn fryser inte längre agenten.** Det gjorde ett
+  blockerande anrop i upp till 2 s. Nu väntar det utan att stoppa allt annat.
+
 ## 0.27.3 (fork)
 
 - **Dagssumman bär sitt datum.** När filen med dagens molnminuter saknades eller

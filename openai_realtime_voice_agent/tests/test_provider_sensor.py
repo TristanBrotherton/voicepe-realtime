@@ -61,7 +61,7 @@ async def test_the_sensor_says_which_engine_and_why(monkeypatch):
 
     clock = FakeClock()
     router = ProviderRouter("gemini", "openai", probe=_healthy, cooldown_s=1800.0, clock=clock)
-    router.report_failure("gemini", "insufficient_quota")
+    await router.report_failure("gemini", "insufficient_quota")
     await ha_sensors.SensorPublisher().provider(router.status())
 
     assert len(posts) == 1
@@ -124,7 +124,7 @@ async def test_a_real_switch_is_never_swallowed_by_the_dedup(monkeypatch):
     publisher = ha_sensors.SensorPublisher()
 
     await publisher.provider(router.status())  # healthy: gemini
-    router.report_failure("gemini", "insufficient_quota")
+    await router.report_failure("gemini", "insufficient_quota")
     await publisher.provider(router.status())  # switched: openai
 
     assert len(posts) == 2
@@ -150,7 +150,7 @@ async def test_a_switch_lost_to_an_unreachable_supervisor_is_published_next_time
 
     clock = FakeClock()
     router = ProviderRouter("gemini", "openai", probe=_healthy, cooldown_s=1800.0, clock=clock)
-    router.report_failure("gemini", "insufficient_quota")
+    await router.report_failure("gemini", "insufficient_quota")
     publisher = ha_sensors.SensorPublisher()
 
     await publisher.provider(router.status())  # HA is down: attempted, lost

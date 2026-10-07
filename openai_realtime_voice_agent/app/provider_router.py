@@ -4,6 +4,7 @@ Deliberately free of network, pipecat and Home Assistant, so the awkward parts
 -- the cooldown, the second chance, both engines down at once -- can be tested
 in milliseconds instead of by emptying an account.
 """
+import inspect
 import logging
 import time
 from typing import Callable, Dict, Optional, Sequence
@@ -40,7 +41,8 @@ class ProviderRouter:
             probe: Cheap "does this engine answer at all?" check, asked only
                 when a switch to the backup is on the table and the backup has
                 not proved itself within the cooldown. None means no probe, so
-                an unproven backup is never switched to.
+                an unproven backup is never switched to. An async probe is
+                awaited, so a slow answer does not freeze the event loop.
             extra: Further engines after the backup, in order (0.26.2,
                 VOICE_PROVIDERS=gemini,xai,openai). A failing engine hands
                 over to the first one after it that is known healthy.
@@ -78,7 +80,7 @@ class ProviderRouter:
             self._strikes.pop(self.primary, None)
         return self._active
 
-    def report_failure(self, provider: str, message: str) -> str:
+    async def report_failure(self, provider: str, message: str) -> str:
         """Record one failure and say which engine is in charge afterwards.
 
         Args:
@@ -112,14 +114,14 @@ class ProviderRouter:
                 )
                 return active
 
-        return self._switch(failure, message)
+        return await self._switch(failure, message)
 
     def note_success(self, provider: str) -> None:
         """A turn completed on this engine, so forget its earlier hiccups."""
         self._strikes.pop(provider, None)
         self._healthy_at[provider] = self._clock()
 
-    def _known_healthy(self, provider: str) -> bool:
+    async def _known_healthy(self, provider: str) -> bool:
         """Proved itself within the cooldown, or passes the probe now."""
         seen = self._healthy_at.get(provider)
         if seen is not None and self._clock() - seen < self.cooldown_s:
@@ -127,6 +129,8 @@ class ProviderRouter:
         if self._probe is None:
             return False
         try:
+            if inspect.iscoroutinefunction(self._probe):
+                return bool(await self._probe(provider))
             return bool(self._probe(provider))
         except Exception as e:
             logger.warning(f"⚠️ probe of {provider} raised: {e!r}")
@@ -148,14 +152,18 @@ class ProviderRouter:
             "retry_primary_in_s": round(remaining, 1),
         }
 
-    def _switch(self, failure: Failure, message: str) -> str:
+    async def _switch(self, failure: Failure, message: str) -> str:
         # Down the chain from the engine that failed: the first one known
         # healthy takes over. 2026-10-02: the house was moved to a backup that
         # could not hear and sat deaf for 30 min, so an unproven engine is
         # skipped. Nothing healthy after it: back to the primary, which needs
         # no proof (a primary that hiccups beats an engine nobody has seen work).
         later = self.chain[self.chain.index(self._active) + 1:] if self._active in self.chain else []
-        other = next((e for e in later if self._known_healthy(e)), None)
+        other = None
+        for engine in later:
+            if await self._known_healthy(engine):
+                other = engine
+                break
         if other is None and self._active != self.primary:
             other = self.primary
         if other is None:
