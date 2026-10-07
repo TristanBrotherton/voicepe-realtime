@@ -2,6 +2,22 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.8 (fork)
+
+- **Dygnstaket tappar högst en minut, också vid kill -9 (raawr US-032 AC-4).**
+  En öppen session bokfördes först när den slutade, så en agent som dödades
+  tappade hela samtalet ur minutfilen. Sov-loopen bokför nu den öppna tiden var
+  20:e sekund: två högtalare x (20 s + loopens 5 s) = högst 50 s förlorat vid
+  kill -9. Taket räknar bara det som inte redan är bokfört, och maxtiden per
+  samtal räknas fortfarande från uppkopplingen.
+- **En trasig, tom eller borttagen minutfil ger aldrig ett lägre dagsvärde.**
+  Filen skrivs två gånger, atomiskt, till `moln_minuter.json` och `.kopia`, och
+  läses som det högsta av de två.
+- **`tools/minutkoll.py` jämför minutfilen med journalen.** Varje uppkoppling och
+  stängning loggas med `[moln <tagg>]`. Skriptet parar dem, låter en session som
+  processen dog med sluta vid systemd:s rad och ger exit 1 vid mer än 1 minuts
+  skillnad.
+
 ## 0.27.7 (fork)
 
 - **Klockan svarar utan moln (raawr US-032 AC-7).** "Vad är klockan", "hur

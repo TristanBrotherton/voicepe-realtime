@@ -511,3 +511,124 @@ async def test_en_handskakning_som_inte_hann_klart_rivs_vid_vakningens_slut(hand
     await asyncio.sleep(0.05)
     assert service._connection_task is None
     assert service._session is None and service.sover is True
+
+
+# --- US-032 AC-4: the ledger counts every connected minute ---
+
+def _oppen_sedan(s, sekunder):
+    """Pretend the session connected `sekunder` ago (and nothing is booked yet)."""
+    s._uppkopplad_sedan = time.monotonic() - sekunder
+
+
+@pytest.mark.asyncio
+async def test_oppen_session_bokfors_varje_minut_och_aldrig_dubbelt(egen_budget):
+    s = Fake()
+    await s.vakna()
+    _oppen_sedan(s, 150)
+    s.bokfor_lopande()
+    assert 149 < egen_budget.anvant() < 152
+    s.bokfor_lopande()  # under a minute since: nothing
+    assert egen_budget.anvant() < 152
+    s._bokfort_till -= 20  # 20 s more, then the session ends
+    await s.sova("tyst")
+    assert 169 < egen_budget.anvant() < 172  # 150 + 20, once
+    assert s.over_maxtid() is False
+
+
+@pytest.mark.asyncio
+async def test_lopande_bokforing_rubbar_inte_maxtiden(monkeypatch):
+    monkeypatch.setenv("VOICE_SESSION_MAX_SECONDS", "600")
+    s = Fake()
+    await s.vakna()
+    _oppen_sedan(s, 601)
+    s.bokfor_lopande()
+    assert s.over_maxtid() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fas", [0.0, 2.5, 4.99])
+async def test_kill_9_med_bada_hogtalarna_tappar_hogst_en_minut(egen_budget, monkeypatch, fas):
+    """Both speakers open, the sleep loop's 5 s tick, kill -9 at the worst moment
+    (just before a booking): the ledger in a new process lacks at most 60 s of
+    what the journal shows (G's review of PR #17: 120 s with a 60 s step)."""
+    import app.providers.sovlage as sovlage
+
+    nu = [1000.0]
+    monkeypatch.setattr(sovlage.time, "monotonic", lambda: nu[0])
+    kontoret, koket = Fake(), Fake()
+    await kontoret.vakna()
+    nu[0] += fas
+    await koket.vakna()
+    start = {kontoret: 1000.0, koket: 1000.0 + fas}
+    varst = 0.0
+    for _ in range(int(300 / 0.01)):  # 300 s in 10 ms steps, a tick every 5 s
+        nu[0] = round(nu[0] + 0.01, 2)
+        if round(nu[0] * 100) % 500 == 0:
+            for s in (kontoret, koket):
+                s.bokfor_lopande()
+        if round(nu[0] * 100) % 500 == 499:  # kill -9 now, just before a tick:
+            journalen = sum(nu[0] - t for t in start.values())  # both full sessions
+            varst = max(varst, journalen - egen_budget.anvant())  # vs what is booked
+    ny_process = Budget(path=egen_budget.path, today=lambda: "2026-10-04")
+    assert ny_process.anvant() == egen_budget.anvant()
+    assert varst <= 60.0
+
+
+@pytest.mark.asyncio
+async def test_bokford_tid_raknas_inte_tva_ganger_mot_taket(egen_budget, monkeypatch):
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "60")
+    s = Fake()
+    await s.vakna()
+    _oppen_sedan(s, 40 * 60)
+    s.bokfor_lopande()  # 40 min in the ledger, still open
+    assert s.over_budget() is False  # 40, not 40 + 40
+
+
+@pytest.mark.asyncio
+async def test_tva_hogtalare_35_och_30_min_nekar_nasta_vakning(egen_budget, monkeypatch):
+    monkeypatch.setenv("MOLN_MAX_MINUTER_PER_DAG", "60")
+    kontoret, koket = Fake(), Fake()
+    await kontoret.vakna()
+    await koket.vakna()
+    _oppen_sedan(kontoret, 35 * 60)
+    _oppen_sedan(koket, 30 * 60)
+    kontoret.bokfor_lopande()
+    assert koket.over_budget() is True  # same cap: 35 booked + 30 open
+    await kontoret.sova("tyst")
+    await koket.sova("tyst")
+    assert await Fake().vakna() is False
+
+
+def test_dodad_mellan_de_tva_skrivningarna_ger_det_nya_vardet(tmp_path):
+    """kill -9 after the ledger was replaced but before its copy: the higher wins."""
+    path = tmp_path / "m.json"
+    Budget(path=str(path), today=lambda: "2026-10-04").lagg_till(1234)
+    path.write_text('{"2026-10-04": 1300.0}')  # the new value; the copy still says 1234
+    assert Budget(path=str(path), today=lambda: "2026-10-04").anvant() == 1300.0
+
+
+@pytest.mark.parametrize("fel", ["trasig", "tom", "borta"])
+def test_trasig_minutfil_i_ny_process_ger_aldrig_lagre_varde(tmp_path, fel):
+    path = tmp_path / "m.json"
+    Budget(path=str(path), today=lambda: "2026-10-04").lagg_till(1234)
+    if fel == "trasig":
+        path.write_text('{"2026-10-04": 12')
+    elif fel == "tom":
+        path.write_text("")
+    else:
+        path.unlink()
+    assert Budget(path=str(path), today=lambda: "2026-10-04").anvant() >= 1234
+
+
+@pytest.mark.asyncio
+async def test_sovloopen_bokfor_lopande(egen_budget):
+    s = Fake()
+    await s.vakna()
+    _oppen_sedan(s, 90)
+    r = _recovery(s)
+    r.SOV_CHECK_S = 0.01
+    r._last_input_audio = r._last_wake = time.monotonic()  # mid-conversation
+    task = asyncio.create_task(r._sov_loop())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    assert s.sover is False and 89 < egen_budget.anvant() < 92

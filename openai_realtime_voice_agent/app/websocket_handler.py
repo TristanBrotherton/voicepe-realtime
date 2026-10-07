@@ -824,6 +824,9 @@ class ConnectionRecovery(FrameProcessor):
                     return
                 if getattr(self._service, "sover", True):
                     continue
+                lopande = getattr(self._service, "bokfor_lopande", None)
+                if lopande is not None:
+                    lopande()
                 from app.providers.sovlage import sov_efter_s
                 if self._service.over_budget():
                     logger.warning("💸 cloud budget for today used — disconnecting now")

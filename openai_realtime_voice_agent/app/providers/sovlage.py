@@ -63,6 +63,12 @@ def max_sekunder_per_dag() -> float:
         return 3600.0
 
 
+KOPIA = ".kopia"
+# AC-4 allows 1 min between ledger and journal for the whole house: two
+# speakers x (20 s + the 5 s tick) = 50 s lost at most on a kill -9.
+BOKFOR_VAR_S = 20.0
+
+
 class Budget:
     """Connected seconds per local day, on disk so a restart does not reset them."""
 
@@ -78,32 +84,48 @@ class Budget:
             return {}
         return {self._today(): self._kand}
 
+    @staticmethod
+    def _las_fil(path: str) -> dict:
+        with open(path) as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"not an object: {type(data).__name__}")
+        return data
+
     def _read(self) -> dict:
-        try:
-            with open(self.path) as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError(f"not an object: {type(data).__name__}")
-            day = self._today()
-            self._kand = float(data.get(day, 0.0))
-            self._kand_dag = day
-            return data
-        except FileNotFoundError:
-            kvar = self._kvar()
-            if not kvar:
-                return {}
-            logger.error("❌ cloud budget file is missing, keeping last known value")
+        """Today's total: the higher of the ledger and its copy (US-032 AC-4).
+
+        Each is replaced atomically, one after the other, so a torn, empty or
+        missing ledger in a new process still has the copy's value.
+        """
+        day, varden, fel = self._today(), [], None
+        for path in (self.path, self.path + KOPIA):
+            try:
+                varden.append(float(self._las_fil(path).get(day, 0.0)))
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as e:
+                fel = e
+        if varden:
+            if fel is not None:
+                logger.error(f"❌ cloud budget file is unreadable, using the copy: {fel!r}")
+            self._kand, self._kand_dag = max(varden), day
+            return {day: self._kand}
+        kvar = self._kvar()
+        if kvar:
+            logger.error(f"❌ cloud budget file is unreadable or missing, keeping last known value: {fel!r}")
             return kvar
-        except (OSError, ValueError) as e:
-            kvar = self._kvar()
-            if kvar:
-                logger.error(f"❌ cloud budget file is unreadable, keeping last known value: {e!r}")
-                return kvar
-            logger.error(f"❌ cloud budget file is unreadable: {e!r}")
-            return {}
+        if fel is not None:
+            logger.error(f"❌ cloud budget file is unreadable: {fel!r}")
+        return {}
 
     def _skriv(self, data: dict) -> None:
-        directory = os.path.dirname(self.path) or "."
+        for path in (self.path, self.path + KOPIA):
+            self._skriv_en(path, data)
+
+    @staticmethod
+    def _skriv_en(path: str, data: dict) -> None:
+        directory = os.path.dirname(path) or "."
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".moln-", dir=directory)
         try:
@@ -111,7 +133,7 @@ class Budget:
                 json.dump(data, f)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp, self.path)
+            os.replace(tmp, path)
             tmp = ""
         finally:
             if tmp:
@@ -147,28 +169,51 @@ class SovlageMixin:
     sover = False
     _vaknat_forut = False
     _uppkopplad_sedan = None
+    _bokfort_till = None  # the open time up to here is already in the ledger
     budget = BUDGET
     _oppna: weakref.WeakSet = weakref.WeakSet()
 
     def oppen_tid(self) -> float:
         return 0.0 if self._uppkopplad_sedan is None else time.monotonic() - self._uppkopplad_sedan
 
+    def _tagg(self) -> str:
+        return f"{id(self):x}"[-6:]
+
+    def _obokfort(self) -> float:
+        if self._uppkopplad_sedan is None:
+            return 0.0
+        return time.monotonic() - max(self._uppkopplad_sedan, self._bokfort_till or 0.0)
+
     def bokfor(self) -> None:
-        """Add this session's open seconds to the ledger, once.
+        """Add this session's open seconds not yet in the ledger, once.
 
         Clearing the clock first makes a second call, from sova() after
         teardown or the other way around, add nothing.
         """
-        sekunder = self.oppen_tid()
+        sekunder, oppen = self._obokfort(), self.oppen_tid()
+        if self._uppkopplad_sedan is not None:
+            # Every close path passes here; tools/minutkoll.py pairs it with the connect.
+            logger.info(f"🧾 cloud session closed after {oppen:.0f}s [moln {self._tagg()}]")
         self._uppkopplad_sedan = None
+        self._bokfort_till = None
         self._oppna.discard(self)
+        self.budget.lagg_till(sekunder)
+
+    def bokfor_lopande(self, var_s: float = BOKFOR_VAR_S) -> None:
+        """Book an open session every `var_s`, so a kill -9 loses at most
+        `var_s` + one sleep-loop tick of it (US-032 AC-4). The session clock,
+        and so the cap, is untouched."""
+        sekunder = self._obokfort()
+        if sekunder < var_s:
+            return
+        self._bokfort_till = time.monotonic()
         self.budget.lagg_till(sekunder)
 
     def over_maxtid(self) -> bool:
         return self.oppen_tid() >= max_sekunder_per_samtal()
 
     def over_budget(self) -> bool:
-        oppet = sum(m.oppen_tid() for m in list(self._oppna))
+        oppet = sum(m._obokfort() for m in list(self._oppna))
         return self.budget.anvant() + oppet >= max_sekunder_per_dag()
 
     async def _connect(self, *args, **kwargs):  # type: ignore[override]
@@ -189,6 +234,7 @@ class SovlageMixin:
             return False
         self.sover = False
         self._uppkopplad_sedan = time.monotonic()
+        self._bokfort_till = None
         self._oppna.add(self)
         t0 = time.monotonic()
         try:
@@ -214,7 +260,7 @@ class SovlageMixin:
             logger.warning("☁️ cloud engine did not connect on wake — asleep, the next wake retries")
             return False
         self._vaknat_forut = True
-        logger.info(f"☁️ connected to the cloud engine on wake ({time.monotonic() - t0:.1f}s)")
+        logger.info(f"☁️ connected to the cloud engine on wake ({time.monotonic() - t0:.1f}s) [moln {self._tagg()}]")
         return True
 
     async def _ar_uppkopplad(self) -> bool:
