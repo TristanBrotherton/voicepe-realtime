@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.5 (fork)
+
+- **Hämtningen av HA-verktyg vid väckning har ett eget tak på 1 s**
+  (`MCP_TOOLS_WAKE_TIMEOUT_SECONDS`). En hängande HA höll förut molnuppkopplingen
+  i upp till 5 s.
+- **En lista som HA svarar med är sanningen, även när den är kortare.** En
+  borttagen integration hämtas inte längre om vid varje väckning. Bara en
+  misslyckad hämtning prövas igen.
+
 ## 0.27.4 (fork)
 
 - **Home Assistant tillbaka: verktygen hämtas vid nästa väckning.** Förut

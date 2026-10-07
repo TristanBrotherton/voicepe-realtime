@@ -1576,10 +1576,11 @@ class WebSocketHandler:
                 logger.debug(f"🧽 mic-flush input drop no-op ({e!r})")
 
         async def _on_device_wake():
-            # Tools first, then the cloud. A fetch that failed or came back
-            # short is tried again here, on the service the wake is about to
-            # connect. The serializer holds the mic audio until this returns
-            # (providers/sovlage.py, raawr INKAST 2026-10-04).
+            # Tools first, then the cloud. A fetch that failed is tried again
+            # here, on the service the wake is about to connect, under
+            # MCP_TOOLS_WAKE_TIMEOUT_SECONDS (default 1 s). The serializer
+            # holds the mic audio until this returns (providers/sovlage.py,
+            # raawr INKAST 2026-10-04).
             if self.hamta_verktyg is not None:
                 try:
                     await self.hamta_verktyg(connection)

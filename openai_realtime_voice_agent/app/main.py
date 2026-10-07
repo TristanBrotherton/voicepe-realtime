@@ -1000,9 +1000,10 @@ class Application:
             # Register MCP tool handlers if available
             if self.mcp_client and mcp_tools_schema:
                 await self._register_ha_handlers(service, mcp_tools_schema)
-            # A failed or short list is fetched again on the next wake
-            # (hamta_verktyg_vid_vakning). The speaker stays connected: closing
-            # it woke the cloud on the new socket (granskning 2026-10-04, fynd 8).
+            # A failed fetch is tried again on the next wake
+            # (hamta_verktyg_vid_vakning). A list HA returned is kept, even
+            # when it is shorter. The speaker stays connected: closing it
+            # woke the cloud on the new socket (granskning 2026-10-04, fynd 8).
             
             # Register service with session manager
             if client_id:
@@ -1013,27 +1014,31 @@ class Application:
             logger.info("✅ New session created")
             return service
 
-    async def _fetch_ha_tools_schema(self):
+    async def _fetch_ha_tools_schema(self, timeout: Optional[float] = None):
         """Fetch HA's MCP tool schema, bounded.
 
         pipecat's MCP client lets one read hang for up to 300 s. A Home
         Assistant mid-restart held the pipeline lock and kept every new
         session out for 35 min (2026-09-30), so give up after
-        MCP_TOOLS_TIMEOUT_SECONDS and let the caller go on without HA tools.
+        MCP_TOOLS_TIMEOUT_SECONDS (default 5) and let the caller go on
+        without HA tools.
+
+        The wake refetch passes its own shorter ceiling
+        (MCP_TOOLS_WAKE_TIMEOUT_SECONDS, default 1). It runs before the
+        cloud connects, so a hung HA must not hold that for the long
+        connect timeout.
 
         Returns:
             The ToolsSchema. Raises on any failure, TimeoutError included.
         """
-        try:
-            mcp_timeout = float(os.environ.get("MCP_TOOLS_TIMEOUT_SECONDS", "5"))
-        except ValueError:
-            mcp_timeout = 5.0
+        if timeout is None:
+            timeout = _env_seconds("MCP_TOOLS_TIMEOUT_SECONDS", 5.0)
         try:
             return await asyncio.wait_for(
-                self.mcp_client.get_tools_schema(), timeout=mcp_timeout
+                self.mcp_client.get_tools_schema(), timeout=timeout
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"no answer from Home Assistant in {mcp_timeout:g} s")
+            raise TimeoutError(f"no answer from Home Assistant in {timeout:g} s")
 
     def _ha_tool_definitions(self, mcp_tools_schema) -> list:
         """The HA tools the model gets to see, in OpenAI Realtime shape.
@@ -1195,25 +1200,34 @@ class Application:
                     return
 
     def _markera_ha_verktyg(self, connection, schema) -> None:
-        """A list shorter than the best this process has seen is incomplete."""
+        """A list Home Assistant returned is the truth, even when it is shorter.
+
+        The mark used to only rise. A removed integration then looked
+        incomplete forever, and every wake fetched the list again. A failed
+        fetch does not come through here: the caller leaves the mark and
+        sets ha_verktyg_saknas so the next wake tries again.
+        """
         antal = len(schema.standard_tools)
         if antal < self._bast_ha_verktyg:
-            connection.ha_verktyg_saknas = True
             logger.info(
-                f"HA tools short for {connection.device_id}: {antal} < {self._bast_ha_verktyg}"
+                f"HA tools now {antal} for {connection.device_id} "
+                f"(was {self._bast_ha_verktyg})"
             )
-            return
         self._bast_ha_verktyg = antal
         connection.ha_verktyg_saknas = False
 
     async def hamta_verktyg_vid_vakning(self, connection) -> None:
-        """Refetch HA tools on wake when the last fetch failed or was short.
+        """Refetch HA tools on wake when the last fetch failed.
 
         The tools land on the service the wake is about to connect, so the
-        new cloud socket is born with them. The speaker is not closed, and
-        nothing is pushed into a live session (session.update left OpenAI
-        deaf, 2026-10-01). Sleep, the per-call cap and the daily budget are
-        untouched: this method does not connect or disconnect the engine.
+        new cloud socket is born with them. A list HA returns is kept even
+        when it is shorter than the mark, and the mark sinks to it. The
+        ceiling is MCP_TOOLS_WAKE_TIMEOUT_SECONDS (default 1), not
+        MCP_TOOLS_TIMEOUT_SECONDS: this runs before the cloud connects.
+        The speaker is not closed, and nothing is pushed into a live
+        session (session.update left OpenAI deaf, 2026-10-01). Sleep, the
+        per-call cap and the daily budget are untouched: this method does
+        not connect or disconnect the engine.
         """
         if not getattr(connection, "ha_verktyg_saknas", False):
             return
@@ -1221,20 +1235,17 @@ class Application:
         if service is None or not self.mcp_client:
             return
         try:
-            schema = await self._fetch_ha_tools_schema()
+            schema = await self._fetch_ha_tools_schema(
+                _env_seconds("MCP_TOOLS_WAKE_TIMEOUT_SECONDS", 1.0)
+            )
         except Exception as e:
             logger.debug(f"HA tools still unavailable for {connection.device_id}: {e}")
             return
-        antal = len(schema.standard_tools)
-        if antal < self._bast_ha_verktyg:
-            logger.info(
-                f"HA tools still short for {connection.device_id}: {antal} < {self._bast_ha_verktyg}"
-            )
-            return
         await self._ladda_ha_verktyg(service, schema)
-        self._bast_ha_verktyg = antal
-        connection.ha_verktyg_saknas = False
-        logger.info(f"✅ HA tools on wake for {connection.device_id}: {antal}")
+        self._markera_ha_verktyg(connection, schema)
+        logger.info(
+            f"✅ HA tools on wake for {connection.device_id}: {self._bast_ha_verktyg}"
+        )
 
     async def _ladda_ha_verktyg(self, service, schema) -> None:
         """Add HA's tools to the service object. The next connect sends them."""

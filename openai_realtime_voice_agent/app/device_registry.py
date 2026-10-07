@@ -110,9 +110,9 @@ class DeviceConnection:
     # WebSocketHandler._publish_provider_status itself once the publish is
     # actually done, so nothing keeps a finished task referenced forever.
     provider_status_task: Any = None
-    # Set when the HA tool fetch failed or returned fewer tools than the
-    # best list this process has seen. The next wake refetches
-    # (Application.hamta_verktyg_vid_vakning). The speaker is not closed.
+    # Set when the HA tool fetch failed. The next wake refetches
+    # (Application.hamta_verktyg_vid_vakning). A list HA returned is kept,
+    # even when it is shorter. The speaker is not closed.
     ha_verktyg_saknas: bool = False
     # Kept so a teardown from an older session shape can still cancel it.
     ha_tools_task: Any = None
