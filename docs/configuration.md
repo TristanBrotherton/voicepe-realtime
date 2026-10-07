@@ -30,8 +30,8 @@ Two places hold configuration:
 |---|---|---|
 | `openai_model` | `gpt-realtime-2` | The speech-to-speech model. Choices: `gpt-realtime-2` (newest, smartest), `gpt-realtime-1.5`, `gpt-realtime-mini` (cheaper, less capable), `gpt-realtime`, or `custom`. |
 | `openai_model_custom` | *(hidden)* | Any valid Realtime model id, used when `openai_model` is `custom`. Expert escape hatch. |
-| `openai_voice` | `marin` | The voice it speaks with. `marin`/`cedar` are the newest and most natural; also `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`. Restart the add-on after changing — a running conversation keeps its voice. |
-| `openai_voice_custom` | *(hidden)* | Any valid OpenAI voice name, used when `openai_voice` is `custom`. |
+| `openai_voice` | `marin` | The voice it speaks with. Realtime offers `marin`, `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, and `verse`. GPT-Live also has regional voices; select `custom` for one of those. Restart after changing—a running session keeps its voice. |
+| `openai_voice_custom` | *(hidden)* | Any valid voice API name, used when `openai_voice` is `custom`. For GPT-Live, `vesper` is the natural British masculine option. |
 | `openai_speed` | `1.0` | Speaking pace, `0.25`–`1.5`. Changes pace only, not the words. |
 | `max_output_tokens` | `0` | Caps answer length in tokens (≈ 0.75 words each). `0` = no cap. Set ~`1024` if it rambles; too low cuts answers off mid-sentence. |
 
@@ -127,6 +127,69 @@ network.
 and `device_auth: permissive`, reflash each Voice PE with the same value as
 `va_token` in its stub, check the log shows every device connecting with a
 valid token, then set `device_auth` back to `auto`.
+
+## 🧪 Voice runtime (GPT-Live, private canary)
+
+All hidden and optional. Unset means the OpenAI Realtime runtime, exactly as
+before; nothing changes for existing installs until `voice_runtime` is set.
+See the GPT-Live section of the add-on documentation for what differs.
+
+| Option | Default | Purpose / when to change |
+|---|---|---|
+| `voice_runtime` | *(unset = `realtime`)* | `realtime` keeps the OpenAI Realtime API (`openai_model`, `openai_voice`, VAD options). `live` switches the instance to GPT-Live (`gpt-live-1`): continuous full-duplex speech, tools on a delegated Responses backend. Restart the add-on after changing. |
+| `live_model` | `gpt-live-1` | The GPT-Live voice model. |
+| `live_backend_model` | `gpt-6-luna` | The Responses model that reasons and calls tools for GPT-Live; `gpt-6-sol` for harder tasks. |
+| `live_reasoning_effort` | `low` | Backend reasoning effort: `none`, `minimal`, `low`, `medium`, `high`. Lower is faster. |
+| `live_service_tier` | *(project default)* | Responses service tier for delegated work: `auto`, `default`, `flex`, `priority`. |
+| `live_backend_instructions` | *(built-in)* | Prompt for the backend model (task rules, tool procedures). `instructions` keeps the conversation style. |
+| `live_acknowledge_gaps` | `false` | The live runtime refuses to start while GPT-Live lacks a Realtime feature (the startup log prints the parity report). Set to `true` to run the canary knowingly. |
+| `live_audio_capture_ms` | `0` | Diagnostics only. Holds this much raw model-output audio in memory so a garbled reply's waveform can be inspected. It is the assistant's voice — leave it at `0` unless you are investigating. The format checks such a report needs are always logged. |
+
+Under `live`, `openai_voice` is used when it is a documented GPT-Live voice.
+Shared voices are `marin` and `cedar`; Live-only voices are `quartz`, `ripple`,
+`vesper`, `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`,
+`delta`, and `cinder`. OpenAI describes `vesper` as natural, British, and
+masculine. To select a Live-only voice in the UI, choose `custom` and put its
+API name in `openai_voice_custom`; in YAML:
+
+```yaml
+openai_voice: custom
+openai_voice_custom: vesper
+voice_runtime: live
+live_acknowledge_gaps: true
+```
+
+Restart after changing the voice; GPT-Live chooses it when the session starts
+and cannot change it in place. See OpenAI's
+[GPT-Live voice table](https://developers.openai.com/api/docs/guides/live-conversations#voice-options).
+An undocumented voice falls back to the server default with a warning.
+`turn_detection_type`, the `vad_*` options, `noise_reduction`, `openai_speed`
+and the `transcription_*` options have no GPT-Live equivalent and are ignored
+(logged at startup).
+
+`output_lead_buffer_ms` behaves differently under `live`. GPT-Live delivers
+reply audio at about real time in 100 ms frames, so the device never builds a
+playback cushion of its own the way it does on Realtime (which bursts a whole
+reply much faster than real time). Leaving the option unset therefore gives
+`live` a 600 ms lead instead of `0`; set it explicitly to override, including
+to `0` to turn it off deliberately.
+
+Two `live`-only behaviours have no option and are always on, because both exist
+to stop a reply or an action failing outright:
+
+- **Silence between replies is not sent to the device.** GPT-Live streams audio
+  continuously with no end-of-audio event, so without this the device is told
+  to start replying on silence and spends its playback cushion before the first
+  word. A pause *inside* a reply is still passed through untouched, so the
+  speaker never runs dry mid-sentence.
+- **Placeholder arguments are stripped from Home Assistant actions.** The
+  delegated backend fills in every optional parameter, and Home Assistant
+  rejects an empty target, so an action would fail having changed nothing.
+  Empty strings, empty lists and out-of-domain zeros are removed; a real value,
+  including a meaningful `0` such as `brightness: 0`, is never touched, and
+  neither is the last remaining target (removing it would widen the action from
+  nothing to everything). After two failed attempts at one device in a single
+  request the add-on stops sending more.
 
 ## 🔍 Debug
 

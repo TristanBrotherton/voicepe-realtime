@@ -122,7 +122,10 @@ export TTS_STYLE
 # because bashio prints the literal string "null" for unset optionals.
 for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s \
               guest_mode_entity device_allowlist confirm_tools slow_tools tts_voice \
-              mcp_persistent_session web_search_timeout_s; do
+              mcp_persistent_session web_search_timeout_s \
+              voice_runtime live_model live_backend_model live_reasoning_effort \
+              live_service_tier live_backend_instructions live_acknowledge_gaps \
+              live_audio_capture_ms; do
     if bashio::config.has_value "${option}"; then
         value=$(bashio::config "${option}")
         case "${option}" in
@@ -136,6 +139,15 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
             tts_voice) export TTS_VOICE="${value}" ;;
             mcp_persistent_session) export MCP_PERSISTENT_SESSION="${value}" ;;
             web_search_timeout_s) export WEB_SEARCH_TIMEOUT_S="${value}" ;;
+            # GPT-Live canary runtime (unset = legacy Realtime; see DOCS.md).
+            voice_runtime) export VOICE_RUNTIME="${value}" ;;
+            live_model) export LIVE_MODEL="${value}" ;;
+            live_backend_model) export LIVE_BACKEND_MODEL="${value}" ;;
+            live_reasoning_effort) export LIVE_REASONING_EFFORT="${value}" ;;
+            live_service_tier) export LIVE_SERVICE_TIER="${value}" ;;
+            live_backend_instructions) export LIVE_BACKEND_INSTRUCTIONS="${value}" ;;
+            live_acknowledge_gaps) export LIVE_ACKNOWLEDGE_GAPS="${value}" ;;
+            live_audio_capture_ms) export LIVE_AUDIO_CAPTURE_MS="${value}" ;;
         esac
     fi
 done

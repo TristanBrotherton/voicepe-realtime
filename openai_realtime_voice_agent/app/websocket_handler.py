@@ -23,7 +23,6 @@ from pipecat.frames.frames import (
     StartFrame,
 )
 from pipecat.audio.utils import create_stream_resampler
-from pipecat.services.openai.realtime import events as openai_rt_events
 
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
@@ -38,6 +37,7 @@ from app.input_replay import InputReplayBuffer
 from app.wake_events import WakeAudioCapture, WakeEventStore
 from app.device_auth import DeviceAuth
 from app.ha_sensors import PUBLISHER
+from app.session_controls import controls_for
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,7 @@ class ConnectionRecovery(FrameProcessor):
                  replay=None, should_replay=None, on_turn_error=None, **kwargs):
         super().__init__(**kwargs)
         self._service = openai_service
+        self._controls = controls_for(openai_service)
         # Reconnects hold mic frames and, when the request in progress was not
         # answered yet, replay it into the fresh session (input_replay.py).
         self._replay = replay
@@ -271,10 +272,10 @@ class ConnectionRecovery(FrameProcessor):
             session_dead = any(m in msg for m in self._SESSION_DEAD_MARKERS)
             # (c) the OpenAI READ side died or ended (network drop / silent
             #     server close). pipecat produces no ErrorFrame for these at
-            #     all — SafeRealtimeLLMService wraps the receive loop and
-            #     reports them with this message. Without it the session sat
+            #     all — SafeRealtimeLLMService (and the GPT-Live service)
+            #     wrap the receive loop and report them with this message. Without it the session sat
             #     deaf for hours until the next utterance hit the dead socket.
-            reader_dead = "realtime receive loop" in msg
+            reader_dead = "receive loop" in msg
             if send_flood or session_dead or reader_dead:
                 now = time.monotonic()
                 if now - self._last_attempt >= self.RECONNECT_COOLDOWN_S:
@@ -406,7 +407,7 @@ class ConnectionRecovery(FrameProcessor):
                 now = time.monotonic()
                 age = now - self._connected_at
                 quiet = now - self._last_input_audio
-                busy = getattr(self._service, "_current_assistant_response", None) is not None
+                busy = self._controls.response_active
                 if (age >= self.REFRESH_AGE_S and quiet >= self.REFRESH_QUIET_S
                         and not busy and now - self._last_attempt >= self.RECONNECT_COOLDOWN_S):
                     self._reconnecting = True
@@ -594,6 +595,10 @@ class WebSocketHandler:
         
         if openai_service is None:
             raise RuntimeError("OpenAI service must be created before building pipeline")
+        # Provider-neutral view of the model session (app/session_controls.py):
+        # the device-driven pokes below (stop, connect, flush, verdicts) never
+        # touch a wire protocol directly.
+        controls = controls_for(openai_service)
         
         logger.info(f"🔗 Building pipeline with WebSocket transport and OpenAI service: {type(openai_service).__name__}")
         
@@ -630,6 +635,11 @@ class WebSocketHandler:
 
         def _should_replay() -> bool:
             # Replay only a request that is still in progress and unanswered.
+            # Once a tool has started, its side effect may have happened even
+            # if its result never reached the model. Replaying the utterance in
+            # a replacement session could execute it twice.
+            if getattr(openai_service, "unsafe_to_replay_input", False):
+                return False
             turn = getattr(timeline, "current", None)
             return bool(turn and not turn.done and "first_model_audio" not in turn.stamps)
 
@@ -828,26 +838,24 @@ class WebSocketHandler:
             # OpenAI replying to the spoken "stop", or a slow tool's answer.
             _kill_next_response["v"] = True
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🛑 device interrupt → input_audio_buffer.clear sent (drop in-flight user audio)")
+                if await controls.discard_pending_input("device interrupt"):
+                    logger.info("🛑 device interrupt → input_audio_buffer.clear sent (drop in-flight user audio)")
+                else:
+                    logger.info("🛑 device interrupt → no input buffer to clear on this runtime")
             except Exception as e:
                 logger.info(f"🛑 device interrupt → input_audio_buffer.clear no-op ({e!r})")
             try:
-                if getattr(openai_service, "_current_assistant_response", None) is not None:
-                    await openai_service.send_client_event(openai_rt_events.ResponseCancelEvent())
+                if await controls.cancel_active_response("device interrupt"):
                     logger.info("🛑 device interrupt → response.cancel sent (response was still active)")
                 else:
                     logger.info("🛑 device interrupt → no active response to cancel (device already silenced)")
             except Exception as e:
                 logger.info(f"🛑 device interrupt → response.cancel no-op ({e!r})")
 
-        @openai_service.event_handler("on_conversation_item_created")
-        async def _kill_racing_response(service, item_id, item):
-            # Pipecat fires this for every conversation.item.added; only an
-            # ASSISTANT item right after a device interrupt is the racing
-            # response to the stop word the user just cancelled.
-            if getattr(item, "role", None) != "assistant":
-                return
+        async def _kill_racing_response():
+            # Runs whenever a NEW assistant response starts; only one right
+            # after a device interrupt is the racing response to the stop
+            # word the user just cancelled.
             within_window = time.monotonic() < _interrupt_kill_until["t"]
             kill_armed = _kill_next_response["v"]
             if not within_window and not kill_armed:
@@ -857,13 +865,15 @@ class WebSocketHandler:
             # a stopped tool's answer, or the cancelled reply's tail.
             _kill_next_response["v"] = False
             try:
-                await openai_service.send_client_event(openai_rt_events.ResponseCancelEvent())
+                await controls.cancel_active_response("post-stop racing response", force=True)
                 logger.info(
                     "🛑 response raced in right after a device interrupt → "
                     "response.cancel (post-stop)"
                 )
             except Exception as e:
                 logger.info(f"🛑 post-interrupt racing-response cancel no-op ({e!r})")
+
+        controls.on_assistant_response_started(_kill_racing_response)
 
         async def _on_device_session_start():
             # va_client sends {"type":"start"} once per WebSocket CONNECTION
@@ -873,8 +883,8 @@ class WebSocketHandler:
             # with a clean one. The per-WAKE/follow-up stale-buffer case is
             # covered by the device's {"type":"flush"} on follow-up timeout.
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🎬 device (re)connected → input_audio_buffer.clear (clean start)")
+                if await controls.discard_pending_input("device (re)connected"):
+                    logger.info("🎬 device (re)connected → input_audio_buffer.clear (clean start)")
             except Exception as e:
                 logger.debug(f"🎬 connect-time input clear no-op ({e!r})")
 
@@ -888,8 +898,8 @@ class WebSocketHandler:
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
+                if await controls.discard_pending_input("follow-up cut-off"):
+                    logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input clear no-op ({e!r})")
 
@@ -986,17 +996,8 @@ class WebSocketHandler:
 
                 async def _on_speaker_verdict(label, name, f0):
                     try:
-                        await openai_service.send_client_event(
-                            openai_rt_events.ConversationItemCreateEvent(
-                                item=openai_rt_events.ConversationItem(
-                                    type="message",
-                                    role="system",
-                                    content=[openai_rt_events.ItemContent(
-                                        type="input_text",
-                                        text=verdict_text(connection.speaker_probe, label, name, f0),
-                                    )],
-                                )
-                            )
+                        await controls.inject_context(
+                            verdict_text(connection.speaker_probe, label, name, f0)
                         )
                     except Exception as e:
                         logger.warning(f"⚠️ speaker verdict injection failed: {e!r}")

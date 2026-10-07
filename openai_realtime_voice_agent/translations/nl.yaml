@@ -51,12 +51,14 @@ configuration:
       het natuurlijkst. Een lopend gesprek houdt zijn stem — herstart de
       add-on na het wijzigen. Voor een stem die er niet tussen staat: kies
       "custom" en zet onderaan "Toon ongebruikte optionele
-      configuratie-opties" aan.
+      configuratie-opties" aan. GPT-Live heeft ook regionale stemmen; vesper
+      is de natuurlijke Britse mannenstem.
   openai_voice_custom:
     name: "🗣️ Model & stem · Stem (custom)"
     description: >-
-      Alleen gebruikt als Stem op "custom" staat. Elke geldige
-      OpenAI-stemnaam. (Standaard verborgen.)
+      Alleen gebruikt als Stem op "custom" staat. Elke geldige OpenAI API-
+      stemnaam. Gebruik bij GPT-Live vesper voor de natuurlijke Britse
+      mannenstem. (Standaard verborgen.)
   openai_speed:
     name: "🗣️ Model & stem · Spreektempo"
     description: >-
@@ -227,6 +229,56 @@ configuration:
     description: >-
       Alleen bij server_vad. Hoe lang een stilte je vraag beëindigt
       (standaard 800). Verhoog als je wordt afgekapt bij een pauze.
+
+  # --- 🧪 Spraakruntime (GPT-Live canary; verborgen, optioneel) ---
+  voice_runtime:
+    name: "🧪 Spraakruntime · Runtime (realtime of live)"
+    description: >-
+      Welk OpenAI-spraakprotocol wordt gebruikt. Leeg of "realtime" houdt de
+      OpenAI Realtime API (openai_model, openai_voice, VAD-opties). "live"
+      schakelt deze instantie over op GPT-Live (gpt-live-1): full-duplex
+      spraak met tools op een gedelegeerd Responses-model. Privé-canary —
+      lees eerst de GPT-Live-sectie in de documentatie, herstart daarna.
+  live_model:
+    name: "🧪 Spraakruntime · Live-model"
+    description: >-
+      Het GPT-Live-spraakmodel, alleen gebruikt bij runtime "live".
+      Standaard gpt-live-1.
+  live_backend_model:
+    name: "🧪 Spraakruntime · Live-backendmodel"
+    description: >-
+      Het Responses-model dat redeneert en tools aanroept voor GPT-Live.
+      Standaard gpt-6-luna; gpt-6-sol voor moeilijkere taken.
+  live_reasoning_effort:
+    name: "🧪 Spraakruntime · Redeneerinspanning backend"
+    description: >-
+      Redeneerinspanning van het backendmodel. Lager is sneller; standaard low.
+  live_service_tier:
+    name: "🧪 Spraakruntime · Service-tier backend"
+    description: >-
+      Responses-service-tier voor gedelegeerde verzoeken (auto, default,
+      flex, priority). Leeg = projectstandaard.
+  live_backend_instructions:
+    name: "🧪 Spraakruntime · Backendinstructies"
+    description: >-
+      Optionele prompt voor het backendmodel (taakregels, toolprocedures).
+      Leeg = de ingebouwde backendprompt. De gespreksstijl blijft in
+      "Persoonlijkheid van de assistent".
+  live_acknowledge_gaps:
+    name: "🧪 Spraakruntime · GPT-Live-beperkingen accepteren"
+    description: >-
+      GPT-Live biedt nog niet elke Realtime-functie (het add-on-log toont
+      het pariteitsrapport bij het starten; nu: geen kostensensor per
+      antwoord). De live-runtime start pas als dit aan staat.
+  live_audio_capture_ms:
+    name: "🧪 Spraakruntime · Ruwe antwoordaudio bewaren voor diagnose (ms)"
+    description: >-
+      Alleen om een vervormd GPT-Live-antwoord te onderzoeken. Houdt zoveel
+      milliseconden ruwe modeluitvoer in het geheugen zodat de golfvorm
+      bekeken kan worden; dit is de stem van de assistent, dus laat het op 0
+      staan tenzij je onderzoek doet. De formaatcontroles die zo'n rapport
+      nodig heeft (samplefrequentie, byte-uitlijning, niveaus, chunk- en
+      gatentellers, een hash) staan altijd in het log.
 
   # --- 🔍 Debug ---
   enable_recording:

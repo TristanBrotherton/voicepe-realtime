@@ -35,9 +35,18 @@ from app.realtime_observer import ObservedSocket
 from app.action_gate import (
     ActionGate,
     EntityDirectory,
-    confirmation_result,
     get_confirm_tool_definition,
     replace_arguments,
+)
+from app.tool_guards import GuardedToolsMixin
+from app.voice_runtime import (
+    LIVE,
+    LIVE_OUTPUT_LEAD_MS,
+    LiveConfig,
+    check_live_deployable,
+    parity_report_lines,
+    resolve_output_lead_ms,
+    resolve_voice_runtime,
 )
 from app.device_auth import DeviceAuth
 from app.spoken_prompts import (
@@ -121,8 +130,111 @@ changes) return "confirmation_required" instead of running. Then ask one short
 yes/no question and call confirm_action only after the user clearly says yes.
 """
 
+# GPT-Live splits the prompt (per the official migration guide): conversation
+# style and the delegation policy stay with the voice model; tool procedures
+# move to the delegated Responses backend.
+LIVE_DELEGATION_POLICY = """
 
-class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
+Delegation policy:
+Backend tools:
+{capabilities}
+
+Delegate to the backend when:
+- The request needs any backend tool, a lookup, or careful reasoning.
+- A correction changes work already requested.
+
+Do not delegate to the backend when:
+- You can answer from the conversation or a still-current result.
+- You need a brief clarification to understand the request.
+
+Delegate before giving an answer that depends on backend work. Do not guess
+the result while waiting, and do not announce that you are delegating. Report
+an action as done only after the backend confirms it.
+
+Smart-home actions and state are backend-only. You cannot control or observe
+the home directly. Every request to read or change a device, entity, area,
+scene, list, or other Home Assistant state MUST be delegated before you answer.
+Never say "done", "of course", or otherwise imply success unless the backend
+returned a completed result for that request in this turn. If you have not
+delegated, ask one brief clarification when needed; otherwise say the action
+could not be completed. Do not simulate a successful tool result.
+
+Interruption policy: Stop speaking when the user interrupts. Listen to what
+they say.
+"""
+
+LIVE_BACKEND_DEFAULT_INSTRUCTIONS = """## Voice conversation context
+You are the backend of a smart-home voice assistant in a live spoken
+conversation. Transcripts can contain mistakes, unfinished phrases, and later
+corrections. Use the latest context. If a needed detail is unclear, return a
+short question for the assistant to ask instead of guessing.
+
+## Task instructions
+Carry out requests with the available tools immediately; never claim an
+action succeeded unless its tool result confirms it. Use ordinary device
+names, never entity IDs. Call one tool at a time.
+"""
+
+LIVE_BACKEND_CONFIRMATION_INSTRUCTIONS = """
+Some actions (unlocking, opening garages or gates, alarm changes) return
+"confirmation_required" instead of running. Return a short yes/no question for
+the assistant to ask, and call confirm_action with the given confirm_id only
+after the user has clearly said yes in a later request.
+"""
+
+LIVE_BACKEND_RESULT_INSTRUCTIONS = """
+## Return the result
+Return the relevant facts, the task's current status, and the next step in
+one or two short sentences suitable for speech. No URLs, lists, or markdown.
+"""
+
+
+def live_conversation_instructions(shared_instructions: str, tools: list) -> str:
+    """The GPT-Live session prompt: the shared prompt plus the delegation policy."""
+    names = [t.get("name", "") for t in tools if t.get("name")]
+    groups = []
+    if any(n.startswith(("Hass", "intent__", "mcp__")) or n in ("get_live_context", "GetLiveContext") for n in names):
+        groups.append("- Smart home: read and control Home Assistant devices, lists, and scenes.")
+    if "web_search" in names:
+        groups.append("- Web search: current information such as weather, news, and facts.")
+    if {"set_timer", "cancel_timer", "list_timers"} & set(names):
+        groups.append("- Timers: set, cancel, and list countdown timers.")
+    if {"remember", "forget", "list_memories"} & set(names):
+        groups.append("- Memory: remember, forget, and list standing household notes.")
+    if {"ask_openclaw", "recall_memory"} & set(names):
+        groups.append("- Personal assistant: calendars, messages, calls, research, and long-term recall.")
+    if "voice_enrollment" in names:
+        groups.append("- Voice enrollment and false-wake marking.")
+    if "confirm_action" in names:
+        groups.append("- Confirmation of consequential actions after the user says yes.")
+    others = [n for n in names if not n.startswith(("Hass", "intent__", "mcp__")) and n not in (
+        "web_search", "set_timer", "cancel_timer", "list_timers", "remember", "forget",
+        "list_memories", "ask_openclaw", "recall_memory", "voice_enrollment", "mark_false_wake",
+        "confirm_action", "disconnect_client", "get_live_context", "GetLiveContext")]
+    if others:
+        groups.append("- Other tools: " + ", ".join(sorted(others)[:20]) + ".")
+    if not groups:
+        groups.append("- (no backend tools are configured)")
+    return shared_instructions + LIVE_DELEGATION_POLICY.format(capabilities="\n".join(groups))
+
+
+def live_backend_instructions(
+    custom: str, confirmations: bool, trusted_context: str = ""
+) -> str:
+    """The delegated Responses backend prompt (operator override or the default)."""
+    base = custom.strip() if custom and custom.strip() else LIVE_BACKEND_DEFAULT_INSTRUCTIONS
+    if trusted_context.strip():
+        # The Live frontend's session instructions are not the delegated
+        # Responses backend's instructions. Preserve operator policy and
+        # current household memory explicitly instead of assuming delegation
+        # will copy them across that boundary.
+        base += "\n\n## Trusted assistant context\n" + trusted_context.strip()
+    if confirmations:
+        base += LIVE_BACKEND_CONFIRMATION_INSTRUCTIONS
+    return base + LIVE_BACKEND_RESULT_INSTRUCTIONS
+
+
+class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
     """OpenAIRealtimeLLMService with audio-truncation-on-interruption disabled.
 
     pipecat's `_truncate_current_audio_response()` (called by `_handle_interruption`
@@ -378,126 +490,6 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
             return True
         return False
 
-    def register_function(self, function_name, handler, start_callback=None, *,
-                          cancel_on_interruption: bool = True):  # type: ignore[override]
-        """Force cancel_on_interruption=False for every tool registration.
-
-        pipecat cancels in-flight function-call tasks on EVERY user-speech
-        interruption — and semantic_vad fires one per utterance fragment, so
-        merely continuing your own sentence kills the tool call your previous
-        fragment started. By then the HTTP request to Home Assistant has
-        usually already been SENT: the action executes, but its result never
-        reaches the model, which then tells the user it failed (observed
-        live: the lights turned ON while the assistant claimed they
-        wouldn't). Our tools are all short-lived (HA service calls, one web
-        search), so letting them finish and report the truth always beats
-        killing them halfway. This single override covers every registration
-        path (MCP tools via pipecat's MCPClient, web_search, disconnect).
-
-        The handler is also wrapped to tick its connection's liveness around its run, so
-        the PhaseEmitter's thinking-watchdog knows a tool is in flight and a
-        slow tool (web search: 10-20 s of pipeline silence) is never mistaken
-        for a dead turn. All our handlers use the single-param
-        FunctionCallParams signature, so the wrapper does too (pipecat
-        inspects the signature to pick the calling convention).
-        """
-        async def liveness_tracked(params):
-            # Speaker gate (fork): tools listed in male_only_tools only execute
-            # when the last voice-type verdict is "male". Enforced HERE — below
-            # the model — so prompt tricks can't bypass it. Fails closed on
-            # uncertain/stale/absent verdicts. This is convenience gating on a
-            # voice-type heuristic, not biometric auth.
-            if self.male_only_tools and function_name in self.male_only_tools:
-                speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
-                if speaker != "male":
-                    owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
-                    logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
-                    await params.result_callback({
-                        "error": (
-                            f"Not available: this capability is reserved for {owner}, "
-                            f"and the current speaker's voice was not recognized as {owner}. "
-                            f"Relay this politely."
-                        )
-                    })
-                    return
-            # Consequential-action gate (app/action_gate.py): unlock/open/disarm
-            # calls are held until the user answers a confirmation question.
-            # Enforced here, below the model, like the speaker gate.
-            gate = getattr(self, "action_gate", None)
-            if gate is not None:
-                reconciled = await gate.reconcile_arguments(function_name, params.arguments)
-                if reconciled != dict(params.arguments or {}):
-                    params = replace_arguments(params, function_name, reconciled)
-            if gate is not None and gate.enabled and function_name != "confirm_action":
-                decision = await gate.check(function_name, params.arguments)
-                if decision.requires_confirmation:
-                    device_id, user_seq, wake_seq = self.gate_context()
-                    pending = gate.request(
-                        device_id, function_name, dict(params.arguments or {}), handler,
-                        decision.summary, user_seq, wake_seq,
-                    )
-                    await params.result_callback(confirmation_result(pending, gate.window_s))
-                    return
-            timeline = getattr(self, "turn_timeline", None)
-            record = timeline.tool_started(function_name) if timeline is not None else None
-            self.turn_liveness.tool_started()
-            ack = self._schedule_slow_tool_ack(function_name)
-            ok = False
-            try:
-                result = await handler(params)
-                ok = True
-                return result
-            finally:
-                # Never cut an acknowledgement off mid-word; only a pending
-                # (not yet started) one is cancelled when the tool finishes.
-                if ack is not None and not ack.ack_state["playing"]:
-                    ack.cancel()
-                if timeline is not None:
-                    timeline.tool_finished(record, ok)
-                self.turn_liveness.tool_finished()
-
-        super().register_function(
-            function_name, liveness_tracked, start_callback, cancel_on_interruption=False
-        )
-
-    def gate_context(self):
-        """(device_id, user_turn_seq, wake_seq) for confirmation bookkeeping."""
-        timeline = getattr(self, "turn_timeline", None)
-        if timeline is None:
-            return getattr(self, "device_id", ""), 0, 0
-        return timeline.device_id, timeline.user_turn_seq, timeline.wake_seq
-
-    def _schedule_slow_tool_ack(self, function_name: str):
-        """Play one short acknowledgement if a slow tool is still running.
-
-        Only tools known to be slow (or whose measured median exceeds the
-        threshold) qualify, only after ack_delay_s, at most once per turn, and
-        never while the assistant is already speaking.
-        """
-        prompts = getattr(self, "spoken_prompts", None)
-        timeline = getattr(self, "turn_timeline", None)
-        if prompts is None or not prompts.enabled or timeline is None:
-            return None
-        p50 = timeline.stats.p50(f"tool.{function_name}")
-        if not prompts.is_slow(function_name, None if p50 is None else p50 / 1000.0):
-            return None
-        turn = timeline.current
-        state = {"playing": False}
-
-        async def _ack():
-            await asyncio.sleep(prompts.ack_delay_s)
-            if turn is None or turn.done or turn.meta.get("ack_played"):
-                return
-            if "first_audio_sent" in turn.stamps and "bot_stopped" not in turn.stamps:
-                return  # the assistant is speaking right now
-            turn.meta["ack_played"] = True
-            state["playing"] = True
-            await prompts.say("ack", timeline.device_id)
-
-        task = asyncio.create_task(_ack())
-        task.ack_state = state
-        return task
-
     async def _receive_task_handler(self):  # type: ignore[override]
         """Surface OpenAI reader death as an ErrorFrame so recovery can act.
 
@@ -633,6 +625,10 @@ class Application:
         # returns the custom value when the dropdown is "custom", else the dropdown.
         openai_model = _resolve_choice("OPENAI_MODEL", "OPENAI_MODEL_CUSTOM", "gpt-realtime-2")
         openai_voice = _resolve_choice("OPENAI_VOICE", "OPENAI_VOICE_CUSTOM", "marin")
+        # Voice runtime (app/voice_runtime.py): "realtime" (the OpenAI Realtime
+        # API, every install so far) or "live" (GPT-Live, a different protocol).
+        # Unset = realtime, so existing installs are untouched by this option.
+        voice_runtime = resolve_voice_runtime()
 
         # Playback speed (post-generation rate): 0.25-1.5, 1.0 = normal. Clamped.
         try:
@@ -648,6 +644,24 @@ class Application:
             max_output_tokens = 0
         # Pass None when 0/unset so SessionProperties omits it (API default "inf").
         max_output_tokens = max_output_tokens if max_output_tokens > 0 else None
+        live_config = None
+        if voice_runtime == LIVE:
+            live_config = LiveConfig.from_env(
+                configured_voice=openai_voice, max_output_tokens=max_output_tokens
+            )
+            logger.info(
+                f"🟢 voice runtime: GPT-Live (model={live_config.model}, "
+                f"backend={live_config.backend_model}, reasoning={live_config.reasoning_effort}, "
+                f"voice={live_config.voice or 'server default'})"
+            )
+            for line in parity_report_lines():
+                logger.info(f"   parity · {line}")
+            if live_config.ignored:
+                logger.warning(f"⚠️ options without a GPT-Live equivalent are ignored: {live_config.ignored}")
+            # Unsupported parity items block the Live runtime until acknowledged.
+            check_live_deployable(live_config)
+        else:
+            logger.info(f"🎙️ voice runtime: OpenAI Realtime (model={openai_model})")
         # Input noise reduction: "near_field" | "far_field" | "" (off). Anything
         # else is treated as off so a typo can't reach the API.
         noise_reduction = os.environ.get("NOISE_REDUCTION", "").strip().lower()
@@ -711,13 +725,28 @@ class Application:
         playback_prebuffer_ms = max(0, min(2000, playback_prebuffer_ms))
         # Relay-side output lead buffer (ms): hold the first LEAD_MS of each
         # reply and burst it to prime the device against the resampler
-        # cold-start (app/output_lead_buffer.py). 0 = disabled — the default,
-        # opt-in until runtime-validated per install.
-        try:
-            output_lead_buffer_ms = int(os.environ.get("OUTPUT_LEAD_BUFFER_MS", "0"))
-        except (TypeError, ValueError):
-            output_lead_buffer_ms = 0
-        output_lead_buffer_ms = max(0, min(2000, output_lead_buffer_ms))
+        # cold-start (app/output_lead_buffer.py).
+        #
+        # Realtime: 0 = disabled, opt-in until runtime-validated per install.
+        #
+        # GPT-Live: REQUIRED, so the default flips to LIVE_OUTPUT_LEAD_MS when
+        # the option is left unset. Realtime bursts a reply far faster than
+        # real time, so the device accumulates seconds of playout lead by
+        # itself. GPT-Live streams at ~1.0x real time in 100 ms frames
+        # (measured 1.02-1.11x during speech, inter-frame spikes to ~160 ms, on
+        # top of network jitter), so the device starts every reply with no lead
+        # at all and its I2S chain starves from the first word. An explicit
+        # operator value always wins, including 0 to turn it off deliberately.
+        output_lead_buffer_ms = resolve_output_lead_ms(
+            os.environ.get("OUTPUT_LEAD_BUFFER_MS"), voice_runtime
+        )
+        if voice_runtime == LIVE and output_lead_buffer_ms <= 0:
+            logger.warning(
+                "⚠️ output_lead_buffer_ms is 0 with voice_runtime=live. GPT-Live "
+                "delivers reply audio at about real time, so the device has no "
+                f"playout cushion and replies are likely to break up. "
+                f"{LIVE_OUTPUT_LEAD_MS} ms is the tested default."
+            )
 
         # Get session reuse timeout and initialize session manager
         session_reuse_timeout = float(os.environ.get("SESSION_REUSE_TIMEOUT_SECONDS", "300"))
@@ -974,6 +1003,8 @@ class Application:
         self.instructions = instructions
         self.model = openai_model
         self.voice = openai_voice
+        self.voice_runtime = voice_runtime
+        self.live_config = live_config
         self.openai_speed = openai_speed
         self.max_output_tokens = max_output_tokens
         self.noise_reduction = noise_reduction
@@ -1093,19 +1124,23 @@ class Application:
         return probe.name_for(probe.gate_speaker()) if probe else None
     
     async def create_openai_service(self, connection):
-        """Create an OpenAI Realtime session for ONE device.
+        """Create the model session for ONE device, in the configured runtime.
 
         This used to assign the single `self.openai_service`, so a second
         device connecting replaced the first device's live session and wiped
         its conversation. It now returns a fresh service that belongs to the
         calling connection and to nothing else.
 
+        The tool set, the handler registrations and every safety gate are
+        assembled by the shared helpers below; only the session object differs
+        between the Realtime and GPT-Live runtimes.
+
         Args:
             connection: The DeviceConnection the session will serve. Its
                 transport is needed so device-scoped tools act on that device.
 
         Returns:
-            A newly created SafeRealtimeLLMService.
+            A newly created SafeRealtimeLLMService or OpenAILiveLLMService.
         """
         client_id = connection.device_id
         if self._pipeline_lock is None:
@@ -1129,269 +1164,323 @@ class Application:
                     logger.debug(f"Cached context from previous session for client {client_id}")
                 except Exception as e:
                     logger.warning(f"⚠️ Error caching context from old service for client {client_id}: {e}")
-            
-            # Create session properties with audio configuration
-            from pipecat.services.openai.realtime.events import (
-                SessionProperties,
-                AudioConfiguration,
-                AudioInput,
-                AudioOutput,
-                TurnDetection,
-                SemanticTurnDetection,
-                InputAudioTranscription,
-                InputAudioNoiseReduction,
-            )
-            
-            # Collect all tool definitions for session properties. The
-            # disconnect_client tool is opt-in (see enable_disconnect_tool): by
-            # default we do NOT expose it, so the model can't hang up the device
-            # mid-conversation.
-            all_tools = []
-            if self.enable_disconnect_tool:
-                all_tools.append(get_disconnect_tool_definition())
 
-            # Web search tool (optional). Lets the model look things up online via
-            # a secondary OpenAI Responses web_search call in the handler.
-            if self.enable_web_search:
-                all_tools.append(get_web_search_tool_definition())
+            all_tools, mcp_tools_schema = await self._assemble_tools()
 
-            # Voice enrollment tool (fork): guided voice-training capture.
-            all_tools.append(get_enrollment_tool_definition())
-            all_tools.append(get_false_alarm_tool_definition())
-            all_tools.extend(get_timer_tool_definitions())
-            all_tools.extend(get_memory_tool_definitions())
-            if self.action_gate is not None and self.action_gate.enabled:
-                all_tools.append(get_confirm_tool_definition())
-            # Direct OpenClaw escalation (fork): with OPENCLAW_URL set the tool
-            # is native (no HA-MCP 60s cap); the same-named MCP tool is skipped
-            # below so the model sees exactly one ask_openclaw.
-            if openclaw_url():
-                all_tools.append(get_openclaw_tool_definition())
-                all_tools.append(get_recall_tool_definition())
-
-            # Get MCP tool definitions if available
-            mcp_tools_schema = None
-            if self.mcp_client:
-                try:
-                    logger.info("🔧 Fetching MCP tool definitions...")
-                    mcp_tools_schema = await self.mcp_client.get_tools_schema()
-                    
-                    # Convert MCP tool schemas to OpenAI format, applying the
-                    # optional allow-list so the realtime session isn't flooded
-                    # with ha-mcp's 80+ tools.
-                    exposed = 0
-                    for function_schema in mcp_tools_schema.standard_tools:
-                        if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
-                            continue
-                        if openclaw_url() and function_schema.name == "ask_openclaw":
-                            continue
-                        if self.action_gate is not None:
-                            self.action_gate.tool_descriptions[function_schema.name] = (
-                                function_schema.description or ""
-                            )
-                        openai_tool = {
-                            "type": "function",
-                            "name": function_schema.name,
-                            "description": function_schema.description,
-                            "parameters": {
-                                "type": "object",
-                                "properties": function_schema.properties,
-                                "required": function_schema.required
-                            }
-                        }
-                        all_tools.append(openai_tool)
-                        exposed += 1
-
-                    if self.mcp_tool_allowlist:
-                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {exposed} per allow-list")
-                    else:
-                        logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
-            
-            # Turn detection: semantic_vad (recommended — semantic end-of-turn,
-            # echo-resistant, doesn't cut the user off) or classic server_vad.
-            if self.turn_detection_type == "semantic_vad":
-                turn_detection = SemanticTurnDetection(
-                    eagerness=self.vad_eagerness,
-                    # create_response=True (default): the SERVER creates a
-                    # response on every detected end-of-turn. This is required for
-                    # multi-turn conversation. Pipecat 0.0.97's
-                    # OpenAIRealtimeLLMService._handle_context only auto-creates a
-                    # response for the FIRST context (turn 1) and after tool
-                    # results (its else-branch just updates the context); a plain
-                    # 2nd/3rd user turn therefore gets NO response unless the
-                    # server makes it. We previously set this False to stop a
-                    # turn-1 double-response (server + Pipecat first-context both
-                    # creating → `conversation_already_has_active_response`), but
-                    # that silently broke every turn after the first (device hung
-                    # in "thinking"). True is the correct trade: the server drives
-                    # all user-turn responses; Pipecat still creates the post-tool
-                    # response via _process_completed_function_calls. To stop the
-                    # turn-1 double (server + Pipecat-first-context both creating →
-                    # conversation_already_has_active_response), run() seeds
-                    # self._context once at startup with a kickoff LLMRunFrame, so
-                    # the user's first real turn hits the else-branch too.
-                    create_response=self.semantic_vad_create_response,
-                    interrupt_response=self.interrupt_response,
-                )
+            if self.voice_runtime == LIVE:
+                service = self._create_live_service(connection, all_tools)
             else:
-                turn_detection = TurnDetection(
-                    type="server_vad",
-                    threshold=self.vad_threshold,
-                    prefix_padding_ms=self.vad_prefix_padding_ms,
-                    silence_duration_ms=self.vad_silence_duration_ms,
-                )
-
-            # Optionally pin the input-transcription language to stop the model
-            # drifting between languages (e.g. "nl"). Empty -> auto-detect.
-            # transcription_model picks the STT used for the transcript text.
-            transcription = (
-                InputAudioTranscription(
-                    model=self.transcription_model,
-                    language=self.transcription_language,
-                )
-                if self.transcription_language
-                else None
-            )
-
-            # Optional near/far-field input noise reduction (helps the VAD reject
-            # background noise / residual speaker leak). None = off (default).
-            noise_reduction = (
-                InputAudioNoiseReduction(type=self.noise_reduction)
-                if self.noise_reduction
-                else None
-            )
-
-            session_properties = SessionProperties(
-                # Voice-instructed memory: standing household notes are folded
-                # into the instructions at every session creation.
-                instructions=(
-                    self.instructions
-                    + memory_instructions()
-                    + (TOOL_ACK_INSTRUCTIONS if self.spoken_prompts and self.spoken_prompts.enabled else "")
-                    + (CONFIRMATION_INSTRUCTIONS if self.action_gate and self.action_gate.enabled else "")
-                    + turn_admission_instructions()
-                ),
-                # Cap the reply length: bounds runaway monologues + per-response
-                # output-token cost. None = unlimited (the API default "inf").
-                max_output_tokens=self.max_output_tokens,
-                audio=AudioConfiguration(
-                    input=AudioInput(
-                        turn_detection=turn_detection,
-                        transcription=transcription,
-                        noise_reduction=noise_reduction,
-                    ),
-                    # speed is a post-generation playback rate (0.25-1.5, 1.0 = normal).
-                    output=AudioOutput(voice=self.voice, speed=self.openai_speed)
-                ),
-                tools=all_tools
-            )
-
-            if self.turn_detection_type == "semantic_vad":
-                logger.info(
-                    f"🎚️ Turn detection: semantic_vad (eagerness={self.vad_eagerness}, "
-                    f"create_response={self.semantic_vad_create_response}, "
-                    f"interrupt_response={self.interrupt_response})"
-                    + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
-                )
-            else:
-                logger.info(
-                    f"🎚️ Turn detection: server_vad (threshold={self.vad_threshold}, "
-                    f"silence_duration_ms={self.vad_silence_duration_ms})"
-                    + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
-                )
-
-            logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
-            
-            # Create new service instance
-            service = SafeRealtimeLLMService(
-                api_key=self.openai_api_key,
-                model=self.model,
-                session_properties=session_properties,
-                start_audio_paused=False
-            )
-            service.speaker_probe = None
-            service.male_only_tools = set()
-            connection.turn_liveness = TurnLiveness()
-            service.turn_liveness = connection.turn_liveness
-            service.device_id = connection.device_id
-            service.turn_timeline = connection.turn_timeline
-            service.action_gate = self.action_gate
-            service.spoken_prompts = self.spoken_prompts
-            if self.speaker_male_name or self.speaker_female_name:
-                connection.speaker_probe = SpeakerProbe(
-                    self.speaker_male_name, self.speaker_female_name
-                )
-                service.speaker_probe = connection.speaker_probe
-                service.male_only_tools = self.male_only_tools
+                service = self._create_realtime_service(all_tools)
+            self._attach_guards(service, connection)
             logger.info(f"✅ OpenAI Service created: {type(service).__name__}")
-            
-            # Register disconnect tool handler (only when the tool is exposed)
-            if self.enable_disconnect_tool:
-                disconnect_tool_handler = create_disconnect_tool_handler(connection.transport)
-                service.register_function("disconnect_client", disconnect_tool_handler)
-                logger.info("✅ Registered disconnect tool handler")
 
-            # Register web search tool handler (only when the tool is exposed)
-            if self.enable_web_search:
-                service.register_function(
-                    "web_search",
-                    create_web_search_tool_handler(self.openai_api_key, self.web_search_model),
-                )
-                logger.info(f"✅ Registered web_search tool handler (model={self.web_search_model})")
-            
-            # Register voice enrollment tool handler (fork). The speaker-name
-            # getter lets the tool default to the voice-identified person.
-            def _current_speaker_name():
-                return self._speaker_name(connection)
+            await self._register_tool_handlers(service, connection, mcp_tools_schema)
 
-            service.register_function(
-                "voice_enrollment", create_enrollment_tool_handler(
-                    self.enrollment_conductor, connection.device_id, _current_speaker_name
-                ),
-            )
-            logger.info("✅ Registered voice_enrollment tool handler")
-            service.register_function(
-                "mark_false_wake",
-                create_false_alarm_tool_handler(self.wake_events, connection.device_id),
-            )
-            if self.action_gate is not None and self.action_gate.enabled:
-                service.register_function(
-                    "confirm_action", self._create_confirm_handler(service)
-                )
-            register_timer_tools(service, self.timer_registry, connection.device_id)
-            register_memory_tools(service, _current_speaker_name)
-            if openclaw_url():
-                register_openclaw_tool(service, connection.device_id)
-                logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
-            logger.info("✅ Registered timer + memory tools")
-
-            # Register MCP tool handlers if available
-            if self.mcp_client and mcp_tools_schema:
-                try:
-                    await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
-                    logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
-            # MUST come AFTER register_tools_schema: pipecat registers a handler
-            # for EVERY MCP tool (our allow-list/dedup only trims the definitions
-            # sent to the model, not handler registration), so a same-named
-            # ask_openclaw script silently rebinds the tool back onto the HA MCP
-            # path and its 60s cap. Observed live 2026-07-13: "It failed. I
-            # couldn't send the text" at exactly 60s — while the text sent fine.
-            if openclaw_url():
-                register_openclaw_tool(service, connection.device_id)
-                logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
-            
             # Register service with session manager
             if client_id:
                 self.session_manager.set_current_service(client_id, service)
 
-            self._preseed_context(service)
+            if self.voice_runtime != LIVE:
+                self._preseed_context(service)
 
             logger.info("✅ New OpenAI Session created")
             return service
+
+    async def _assemble_tools(self):
+        """Every tool definition the model may call, in Realtime function shape."""
+        # Collect all tool definitions for session properties. The
+        # disconnect_client tool is opt-in (see enable_disconnect_tool): by
+        # default we do NOT expose it, so the model can't hang up the device
+        # mid-conversation.
+        all_tools = []
+        if self.enable_disconnect_tool:
+            all_tools.append(get_disconnect_tool_definition())
+
+        # Web search tool (optional). Lets the model look things up online via
+        # a secondary OpenAI Responses web_search call in the handler.
+        if self.enable_web_search:
+            all_tools.append(get_web_search_tool_definition())
+
+        # Voice enrollment tool (fork): guided voice-training capture.
+        all_tools.append(get_enrollment_tool_definition())
+        all_tools.append(get_false_alarm_tool_definition())
+        all_tools.extend(get_timer_tool_definitions())
+        all_tools.extend(get_memory_tool_definitions())
+        if self.action_gate is not None and self.action_gate.enabled:
+            all_tools.append(get_confirm_tool_definition())
+        # Direct OpenClaw escalation (fork): with OPENCLAW_URL set the tool
+        # is native (no HA-MCP 60s cap); the same-named MCP tool is skipped
+        # below so the model sees exactly one ask_openclaw.
+        if openclaw_url():
+            all_tools.append(get_openclaw_tool_definition())
+            all_tools.append(get_recall_tool_definition())
+
+        # Get MCP tool definitions if available
+        mcp_tools_schema = None
+        if self.mcp_client:
+            try:
+                logger.info("🔧 Fetching MCP tool definitions...")
+                mcp_tools_schema = await self.mcp_client.get_tools_schema()
+
+                # Convert MCP tool schemas to OpenAI format, applying the
+                # optional allow-list so the realtime session isn't flooded
+                # with ha-mcp's 80+ tools.
+                exposed = 0
+                for function_schema in mcp_tools_schema.standard_tools:
+                    if self.mcp_tool_allowlist and function_schema.name not in self.mcp_tool_allowlist:
+                        continue
+                    if openclaw_url() and function_schema.name == "ask_openclaw":
+                        continue
+                    if self.action_gate is not None:
+                        self.action_gate.tool_descriptions[function_schema.name] = (
+                            function_schema.description or ""
+                        )
+                    openai_tool = {
+                        "type": "function",
+                        "name": function_schema.name,
+                        "description": function_schema.description,
+                        "parameters": {
+                            "type": "object",
+                            "properties": function_schema.properties,
+                            "required": function_schema.required
+                        }
+                    }
+                    all_tools.append(openai_tool)
+                    exposed += 1
+
+                if self.mcp_tool_allowlist:
+                    logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools, exposing {exposed} per allow-list")
+                else:
+                    logger.info(f"✅ Fetched {len(mcp_tools_schema.standard_tools)} MCP tools")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
+        return all_tools, mcp_tools_schema
+
+    def _conversation_instructions(self) -> str:
+        """The shared prompt: operator instructions + memory + admission policy."""
+        return (
+            self.instructions
+            + memory_instructions()
+            + (TOOL_ACK_INSTRUCTIONS if self.spoken_prompts and self.spoken_prompts.enabled else "")
+            + (CONFIRMATION_INSTRUCTIONS if self.action_gate and self.action_gate.enabled else "")
+            + turn_admission_instructions()
+        )
+
+    def _create_realtime_service(self, all_tools):
+        """The OpenAI Realtime session (unchanged legacy runtime)."""
+        # Create session properties with audio configuration
+        from pipecat.services.openai.realtime.events import (
+            SessionProperties,
+            AudioConfiguration,
+            AudioInput,
+            AudioOutput,
+            TurnDetection,
+            SemanticTurnDetection,
+            InputAudioTranscription,
+            InputAudioNoiseReduction,
+        )
+
+        # Turn detection: semantic_vad (recommended — semantic end-of-turn,
+        # echo-resistant, doesn't cut the user off) or classic server_vad.
+        if self.turn_detection_type == "semantic_vad":
+            turn_detection = SemanticTurnDetection(
+                eagerness=self.vad_eagerness,
+                # create_response=True (default): the SERVER creates a
+                # response on every detected end-of-turn. This is required for
+                # multi-turn conversation. Pipecat 0.0.97's
+                # OpenAIRealtimeLLMService._handle_context only auto-creates a
+                # response for the FIRST context (turn 1) and after tool
+                # results (its else-branch just updates the context); a plain
+                # 2nd/3rd user turn therefore gets NO response unless the
+                # server makes it. We previously set this False to stop a
+                # turn-1 double-response (server + Pipecat first-context both
+                # creating → `conversation_already_has_active_response`), but
+                # that silently broke every turn after the first (device hung
+                # in "thinking"). True is the correct trade: the server drives
+                # all user-turn responses; Pipecat still creates the post-tool
+                # response via _process_completed_function_calls. To stop the
+                # turn-1 double (server + Pipecat-first-context both creating →
+                # conversation_already_has_active_response), run() seeds
+                # self._context once at startup with a kickoff LLMRunFrame, so
+                # the user's first real turn hits the else-branch too.
+                create_response=self.semantic_vad_create_response,
+                interrupt_response=self.interrupt_response,
+            )
+        else:
+            turn_detection = TurnDetection(
+                type="server_vad",
+                threshold=self.vad_threshold,
+                prefix_padding_ms=self.vad_prefix_padding_ms,
+                silence_duration_ms=self.vad_silence_duration_ms,
+            )
+
+        # Optionally pin the input-transcription language to stop the model
+        # drifting between languages (e.g. "nl"). Empty -> auto-detect.
+        # transcription_model picks the STT used for the transcript text.
+        transcription = (
+            InputAudioTranscription(
+                model=self.transcription_model,
+                language=self.transcription_language,
+            )
+            if self.transcription_language
+            else None
+        )
+
+        # Optional near/far-field input noise reduction (helps the VAD reject
+        # background noise / residual speaker leak). None = off (default).
+        noise_reduction = (
+            InputAudioNoiseReduction(type=self.noise_reduction)
+            if self.noise_reduction
+            else None
+        )
+
+        session_properties = SessionProperties(
+            # Voice-instructed memory: standing household notes are folded
+            # into the instructions at every session creation.
+            instructions=self._conversation_instructions(),
+            # Cap the reply length: bounds runaway monologues + per-response
+            # output-token cost. None = unlimited (the API default "inf").
+            max_output_tokens=self.max_output_tokens,
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    turn_detection=turn_detection,
+                    transcription=transcription,
+                    noise_reduction=noise_reduction,
+                ),
+                # speed is a post-generation playback rate (0.25-1.5, 1.0 = normal).
+                output=AudioOutput(voice=self.voice, speed=self.openai_speed)
+            ),
+            tools=all_tools
+        )
+
+        if self.turn_detection_type == "semantic_vad":
+            logger.info(
+                f"🎚️ Turn detection: semantic_vad (eagerness={self.vad_eagerness}, "
+                f"create_response={self.semantic_vad_create_response}, "
+                f"interrupt_response={self.interrupt_response})"
+                + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
+            )
+        else:
+            logger.info(
+                f"🎚️ Turn detection: server_vad (threshold={self.vad_threshold}, "
+                f"silence_duration_ms={self.vad_silence_duration_ms})"
+                + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
+            )
+
+        logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
+
+        # Create new service instance
+        return SafeRealtimeLLMService(
+            api_key=self.openai_api_key,
+            model=self.model,
+            session_properties=session_properties,
+            start_audio_paused=False
+        )
+
+    def _create_live_service(self, connection, all_tools):
+        """The GPT-Live session (app/live_service.py), seeded with recent history."""
+        from app.live_service import OpenAILiveLLMService
+        from app.live_protocol import history_to_session_input
+
+        history = []
+        if connection.device_id and self.session_manager is not None:
+            history = history_to_session_input(
+                self.session_manager.restorable_messages(connection.device_id)
+            )
+        logger.info(
+            f"🔧 Creating GPT-Live session with {len(all_tools)} backend tools: "
+            f"{[tool.get('name', 'unknown') for tool in all_tools]}"
+            + (f", {len(history)} restored messages" if history else "")
+        )
+        return OpenAILiveLLMService(
+            api_key=self.openai_api_key,
+            config=self.live_config,
+            instructions=live_conversation_instructions(self._conversation_instructions(), all_tools),
+            backend_instructions=live_backend_instructions(
+                self.live_config.backend_instructions,
+                confirmations=bool(self.action_gate and self.action_gate.enabled),
+                trusted_context=self.instructions + memory_instructions(),
+            ),
+            tools=all_tools,
+            history=history,
+            audio_capture_ms=self.live_config.audio_capture_ms,
+        )
+
+    def _attach_guards(self, service, connection) -> None:
+        """Per-connection state the shared tool guards and hooks read."""
+        service.speaker_probe = None
+        service.male_only_tools = set()
+        connection.turn_liveness = TurnLiveness()
+        service.turn_liveness = connection.turn_liveness
+        service.device_id = connection.device_id
+        service.turn_timeline = connection.turn_timeline
+        service.action_gate = self.action_gate
+        service.spoken_prompts = self.spoken_prompts
+        if self.speaker_male_name or self.speaker_female_name:
+            connection.speaker_probe = SpeakerProbe(
+                self.speaker_male_name, self.speaker_female_name
+            )
+            service.speaker_probe = connection.speaker_probe
+            service.male_only_tools = self.male_only_tools
+
+    async def _register_tool_handlers(self, service, connection, mcp_tools_schema) -> None:
+        """Bind every tool handler to this connection's service (both runtimes)."""
+        # Register disconnect tool handler (only when the tool is exposed)
+        if self.enable_disconnect_tool:
+            disconnect_tool_handler = create_disconnect_tool_handler(connection.transport)
+            service.register_function("disconnect_client", disconnect_tool_handler)
+            logger.info("✅ Registered disconnect tool handler")
+
+        # Register web search tool handler (only when the tool is exposed)
+        if self.enable_web_search:
+            service.register_function(
+                "web_search",
+                create_web_search_tool_handler(self.openai_api_key, self.web_search_model),
+            )
+            logger.info(f"✅ Registered web_search tool handler (model={self.web_search_model})")
+
+        # Register voice enrollment tool handler (fork). The speaker-name
+        # getter lets the tool default to the voice-identified person.
+        def _current_speaker_name():
+            return self._speaker_name(connection)
+
+        service.register_function(
+            "voice_enrollment", create_enrollment_tool_handler(
+                self.enrollment_conductor, connection.device_id, _current_speaker_name
+            ),
+        )
+        logger.info("✅ Registered voice_enrollment tool handler")
+        service.register_function(
+            "mark_false_wake",
+            create_false_alarm_tool_handler(self.wake_events, connection.device_id),
+        )
+        if self.action_gate is not None and self.action_gate.enabled:
+            service.register_function(
+                "confirm_action", self._create_confirm_handler(service)
+            )
+        register_timer_tools(service, self.timer_registry, connection.device_id)
+        register_memory_tools(service, _current_speaker_name)
+        if openclaw_url():
+            register_openclaw_tool(service, connection.device_id)
+            logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
+        logger.info("✅ Registered timer + memory tools")
+
+        # Register MCP tool handlers if available
+        if self.mcp_client and mcp_tools_schema:
+            try:
+                await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
+                logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
+        # MUST come AFTER register_tools_schema: pipecat registers a handler
+        # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+        # sent to the model, not handler registration), so a same-named
+        # ask_openclaw script silently rebinds the tool back onto the HA MCP
+        # path and its 60s cap. Observed live 2026-07-13: "It failed. I
+        # couldn't send the text" at exactly 60s — while the text sent fine.
+        if openclaw_url():
+            register_openclaw_tool(service, connection.device_id)
+            logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
     def _create_confirm_handler(self, service):
         gate = self.action_gate
@@ -1399,7 +1488,21 @@ class Application:
         async def confirm_action(params) -> None:
             confirm_id = str((params.arguments or {}).get("confirm_id") or "")
             device_id, user_seq, wake_seq = service.gate_context()
-            pending, error = gate.take(confirm_id, device_id, user_seq, wake_seq)
+            settled = getattr(service, "confirmation_reply_is_settled", None)
+            if callable(settled) and not settled():
+                error = ("the user's reply is still being transcribed; wait for the utterance "
+                         "to finish, then retry confirm_action")
+                logger.info(f"🔐 confirmation deferred on {device_id}: {error}")
+                await params.result_callback({"error": error})
+                return
+            affirmative = getattr(service, "confirmation_reply_is_affirmative", None)
+            is_affirmative = affirmative() if callable(affirmative) else True
+            reply_start = getattr(service, "confirmation_reply_source_start_ms", None)
+            reply_start_ms = reply_start() if callable(reply_start) else None
+            pending, error = gate.take(
+                confirm_id, device_id, user_seq, wake_seq, affirmative=is_affirmative,
+                reply_source_start_ms=reply_start_ms,
+            )
             if pending is None:
                 logger.info(f"🔐 confirmation refused on {device_id}: {error}")
                 await params.result_callback({"error": error})

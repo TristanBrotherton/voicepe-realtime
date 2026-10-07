@@ -81,7 +81,7 @@ Configuration tab is grouped: **🔑 Basics → 🗣️ Model & voice → 💬 C
 | Option | Default | Note |
 |---|---|---|
 | `openai_model` | `gpt-realtime-2` | newest speech-to-speech model |
-| `openai_voice` | `marin` | `marin`/`cedar` are the newest voices |
+| `openai_voice` | `marin` | Realtime: `marin`/`cedar`; GPT-Live also has regional voices such as British masculine `vesper` |
 | `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language (the transcript is logged only with `log_transcripts`) |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
 | `follow_up_listen_seconds` | `8` | mic stays open this long so you can answer back |
@@ -229,6 +229,92 @@ The add-on log shows each turn: one `⏱️ turn` line with its timings (no word
 `📞 phase ->` (device state), tool calls, and `🔌 …reconnecting` / `✅ reconnected`
 on a connection recovery. With `log_transcripts` on it also shows `🗣️ user:` and
 `🤖 assistant:` lines. View it on the add-on **Log** tab.
+
+## 12. GPT-Live runtime (private canary)
+
+The add-on can run on either of two OpenAI voice protocols:
+
+- **Realtime** (default, `voice_runtime` unset): the OpenAI Realtime API with
+  `openai_model`, `openai_voice`, semantic VAD, and tools on the voice model.
+  Every install so far runs this; nothing changes unless you opt in.
+- **Live** (`voice_runtime: live`): OpenAI GPT-Live (`gpt-live-1`). The voice
+  model listens and speaks continuously and hands any work that needs tools
+  or reasoning to a delegated Responses backend (`live_backend_model`), which
+  calls the same Home Assistant, web search, timer, memory, enrollment,
+  confirmation and agent tools through the same safety gates.
+
+To try it on one instance: set `voice_runtime: live` and
+`live_acknowledge_gaps: true` in the ⋮ → *Edit in YAML* view, restart, and
+read the startup log: it prints the GPT-Live settings, the parity report and
+any Realtime-only options that are ignored. Set `voice_runtime` back to
+`realtime` (or remove it) and restart to roll back; the Realtime path is
+untouched by the switch.
+
+What differs under GPT-Live:
+
+- `openai_voice` must be a documented GPT-Live voice. Shared voices are
+  `marin` and `cedar`; Live additionally provides `quartz`, `ripple`, `vesper`,
+  `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`, `delta`
+  and `cinder`. The regional labels describe influence, not a hard language
+  restriction. The [official voice table](https://developers.openai.com/api/docs/guides/live-conversations#voice-options)
+  identifies `vesper` as a natural British masculine voice. Anything else
+  falls back to the server default with a warning.
+- Live-only voices are not in the Realtime dropdown. In the Configuration tab,
+  choose **Voice → custom**, reveal unused optional options, and set **Voice
+  (custom)** to the API name. For a British masculine voice, the YAML is:
+
+  ```yaml
+  openai_voice: custom
+  openai_voice_custom: vesper
+  voice_runtime: live
+  live_acknowledge_gaps: true
+  ```
+
+  Restart after changing the voice. GPT-Live fixes the voice at session start,
+  so an existing session cannot switch in place.
+- `turn_detection_type`, `vad_*`, `noise_reduction`, `openai_speed` and the
+  `transcription_*` options have no equivalent and are ignored. Transcripts
+  come from the Live session itself.
+- A device "stop" asks the model to yield and drops its remaining audio
+  locally; GPT-Live has no `response.cancel`, so backend work already started
+  still finishes.
+- `output_lead_buffer_ms` defaults to 600 instead of 0. GPT-Live delivers
+  reply audio at about real time, so unlike Realtime the device never builds
+  its own playback cushion and replies break up without one. This adds about
+  600 ms before the first word. Set the option explicitly to change it.
+- GPT-Live streams audio continuously, silence included, and has no
+  end-of-audio event. The add-on therefore sends the device *speech*: a pause
+  inside a reply is passed through untouched so the speaker never runs dry
+  mid-sentence, while a run of silence between replies is withheld. Without
+  that, the device would be told to start replying on silence and would spend
+  its playback cushion before the first word ever arrived.
+- Home Assistant actions are cleaned up before they are sent. GPT-Live's
+  backend fills in every optional parameter of a tool, using an empty string
+  or a zero where it has no value; Home Assistant rejects an empty target and
+  the action fails without doing anything. Those placeholders are removed
+  first, a failed action comes back to the model with what to try instead, and
+  after two failed attempts at one device in a single request the add-on stops
+  sending more and the assistant asks you which device you meant. A device
+  whose only name is empty is *not* cleaned up — removing it would widen the
+  action to everything — so that call is still rejected.
+- Live is billed per second of voice session plus backend tokens. The
+  per-response cost sensor is not published for Live sessions (the usage is
+  logged instead). This is the parity gap `live_acknowledge_gaps` accepts.
+
+If a GPT-Live reply sounds wrong, the log already has what is needed: each
+reply writes a `🔊 live output audio` line (how many audio chunks arrived and
+were forwarded, their total bytes, peak level, silence and suppression counts,
+any byte-alignment or decoding failures, how the silence was split between
+in-reply pauses kept and idle withheld, the delivery pace and a hash of the
+forwarded audio) and a `🔧 live function calls` line (how many tool calls were
+seen, dispatched, answered and continued, how many repeats were refused, and
+for each recent call its tool name, argument *names*, what the tool answered
+and any placeholder arguments that were dropped). Neither contains any
+transcript, any audio, or any argument value. Report the room, the time and
+those two lines. To check the protocol
+itself without involving a device or your home, run
+`python -m app.live_probe --speak "turn off the kitchen lights"` inside the
+add-on container: it opens a real Live session with harmless echo tools only.
 
 ## Known limitations
 

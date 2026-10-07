@@ -1,6 +1,6 @@
 # Voice PE Realtime
 
-**Turn a Home Assistant Voice PE into the voice assistant you actually wanted** — natural speech-to-speech conversation powered by the OpenAI Realtime API, smart-home control with per-turn latency you can see in Home Assistant, a wake word you can retrain on *your* household's voices, an assistant that knows who's speaking, remembers what you tell it, and finds you when long-running work is done. Built on **[Home Assistant](https://www.home-assistant.io) / [OpenClaw](https://openclaw.ai)**: Home Assistant runs your home, OpenClaw is its memory, its hands, and its phone.
+**Turn a Home Assistant Voice PE into the voice assistant you actually wanted** — natural speech-to-speech conversation powered by OpenAI Realtime or GPT-Live, smart-home control with per-turn latency you can see in Home Assistant, a wake word you can retrain on *your* household's voices, an assistant that knows who's speaking, remembers what you tell it, and finds you when long-running work is done. Built on **[Home Assistant](https://www.home-assistant.io) / [OpenClaw](https://openclaw.ai)**: Home Assistant runs your home, OpenClaw is its memory, its hands, and its phone.
 
 It runs on your Home Assistant box. Wake-word detection runs on the device; speaker identification, voice prints and any recordings stay on your box. OpenAI hears you only after a wake, and receives what the conversation needs: your instructions, your memory notes and tool results — [exactly what leaves your network](docs/faq.md#what-about-privacy--what-leaves-my-network).
 
@@ -47,7 +47,9 @@ Longer versions, with the how-it-works behind each: **[Stories](docs/stories.md)
 
 ## Features
 
-- **OpenAI Realtime speech-to-speech** — `gpt-realtime-2` by default, any model id via custom
+- **OpenAI speech-to-speech** — `gpt-realtime-2` by default; optional [GPT-Live](docs/configuration.md#-voice-runtime-gpt-live-private-canary)
+  (`gpt-live-1`) keeps talking while a separate Responses backend reasons and
+  runs tools. The Live runtime is opt-in while it completes its release soak.
 - **Native Home Assistant control** via the official MCP Server integration — scoped to exactly the entities you expose
 - **Custom wake word** — "Hey Leonard" ships as the default (trained by this project); switch to Hey Jarvis / Okay Nabu from a dropdown in HA, or [train your own](docs/features.md#wake-words)
 - **Speaker recognition** — local voice-print identification with guided voice enrollment (say *"train my voice"*)
@@ -58,7 +60,7 @@ Longer versions, with the how-it-works behind each: **[Stories](docs/stories.md)
 - **False-wake flagging** — by voice or double-press, tied to the exact device and wake; feeds a [gated wake-word learning loop](docs/wake-word-learning.md) that never ships a model worse than the one you have
 - **Web search** — current info via a single extra OpenAI call (on by default)
 - **HA sensors** — per-turn latency (with p50/p90), the active wake-word model and threshold, current speaker, active timers, wakes and false wakes today, enrollment active
-- **Persona fully yours** — rewrite the instructions; ten OpenAI voices to build on
+- **Persona fully yours** — rewrite the instructions and choose from OpenAI's built-in voices
 - **Safety** — device token for the WebSocket, spoken-yes confirmations for locks/garage/gates/alarm, privacy controls for what is stored (nothing beyond counters by default)
 - **Production hardening** — proactive session refresh before OpenAI's 60-minute cap, reconnect recovery that replays the request you were making, spoken error messages, echo/ghost-turn guards, stop-word authority, turn-liveness watchdogs
 
@@ -68,8 +70,8 @@ Longer versions, with the how-it-works behind each: **[Stories](docs/stories.md)
 Home Assistant Voice PE           Home Assistant (your box)              Cloud
 ┌─────────────────────────┐   WS   ┌──────────────────────────┐   WS   ┌──────────────┐
 │ custom ESPHome firmware │ ─────▶ │ this add-on              │ ─────▶ │ OpenAI       │
-│ wake word + XMOS DSP    │ 16 kHz │ (session, tools, memory, │ 24 kHz │ Realtime API │
-│ thin audio client       │ ◀───── │  speaker ID, timers)     │ ◀───── │              │
+│ wake word + XMOS DSP    │ 16 kHz │ (session, tools, memory, │ 24 kHz │ Realtime or  │
+│ thin audio client       │ ◀───── │  speaker ID, timers)     │ ◀───── │ GPT-Live     │
 └─────────────────────────┘        └───────────┬──────────────┘        └──────────────┘
                                                │ tools
                                                ▼
@@ -80,7 +82,7 @@ Home Assistant Voice PE           Home Assistant (your box)              Cloud
 Three parts:
 
 1. **Firmware** ([voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)) — turns the Voice PE into a thin, low-latency audio client. Wake word runs on-device.
-2. **Backend add-on** (this repo) — owns the OpenAI Realtime session, Home Assistant tools, speaker identity, timers, and memory.
+2. **Backend add-on** (this repo) — owns the OpenAI Realtime or GPT-Live session, Home Assistant tools, speaker identity, timers, and memory.
 3. **[OpenClaw](https://openclaw.ai) integration** (optional) — deep recall, messaging, calls, and long-running task delegation ([agent-agnostic contracts](docs/agent-integration.md)). Everything else works without it.
 
 ## Quick start

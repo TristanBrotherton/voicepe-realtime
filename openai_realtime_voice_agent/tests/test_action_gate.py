@@ -139,6 +139,7 @@ class TestPending(unittest.TestCase):
 
     def test_requires_a_new_user_utterance(self):
         p = self.g.request("kitchen", "HassTurnOff", {"name": "Front Door"}, self._noop, "unlock Front Door", 3, 1)
+        self.g.fence_after_prompt(p.confirm_id, 3)
         pending, error = self.g.take(p.confirm_id, "kitchen", 3, 1)
         self.assertIsNone(pending)
         self.assertIn("not answered", error)
@@ -234,6 +235,9 @@ class TestWrapperIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", early)
         self.assertEqual(self.executed, [])
         # The user answers (a new end-of-utterance), then confirmation runs it.
+        self.service.action_gate.fence_after_prompt(
+            held["confirm_id"], self.service.turn_timeline.user_turn_seq
+        )
         self.service.turn_timeline.note_speech_stopped(None, None, None)
         done = await self.call("confirm_action", {"confirm_id": held["confirm_id"]})
         self.assertEqual(done, {"status": "done"})
@@ -243,6 +247,41 @@ class TestWrapperIntegration(unittest.IsolatedAsyncioTestCase):
         result = await self.call("HassTurnOff", {"name": "Kitchen Light"})
         self.assertEqual(result, {"status": "done"})
         self.assertEqual(self.executed, [{"name": "Kitchen Light"}])
+
+    async def test_handler_exception_reports_an_uncertain_result(self):
+        async def broken(_params):
+            raise RuntimeError("private implementation detail")
+
+        self.service.register_function("HassBroken", broken)
+        result = await self.call("HassBroken", {"name": "Kitchen Light"})
+        self.assertIn("may or may not have completed", result["error"])
+        self.assertNotIn("private implementation detail", result["error"])
+
+    async def test_handler_exception_after_a_result_does_not_submit_twice(self):
+        async def late_failure(params):
+            await params.result_callback({"status": "done"})
+            raise RuntimeError("after result")
+
+        self.service.register_function("HassLateFailure", late_failure)
+        result = await self.call("HassLateFailure", {"name": "Kitchen Light"})
+        self.assertEqual(result, {"status": "done"})
+
+    async def test_handler_return_without_a_result_reports_uncertain(self):
+        async def forgets_result(_params):
+            return None
+
+        self.service.register_function("HassSilent", forgets_result)
+        result = await self.call("HassSilent", {"name": "Kitchen Light"})
+        self.assertIn("may or may not have completed", result["error"])
+
+    async def test_guard_exception_fails_closed_with_a_result(self):
+        async def broken_reconcile(*_args):
+            raise RuntimeError("directory failed")
+
+        self.service.action_gate.reconcile_arguments = broken_reconcile
+        result = await self.call("HassTurnOff", {"name": "Front Door"})
+        self.assertIn("not run", result["error"])
+        self.assertEqual(self.executed, [])
 
     async def test_namespaced_call_corrects_domain_and_runs_without_confirmation(self):
         self.service.action_gate.tool_descriptions["intent__HassTurnOff"] = (

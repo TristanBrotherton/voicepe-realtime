@@ -112,6 +112,8 @@ class PendingAction:
     created: float
     user_turn_seq: int
     wake_seq: int
+    armed_user_turn_seq: Optional[int] = None
+    armed_source_audio_ms: Optional[float] = None
 
 
 class EntityDirectory:
@@ -313,7 +315,8 @@ class ActionGate:
 
     def request(self, device_id: str, function_name: str, arguments: dict,
                 handler: Callable[..., Awaitable[Any]], summary: str,
-                user_turn_seq: int, wake_seq: int) -> PendingAction:
+                user_turn_seq: int, wake_seq: int,
+                require_prompt_boundary: bool = False) -> PendingAction:
         self._expire()
         for pending in self._pending.values():
             if (pending.device_id == device_id and pending.function_name == function_name
@@ -329,12 +332,14 @@ class ActionGate:
             created=self._clock(),
             user_turn_seq=user_turn_seq,
             wake_seq=wake_seq,
+            armed_user_turn_seq=None if require_prompt_boundary else user_turn_seq,
         )
         self._pending[pending.confirm_id] = pending
         logger.info(f"🔐 confirmation required on {device_id}: {summary} (id {pending.confirm_id})")
         return pending
 
-    def take(self, confirm_id: str, device_id: str, user_turn_seq: int, wake_seq: int):
+    def take(self, confirm_id: str, device_id: str, user_turn_seq: int, wake_seq: int,
+             affirmative: bool = True, reply_source_start_ms: Optional[float] = None):
         """Return (pending, None) when confirmation is valid, else (None, reason)."""
         self._expire()
         pending = self._pending.get(str(confirm_id or "").strip())
@@ -345,11 +350,32 @@ class ActionGate:
         if wake_seq != pending.wake_seq:
             self._pending.pop(pending.confirm_id, None)
             return None, "a new conversation started; the earlier request was cancelled"
-        if user_turn_seq <= pending.user_turn_seq:
+        if pending.armed_user_turn_seq is None:
+            return None, ("the confirmation question has not been spoken yet — ask it and wait "
+                          "for the user's reply before calling confirm_action")
+        if user_turn_seq <= pending.armed_user_turn_seq:
             return None, ("the user has not answered yet — ask the confirmation question and wait "
                           "for their reply before calling confirm_action")
+        if not affirmative:
+            return None, ("the user's latest utterance was not an explicit affirmative "
+                          "confirmation; do not perform the action")
+        if pending.armed_source_audio_ms is not None:
+            if (reply_source_start_ms is None or
+                    reply_source_start_ms <= pending.armed_source_audio_ms):
+                return None, ("the affirmative reply could not be proven to start after the "
+                              "spoken confirmation question; do not perform the action")
         self._pending.pop(pending.confirm_id, None)
         return pending, None
+
+    def fence_after_prompt(self, confirm_id: str, user_turn_seq: int,
+                           source_audio_ms: Optional[float] = None) -> None:
+        """Require a user utterance after the confirmation prompt was spoken."""
+        self._expire()
+        pending = self._pending.get(str(confirm_id or "").strip())
+        if pending is not None:
+            pending.user_turn_seq = max(pending.user_turn_seq, user_turn_seq)
+            pending.armed_user_turn_seq = user_turn_seq
+            pending.armed_source_audio_ms = source_audio_ms
 
     def cancel_device(self, device_id: str) -> None:
         for key in [k for k, p in self._pending.items() if p.device_id == device_id]:

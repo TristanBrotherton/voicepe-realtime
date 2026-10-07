@@ -38,7 +38,12 @@ VOICE_DATA = re.compile(
 
 
 def tracked_files():
-    out = subprocess.run(["git", "ls-files"], cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=True)
+    # Include new files before they are staged. Privacy checks are most useful
+    # before a release commit, not only after its contents have entered Git.
+    out = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=True,
+    )
     return [line for line in out.stdout.splitlines() if line]
 
 

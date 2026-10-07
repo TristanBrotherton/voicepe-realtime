@@ -2,6 +2,131 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.18.0 (fork, private canary — not published)
+
+- **New: GPT-Live as a second voice runtime.** `voice_runtime: live` switches
+  an instance to OpenAI GPT-Live (`gpt-live-1`): a separate
+  `/v1/live/sessions` protocol with continuous full-duplex audio and tools
+  running on a delegated Responses backend (`live_backend_model`, default
+  `gpt-6-luna`). Unset, the add-on keeps the OpenAI Realtime runtime exactly
+  as before; the new options are optional without defaults so an update
+  cannot migrate an existing install. Home Assistant tools, web search,
+  timers, memory, enrollment, confirmations, the speaker gate, slow-tool
+  acknowledgements, transcripts, phases, session reuse and reconnects all
+  run through the same shared code in both runtimes. GPT-Live is
+  implemented directly on the pinned pipecat 0.0.97 (it has no Live service)
+  behind the runtime boundary; pipecat is not upgraded.
+- **Documented GPT-Live voices and selection.** The configuration guide now
+  lists the Live-only regional voices and the exact `custom` configuration
+  needed to select them without adding Realtime-incompatible choices to its
+  dropdown. OpenAI's natural British masculine voice is `vesper`; voices are
+  fixed when a Live session starts, so changing one requires an add-on restart.
+- **Startup parity gate.** The live runtime prints a parity report and
+  refuses to start while any Realtime capability is unsupported, until
+  `live_acknowledge_gaps: true`. Today's gap: no per-response cost sensor
+  (Live bills per second). Interruption uses a stop instruction plus local
+  output gating instead of `response.cancel`; the Realtime-only VAD, noise
+  reduction, speed and transcription options are ignored under `live`.
+- **Reply audio on GPT-Live is paced by the add-on.** GPT-Live streams reply
+  audio at about real time in 100 ms frames, where the Realtime API bursts a
+  whole reply much faster than real time. The Voice PE therefore gets no
+  playback cushion of its own and breaks up on the smallest hiccup, so
+  `output_lead_buffer_ms` defaults to 600 under `live` (it stays `0` under
+  `realtime`). Set it explicitly to override, including to `0`.
+- **Fixed: GPT-Live replies were unintelligible.** The first implementation
+  only forwarded output audio whose level passed an energy threshold, on the
+  assumption that GPT-Live streams unbroken silence that would otherwise keep
+  the device in a reply forever. Measurement against the live endpoint showed
+  the threshold also deleting real speech — quiet releases and sentence tails
+  — and splicing the surviving fragments together. Output audio is now
+  forwarded byte for byte and in order, with its format, 16-bit alignment and
+  continuity verified, and only a run of genuinely inaudible audio longer than
+  800 ms withheld so a reply still ends. Natural pauses inside a reply are
+  passed through untouched.
+- **Fixed: GPT-Live replies still rasped on a reply with provably perfect
+  bytes.** The suppression above forwarded the *first* 800 ms of every
+  inaudible run, and GPT-Live streams idle silence continuously between
+  replies. So every reply was preceded by 800 ms of digital zeros, which are
+  ordinary audio frames: they made the output transport announce that the bot
+  had started speaking — putting the device into its replying phase before the
+  model had said anything — and they armed and drained the 600 ms playout lead,
+  which then had nothing left to hold when the real words arrived seconds
+  later. The device was left in a reply with a dry audio chain, the same
+  starvation the earlier firmware static investigation documented, reached by a
+  different route. Measured end to end through the real output transport: a
+  first device write at 0.52 s followed by a 3,659 ms gap, now a first write
+  after the first word with no gap beyond one chunk. An inaudible run before a
+  reply is now buffered and discarded whole once it proves idle; a pause
+  *inside* a reply is still forwarded in real time, because withholding it
+  would starve the chain this protects; and a short lead-in is released
+  byte-for-byte with the first word.
+- **Fixed: every GPT-Live Home Assistant action failed without changing
+  anything.** GPT-Live's delegated backend fills in every optional parameter of
+  a tool, using an empty string, an empty list or a zero where it has no value
+  (`floor: ""`, `color: ""`, `temperature: 0`, `device_class: []`). Home
+  Assistant validates intent slots a second time with a stricter schema than
+  the tool definition advertises, and rejects an empty `name`, `area` or
+  `floor` outright — so a single placeholder made the whole action fail with
+  `Received invalid slot info`, before any entity was even resolved, while the
+  tool lifecycle looked completely healthy. Delegated arguments are now
+  stripped of placeholders before dispatch, and before the speaker and action
+  gates, so the gates judge exactly what Home Assistant will receive. A real
+  value is never touched, including a meaningful zero (`brightness: 0` is off,
+  `position: 0` is closed, and `0` degrees is a valid climate setpoint), and
+  neither is the last remaining target: removing an only-and-empty `name` would
+  widen the action from nothing to everything, so that call is still rejected.
+- **Fixed: a failed tool told the model nothing, so it guessed by acting
+  again.** pipecat treats any string a tool returns as success, so Home
+  Assistant's bare `Error calling tool: ...` went back to the model untouched
+  and was logged as "completed successfully". Tool results are now classified,
+  and a failure comes back with what to do instead — omit the parameters you
+  have no value for, or ask which device was meant — alongside the original
+  message and an explicit `state_changed: false`. A per-request ledger answers
+  an exact repeat from its own record, and after two failed attempts at one
+  device refuses to send a third, so one bad name cannot become an unbounded
+  chain of fallback actions. A confirmation hold is not an attempt, an
+  unconfirmed result does not lock the target, and every new utterance starts
+  clean.
+- **Fixed: a device "stop" permanently quietened the session.** The stop went
+  out as `session.instructions.append`, which the Live protocol treats as
+  trusted, cumulative session instructions — so every interruption added
+  another standing "wait silently for the user" for the life of the session.
+  It is now `session.thinking.append`, the documented channel for transient
+  context.
+- **Fixed: a successful action held the turn open.** When a tool outlived the
+  delegated response that requested it — the normal order on the wire — the
+  delegation's hold on the thinking watchdog was never released, so a turn
+  stayed "in progress" for the 150 s delegation timeout after the action had
+  already completed.
+- **GPT-Live now verifies what it negotiated.** The audio format echoed in
+  `session.started` is checked against the mono PCM16 24 kHz the rest of the
+  pipeline assumes, and a mismatch stops the session instead of sending the
+  device a stream it would play as noise.
+- **New diagnostics for GPT-Live.** Every reply logs one line of output-audio
+  evidence (deltas forwarded, bytes, segments, peak level, silence and
+  suppression counts, byte-alignment and decode failures, timeline gaps and
+  overlaps, delivery pace, a SHA-256 of the forwarded audio) plus the
+  function-call lifecycle (observed, dispatched, unregistered, answered,
+  continued, abandoned, repeats refused) with argument *keys* only, plus how
+  the silence in each reply was split between in-reply pauses kept and idle
+  withheld, what each tool actually answered, and which placeholder arguments
+  were dropped. No transcript, no audio and no argument value is included;
+  quoted values are redacted out of an error before it is logged, while the
+  model still receives them so it can ask a useful question. `live_audio_capture_ms` optionally holds a bounded amount of raw
+  model output in memory for waveform inspection; it is off by default.
+  `python -m app.live_probe` runs the whole protocol against the real API with
+  no device, Home Assistant or household audio involved.
+- **Internal.** The device handler no longer sends Realtime client events
+  directly: a small provider-neutral session-controls boundary
+  (`app/session_controls.py`) wraps the Realtime events unchanged, and the
+  tool guards (speaker gate, action gate, liveness, slow-tool ack) moved to
+  `app/tool_guards.py` unchanged so both runtimes share them. Output audio
+  assembly lives in `app/live_audio.py` and runs on its own task, so a slow
+  device socket can no longer delay a delegated function call. Delegated
+  argument shaping (`app/tool_arguments.py`) and tool-outcome handling
+  (`app/tool_results.py`) are pure modules wired into the Live dispatch path
+  only, so the Realtime path is unchanged.
+
 ## 0.17.3 (fork)
 
 - **Fixed: exact named covers failing when the model supplies the wrong Home

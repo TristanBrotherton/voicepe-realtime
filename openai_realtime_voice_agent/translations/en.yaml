@@ -51,10 +51,13 @@ configuration:
       most natural. A running conversation keeps its voice — restart the
       add-on after changing this. For an unlisted voice pick "custom" and
       enable "Show unused optional configuration options" at the bottom.
+      GPT-Live also has regional voices; vesper is its natural British
+      masculine voice.
   openai_voice_custom:
     name: "🗣️ Model & voice · Voice (custom)"
     description: >-
-      Only used when Voice is set to "custom". Any valid OpenAI voice name.
+      Only used when Voice is set to "custom". Any valid OpenAI voice API
+      name. For GPT-Live, use vesper for its natural British masculine voice.
       (Hidden by default.)
   openai_speed:
     name: "🗣️ Model & voice · Speaking speed"
@@ -360,6 +363,57 @@ configuration:
       Optional (default 20). A search that takes longer is stopped and the
       assistant says so.
 
+  # --- 🧪 Voice runtime (GPT-Live canary; hidden, optional) ---
+  voice_runtime:
+    name: "🧪 Voice runtime · Runtime (realtime or live)"
+    description: >-
+      Which OpenAI voice protocol to use. Unset or "realtime" keeps the
+      OpenAI Realtime API every install has used so far (openai_model,
+      openai_voice, VAD options). "live" switches this instance to GPT-Live
+      (gpt-live-1): full-duplex speech with tools running on a delegated
+      Responses backend. Private canary — see the GPT-Live section in the
+      documentation before enabling, then restart the add-on.
+  live_model:
+    name: "🧪 Voice runtime · Live model"
+    description: >-
+      The GPT-Live voice model, used only when the runtime is "live".
+      Default gpt-live-1.
+  live_backend_model:
+    name: "🧪 Voice runtime · Live backend model"
+    description: >-
+      The Responses model that reasons and calls tools for GPT-Live. Default
+      gpt-6-luna (fast, cheap); gpt-6-sol for harder tasks.
+  live_reasoning_effort:
+    name: "🧪 Voice runtime · Live backend reasoning effort"
+    description: >-
+      Reasoning effort of the backend model. Lower is faster; default low.
+  live_service_tier:
+    name: "🧪 Voice runtime · Live backend service tier"
+    description: >-
+      Responses service tier for delegated requests (auto, default, flex,
+      priority). Unset = your project's default.
+  live_backend_instructions:
+    name: "🧪 Voice runtime · Live backend instructions"
+    description: >-
+      Optional prompt for the backend model (task rules, tool procedures).
+      Empty = the built-in backend prompt. The conversation style stays in
+      "Assistant personality".
+  live_acknowledge_gaps:
+    name: "🧪 Voice runtime · Accept GPT-Live parity gaps"
+    description: >-
+      GPT-Live cannot yet provide every Realtime feature (the add-on log
+      prints the parity report at startup; today: no per-response cost
+      sensor). The live runtime refuses to start until this is on, so a
+      canary never loses a feature silently.
+  live_audio_capture_ms:
+    name: "🧪 Voice runtime · Keep raw reply audio for diagnosis (ms)"
+    description: >-
+      Only for diagnosing a garbled GPT-Live reply. Holds this many
+      milliseconds of the raw model output in memory so its waveform can be
+      inspected; it is the assistant's voice, so leave it at 0 unless you are
+      investigating. The format checks a garbled-reply report needs (sample
+      rate, byte alignment, levels, chunk and gap counters, a hash) are always
+      written to the log and need no capture.
   # --- 🔍 Debug ---
   enable_recording:
     name: "🔍 Debug · Record audio"
