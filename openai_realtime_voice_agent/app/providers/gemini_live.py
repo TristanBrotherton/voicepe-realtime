@@ -487,11 +487,30 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
     async def _ateranslut(self, forut: bool) -> None:  # SovlageMixin
         """Resume the earlier conversation with Google's handle when there is one."""
         handle = getattr(self, "_session_resumption_handle", None) if forut else None
+        start = time.monotonic()
+        self._vanta_till = start + 3.0
         await self._connect(handle)
+        if not handle or await self._ar_uppkopplad():
+            return
+        task = getattr(self, "_connection_task", None)
+        if task is None or not task.done():
+            return  # no answer yet: the net, not Google. One attempt per wake.
+        # Google refused the handle (live 2026-10-07: 1011 in 0.9 s). The wake
+        # was lost and the handle stayed for the next one. Start a fresh
+        # conversation now, inside ConnectionRecovery.VAKNA_TIMEOUT_S (5 s).
+        logger.warning("☁️ Gemini refused the resumption handle — starting a fresh conversation")
+        self._session_resumption_handle = None
+        self._connection_task = None
+        self._vanta_till = min(time.monotonic() + 3.0, start + 3.5)  # + teardown ≤ 1 s < 5 s
+        await self._connect(None)
 
     async def _ar_uppkopplad(self, timeout: float = 3.0) -> bool:  # SovlageMixin
-        """pipecat connects in a background task; wait for the session or its failure."""
-        slut = time.monotonic() + timeout
+        """pipecat connects in a background task; wait for the session or its failure.
+
+        Waits until the deadline _ateranslut set for this wake, so a second
+        call (sovlage after _ateranslut) does not add another full wait.
+        """
+        slut = getattr(self, "_vanta_till", None) or time.monotonic() + timeout
         while time.monotonic() < slut:
             if self._session:
                 return True

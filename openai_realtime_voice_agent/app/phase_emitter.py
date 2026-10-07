@@ -273,6 +273,11 @@ class PhaseEmitter(FrameProcessor):
         # so nothing is suppressed before the first wake signal (and so old
         # firmware that doesn't send `wake` degrades to a no-op).
         self._speech_since_wake = True
+        # Spoken since the device's last wake. Unlike _speech_since_wake, a
+        # closing follow-up window (flush) does not clear it: the wake cap in
+        # ConnectionRecovery reads it, and a conversation that just ended is
+        # not a wake nobody answered (live 2026-10-07).
+        self._talat_sedan_vakning = True
         # Callbacks into the websocket_handler's kill-window (set after the
         # _interrupt_kill_until dict exists). _on_dangling_stop arms it (cancel
         # the dangling turn's racing response); _on_real_speech clears it (a
@@ -356,6 +361,11 @@ class PhaseEmitter(FrameProcessor):
         next real UserStartedSpeaking, any UserStoppedSpeaking is a dangling
         pre-wake VAD segment (see _speech_since_wake)."""
         self._speech_since_wake = False
+
+    def note_device_wake(self) -> None:
+        """The device's wake word: a turn boundary, and nobody has spoken yet."""
+        self.note_wake()
+        self._talat_sedan_vakning = False
 
     def set_kill_window_handlers(self, on_dangling=None, on_real_speech=None) -> None:
         """Wire the dangling-VAD guard to the websocket_handler kill-window."""
@@ -531,6 +541,7 @@ class PhaseEmitter(FrameProcessor):
             # A: a genuine utterance has begun this turn → not a dangling VAD,
             # and the kill-window must NOT cancel THIS turn's response.
             self._speech_since_wake = True
+            self._talat_sedan_vakning = True
             self._liveness.user_started(getattr(frame, "emulated", False))
             if self._on_real_speech is not None:
                 self._on_real_speech()

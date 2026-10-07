@@ -201,7 +201,13 @@ class SovlageMixin:
             # Live 2026-10-04 (US-018): the connect failed offline, the service
             # still counted as awake, and nothing reconnected it when the net
             # came back. Asleep again, so the next wake tries anew.
-            # Not booked: the socket never came up.
+            # Not booked: the socket never came up. A handshake still running
+            # is torn down first: left alone it came up later as a session no
+            # cap could see (G's review of 0.27.6, fynd 1).
+            try:
+                await self._disconnect()
+            except Exception as e:
+                logger.warning(f"⚠️ tearing down the unfinished connect failed: {e!r}")
             self.sover = True
             self._uppkopplad_sedan = None
             self._oppna.discard(self)

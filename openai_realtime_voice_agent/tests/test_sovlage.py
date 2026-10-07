@@ -180,6 +180,46 @@ async def test_gemini_senare_vakning_ateruptar_med_handtaget():
     service._connect.assert_awaited_with("h1")
 
 
+class _Klar:
+    """A finished connection task, as pipecat leaves it after a refused connect."""
+    def done(self):
+        return True
+
+
+@pytest.mark.asyncio
+async def test_gemini_avvisat_handtag_ger_ett_nytt_samtal_i_samma_vakning():
+    """Live 2026-10-07 12:16: Google answered the resume with 1011 in 0.9 s.
+    The wake was lost, and the handle stayed for the next wake too."""
+    service = _service(GEMINI)
+    service._session_resumption_handle = "gammalt"
+    anrop = []
+
+    async def connect(handle):
+        anrop.append(handle)
+        if handle is None:
+            service._session = object()
+        else:
+            service._connection_task = _Klar()
+
+    service._connect = connect
+    await service._ateranslut(True)
+    assert anrop == ["gammalt", None]
+    assert service._session_resumption_handle is None
+
+
+@pytest.mark.asyncio
+async def test_gemini_langsam_aterupptagning_provas_inte_om():
+    """No answer at all (the net, not Google) keeps the one attempt: a second
+    connect would only add another wait to the wake."""
+    service = _service(GEMINI)
+    service._session_resumption_handle = "h1"
+    service._connect = AsyncMock()
+    service._connection_task = None
+    service._ar_uppkopplad = AsyncMock(return_value=False)
+    await service._ateranslut(True)
+    service._connect.assert_awaited_once_with("h1")
+
+
 @pytest.mark.asyncio
 async def test_vakning_fran_enheten_vacker_motorn_genom_ledningen():
     from test_bana0 import _koppling
@@ -330,7 +370,8 @@ async def test_misslyckad_uppkoppling_somnar_igen_och_nasta_vakning_forsoker():
     assert s.sover is True
     s.uppe = True  # the net is back
     assert await s.vakna() is True
-    assert s.calls == [("upp", False), ("upp", False)]
+    # "ner": the failed wake tears down its unfinished connect (0.27.6).
+    assert s.calls == [("upp", False), "ner", ("upp", False)]
 
 
 @pytest.mark.asyncio
@@ -390,3 +431,83 @@ async def test_pagande_samtal_bryts_inte_av_vakningstaket():
     r._last_input_audio = now
     await _kor_sovloopen(r)
     assert s.sover is False and s.calls == []
+
+
+@pytest.mark.asyncio
+async def test_foljdfonstret_som_stangs_ar_ingen_vakning_utan_tal():
+    """Live 2026-10-07 (satellite stand-in on core): a question, a reply, and
+    the follow-up window closing (device 'flush') put the engine to sleep 3 s
+    later as 'wake without speech', not after 30 s of quiet. The flush clears
+    the dangling-VAD flag; it is not a wake, and the user did speak."""
+    from pipecat.frames.frames import UserStartedSpeakingFrame
+
+    from app.phase_emitter import PhaseEmitter
+
+    async def tyst(_value):
+        pass
+
+    async def ingen_vidare(*_a, **_k):
+        pass
+
+    pe = PhaseEmitter(tyst, idle_debounce_s=0)
+    pe.push_frame = ingen_vidare
+    s = Fake()
+    s.sover = False
+    r = ConnectionRecovery(s, phase_emitter=pe, provider=GEMINI)
+
+    pe.note_device_wake()  # the wake
+    await pe.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    pe.note_wake()  # the follow-up window closed: flush
+
+    now = time.monotonic()
+    r._last_wake = now - (r.VAKNA_TIMEOUT_S + 1)
+    assert r._vakning_utan_tal(now) is False
+
+    pe.note_device_wake()  # a new wake nobody answers still counts
+    assert r._vakning_utan_tal(now) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handtag", ["gammalt", None])
+async def test_en_handskakning_som_inte_hann_klart_rivs_vid_vakningens_slut(handtag, monkeypatch):
+    """G's review of 0.27.6 (fynd 1): a handshake still running when the wake
+    gives up came up afterwards as a session outside every cap - asleep by the
+    books, never booked, never put to sleep. Same for a slow first handshake
+    (handtag None: no resume, the net is slow). The wake must tear it down."""
+    monkeypatch.setenv("MOLN_LEDGER", "/dev/null/ingen")
+    service = _service(GEMINI)
+    service.budget = Budget(path=str(__import__("tempfile").mktemp()))
+    service._session_resumption_handle = handtag
+    service._vaknat_forut = True
+    anrop = []
+
+    async def kommer_sent():
+        await asyncio.sleep(10)
+        service._session = object()
+
+    class Klar:
+        def done(self):
+            return True
+
+    async def connect(h):
+        anrop.append(h)
+        if h is not None:
+            service._connection_task = Klar()  # Google said no at once
+        else:
+            service._connection_task = asyncio.create_task(kommer_sent())
+
+    async def disconnect():
+        task = service._connection_task
+        if task is not None and hasattr(task, "cancel"):
+            task.cancel()
+        service._connection_task = None
+        service._session = None
+
+    service._connect = connect
+    service._disconnect = disconnect
+    t0 = time.monotonic()
+    assert await service.vakna() is False
+    assert time.monotonic() - t0 < 4.6  # inside ConnectionRecovery.VAKNA_TIMEOUT_S
+    await asyncio.sleep(0.05)
+    assert service._connection_task is None
+    assert service._session is None and service.sover is True

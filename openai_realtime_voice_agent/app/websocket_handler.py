@@ -777,10 +777,14 @@ class ConnectionRecovery(FrameProcessor):
         """A real utterance since this wake, not the open mic.
 
         The device streams the mic as soon as it wakes, silence included, so
-        _last_input_audio moves without anyone speaking. PhaseEmitter.note_wake
-        clears _speech_since_wake; UserStartedSpeaking sets it.
+        _last_input_audio moves without anyone speaking.
+        PhaseEmitter.note_device_wake clears _talat_sedan_vakning and
+        UserStartedSpeaking sets it. The follow-up flush leaves it alone, so a
+        finished conversation is left to the 30 s quiet rule (live 2026-10-07).
         """
         emitter = self._phase_emitter
+        if emitter is not None and hasattr(emitter, "_talat_sedan_vakning"):
+            return bool(emitter._talat_sedan_vakning)
         if emitter is not None and hasattr(emitter, "_speech_since_wake"):
             return bool(emitter._speech_since_wake)
         return self._last_input_audio > self._last_wake
@@ -1595,7 +1599,7 @@ class WebSocketHandler:
             # actually speaks, a server-VAD end-of-turn is a stale pre-wake
             # segment closing late → suppress its thinking + cancel its garbage
             # response (handled in PhaseEmitter via the kill-window callbacks).
-            phase_emitter.note_wake()
+            phase_emitter.note_device_wake()
             # Only here, never on the mic flush: the early ack tells a woken
             # turn from a follow-up by this (TurnLiveness.from_wake).
             if connection.turn_liveness is not None:
