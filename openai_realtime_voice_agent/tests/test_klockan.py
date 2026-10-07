@@ -34,26 +34,55 @@ def test_annat_ar_ingen_klockfraga(text):
     assert not klockan.ar_klockfraga(text)
 
 
+def _kl(h, m, tz=klockan.TZ, manad=10):
+    return datetime(2026, manad, 7, h, m, tzinfo=tz)
+
+
 @pytest.mark.parametrize("nu, sagt", [
-    (datetime(2026, 10, 7, 14, 22, tzinfo=klockan.TZ), ["Klockan är fjorton", "och tjugotvå minuter"]),
-    (datetime(2026, 10, 7, 9, 5, tzinfo=klockan.TZ), ["Klockan är nio", "och fem minuter"]),
-    (datetime(2026, 10, 7, 0, 0, tzinfo=klockan.TZ), ["Klockan är noll"]),
-    (datetime(2026, 10, 7, 7, 1, tzinfo=klockan.TZ), ["Klockan är sju", "och en minut"]),
-    (datetime(2026, 10, 7, 23, 59, tzinfo=klockan.TZ), ["Klockan är tjugotre", "och femtionio minuter"]),
+    # The way a Swede says it: twelve-hour dial, to the nearest five minutes.
+    (_kl(17, 20), "Hon är tjugo över fem."),
+    (_kl(17, 19), "Hon är tjugo över fem."),
+    (_kl(17, 25), "Hon är fem i halv sex."),
+    (_kl(17, 30), "Hon är halv sex."),
+    (_kl(17, 35), "Hon är fem över halv sex."),
+    (_kl(17, 45), "Hon är kvart i sex."),
+    (_kl(17, 58), "Hon är sex."),
+    (_kl(9, 5), "Hon är fem över nio."),
+    (_kl(9, 15), "Hon är kvart över nio."),
+    (_kl(0, 0), "Hon är tolv."),
+    (_kl(12, 40), "Hon är tjugo i ett."),
+    (_kl(23, 58), "Hon är tolv."),
+    (_kl(11, 30), "Hon är halv tolv."),
     # UTC in, Stockholm out: summer +2, winter +1.
-    (datetime(2026, 10, 7, 12, 30, tzinfo=timezone.utc), ["Klockan är fjorton", "och trettio minuter"]),
-    (datetime(2026, 12, 7, 12, 30, tzinfo=timezone.utc), ["Klockan är tretton", "och trettio minuter"]),
+    (_kl(12, 30, timezone.utc), "Hon är halv tre."),
+    (_kl(12, 30, timezone.utc, 12), "Hon är halv två."),
 ])
-def test_ratt_timme_och_minut_i_stockholm(nu, sagt):
-    assert klockan.delar(nu) == sagt
+def test_som_en_svensk_sager_det(nu, sagt):
+    assert klockan.delar(nu, med_kommentar=False) == [sagt]
 
 
-def test_varje_minut_har_ett_forrenderat_klipp():
-    alla = set(klockan.alla_delar())
-    assert len(alla) == 24 + 59
+@pytest.mark.parametrize("h, rad", [
+    (2, "Gå och lägg dig, för fan."), (7, "Kaffe först, sen allt annat."),
+    (13, "Dagen rullar på."), (18, "Snart dags att käka."), (23, "Sängdags snart, va?"),
+])
+def test_bjorns_kommentar_efter_tiden_pa_dygnet(h, rad):
+    assert klockan.delar(_kl(h, 0), med_kommentar=True)[1] == rad
+
+
+def test_varannan_gang_en_kommentar():
+    svar = [klockan.delar(_kl(18, 0)) for _ in range(4)]
+    assert [len(d) for d in svar] in ([1, 2, 1, 2], [2, 1, 2, 1])
+
+
+def test_varje_tid_har_ett_klipp_och_de_narmaste_renderas_forst():
+    alla = klockan.alla_delar(_kl(17, 20))
+    assert len(alla) == len(set(alla)) == 5 + 12 * 12
     for h in range(24):
         for m in range(60):
-            assert set(klockan.delar(datetime(2026, 1, 1, h, m, tzinfo=klockan.TZ))) <= alla
+            assert set(klockan.delar(_kl(h, m), med_kommentar=True)) <= set(alla)
+    assert alla[5:8] == ["Hon är tjugo över fem.", "Hon är fem i halv sex.", "Hon är halv sex."]
+    # Every clip is a phrase: Gemini TTS gives no audio for a bare number.
+    assert all(len(t.split()) >= 3 for t in alla)
 
 
 FAST = datetime(2026, 10, 7, 14, 22, tzinfo=klockan.TZ)
@@ -78,11 +107,11 @@ async def test_klockan_svarar_utan_comms_och_modell(comms, fraga):
     service, said = FakeService(), []
 
     async def klocka(text):
-        said.extend(klockan.delar(FAST))
+        said.extend(klockan.delar(FAST, med_kommentar=False))
 
     async with server:
         assert await _klocktur(port, service, said, klocka) == "klockan"
-    assert said == ["Klockan är fjorton", "och tjugotvå minuter"]
+    assert said == ["Hon är tjugo över två."]
     assert comms.seen == [] and service.events == []
 
 
@@ -116,26 +145,33 @@ async def test_klocka_som_fallerar_ger_vanlig_tur(comms):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fel, pa_disk, vantat_forvantat", [
-    # tre fails twice and is skipped; the rest go on, each render paced.
-    ({"Klockan är tre": 2}, set(), [8.0, 8.0, 8.0, 60, 8.0]),
-    # three clips in a row fail twice: the engine is down, stop.
-    ({"Klockan är noll": 2, "Klockan är ett": 2, "Klockan är två": 2}, set(), [60, 8.0, 60, 8.0, 60]),
+@pytest.mark.parametrize("fel, pa_disk, per_dag, vantat_forvantat", [
+    # one clip fails twice and is skipped; the rest go on, each render paced.
+    ({"Kaffe först, sen allt annat.": 2}, set(), 60, [8.0, 60, 8.0, 8.0]),
+    # three in a row fail twice (quota or engine out): wait for tomorrow, go on.
+    ({"Gå och lägg dig, för fan.": 2, "Kaffe först, sen allt annat.": 2, "Dagen rullar på.": 2},
+     set(), 60, [60, 8.0, 60, 8.0, 60, 8.0, "imorgon", 8.0]),
     # a clip already on disk costs no request and no wait.
-    ({}, {"Klockan är noll", "Klockan är ett"}, [8.0]),
+    ({}, {"Gå och lägg dig, för fan.", "Kaffe först, sen allt annat."}, 60, [8.0]),
+    # the daily share of Google's 100: then tomorrow.
+    ({}, set(), 3, [8.0, 8.0, 8.0, "imorgon", 8.0]),
 ])
-async def test_uppvarmningen_haller_googles_takt(monkeypatch, fel, pa_disk, vantat_forvantat):
-    """10 TTS requests/min (429 on 2026-10-07): a render waits, the disk does not,
-    and no clip is cached in another voice."""
+async def test_uppvarmningen_haller_googles_takt(monkeypatch, fel, pa_disk, per_dag, vantat_forvantat):
+    """10 TTS requests/min and 100/day (429s on 2026-10-07): a render waits, the
+    disk does not, no clip is cached in another voice, the quota is shared."""
     import app.main as main
 
     vantat, nu = [], [0.0]
 
     async def sov(s):
-        vantat.append(s)
+        vantat.append("imorgon" if s == 86400 else s)
 
     monkeypatch.setattr(main.asyncio, "sleep", sov)
     monkeypatch.setattr(main.time, "monotonic", lambda: nu[0])
+    monkeypatch.setattr(main, "till_ny_dag", lambda: 86400)
+    monkeypatch.setattr(main, "KLOCK_PER_DAG", per_dag)
+    monkeypatch.setattr(main, "renderat_idag", lambda provider: 0)
+    monkeypatch.setattr(klockan, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: _kl(0, 0))}))
 
     class Agent:
         async def _ack_clip(self, provider, text, fallback=True):
@@ -150,11 +186,8 @@ async def test_uppvarmningen_haller_googles_takt(monkeypatch, fel, pa_disk, vant
 
     await main.Application._warm_klockan(Agent(), "gemini", takt_s=8.0)
     assert vantat[:len(vantat_forvantat)] == vantat_forvantat
-    if len(fel) == 3:
-        assert vantat == vantat_forvantat  # stopped after the third
-    else:
-        renderade = 24 + 59 - len(pa_disk)
-        assert len(vantat) == renderade + (1 if fel else 0)  # plus the one minute wait
+    renderade = 5 + 144 - len(pa_disk)
+    assert vantat.count(8.0) == renderade  # every clip is reached in the end
 
 
 @pytest.mark.asyncio
@@ -178,3 +211,53 @@ async def test_klockan_varms_for_varje_motor_aven_nar_en_replik_fallerar():
 
     await main.Application._warm_early_acks(Agent())
     assert klockor == ["gemini", "openai"]
+
+
+@pytest.mark.parametrize("nu, sekunder", [
+    (datetime(2026, 10, 7, 14, 28, tzinfo=timezone.utc), (9 * 60 + 37) * 60),
+    (datetime(2026, 10, 8, 0, 2, tzinfo=timezone.utc), 180),  # not a whole day
+    (datetime(2026, 10, 8, 0, 5, tzinfo=timezone.utc), 24 * 3600),
+])
+def test_nasta_dag_ar_nasta_0005_utc(nu, sekunder):
+    import app.main as main
+
+    assert main.till_ny_dag(nu) == sekunder
+
+
+def test_dagens_renderingar_raknas_fran_disken(tmp_path):
+    """A restart on the same day keeps counting (G: 60 + 60 > Google's 100)."""
+    import os
+    import time as _time
+    import app.main as main
+
+    for i in range(3):
+        (tmp_path / f"gemini_{i}.pcm").write_bytes(b"x")
+    gammal = tmp_path / "gemini_igar.pcm"
+    gammal.write_bytes(b"x")
+    os.utime(gammal, (_time.time() - 2 * 86400,) * 2)
+    (tmp_path / "xai_0.pcm").write_bytes(b"x")
+    assert main.renderat_idag("gemini", str(tmp_path)) == 3
+
+
+@pytest.mark.asyncio
+async def test_omstart_samma_dag_fortsatter_rakna(monkeypatch):
+    import app.main as main
+
+    vantat = []
+
+    async def sov(s):
+        vantat.append("imorgon" if s == 86400 else s)
+
+    tid = [0.0]
+    monkeypatch.setattr(main.asyncio, "sleep", sov)
+    monkeypatch.setattr(main.time, "monotonic", lambda: tid[0])
+    monkeypatch.setattr(main, "till_ny_dag", lambda: 86400)
+    monkeypatch.setattr(main, "renderat_idag", lambda provider: 59)
+
+    class Agent:
+        async def _ack_clip(self, provider, text, fallback=True):
+            tid[0] += 1.0
+            return b"pcm"
+
+    await main.Application._warm_klockan(Agent(), "gemini", takt_s=8.0)
+    assert vantat[:2] == [8.0, "imorgon"]  # 59 already today: one more, then tomorrow

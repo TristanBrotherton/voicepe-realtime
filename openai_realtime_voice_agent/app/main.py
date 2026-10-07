@@ -16,6 +16,32 @@ from app.idag import Idag
 from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, xai_tts
 
 KLOCK_TAKT_S = 8.0  # ponytail: 7.5 renders/min under Gemini TTS's 10/min; ask for more quota if it bites
+KLOCK_PER_DAG = 60  # of Gemini TTS's 100 a day; the rest is left for live replies
+
+
+def till_ny_dag(nu=None) -> float:
+    """Seconds to the next 00:05 UTC, when Google's daily quota has started over
+    (a 429 at 14:28 UTC said retry in 33226 s: about 23:42 UTC)."""
+    import datetime as _dt
+    nu = nu or _dt.datetime.now(_dt.timezone.utc)
+    mal = nu.replace(hour=0, minute=5, second=0, microsecond=0)
+    if mal <= nu:
+        mal += _dt.timedelta(days=1)
+    return (mal - nu).total_seconds()
+
+
+def renderat_idag(provider, cache_dir=None) -> int:
+    """Clips this engine's TTS rendered today (UTC), from the disk cache, so a
+    restart on the same day does not start a fresh daily share."""
+    import datetime as _dt
+    from app import early_ack
+    cache_dir = cache_dir or early_ack.CACHE_DIR
+    midnatt = _dt.datetime.now(_dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    try:
+        with os.scandir(cache_dir) as filer:
+            return sum(1 for f in filer if f.name.startswith(f"{provider}_") and f.stat().st_mtime >= midnatt)
+    except OSError:
+        return 0
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.follow_up_tool import (
     get_follow_up_tool_definition,
@@ -1202,23 +1228,24 @@ class Application:
                 except Exception as e:
                     logger.warning(f"⚠️ early ack clip not cached: {e!r}")
                     break  # this engine; the others and the clock still warm
-        for provider in engines:
-            await self._warm_klockan(provider)
+        # Side by side: each engine has its own TTS quota (G's review of PR #18).
+        await asyncio.gather(*(self._warm_klockan(p) for p in engines))
 
     async def _warm_klockan(self, provider, takt_s: float = KLOCK_TAKT_S) -> None:
-        """The clock's 83 clips in the engine's own voice (US-032 AC-7).
+        """The clock's clips in the engine's own voice (US-032 AC-7), soonest first.
 
-        Paced: Gemini TTS allows 10 requests a minute per project (429 on
-        2026-10-07 after 12 clips), and live replies share that quota. A clip
-        on disk costs no request and no wait. No fallback voice: a clip that
-        fails is tried once more a minute later, then skipped (Gemini gave no
-        audio for "noll två" twice, 2026-10-07); three skipped in a row means
-        the engine is down, so it is left for the next start. A time with a
-        missing clip goes to the model, as before.
+        Gemini TTS allows 10 requests a minute and 100 a day per project, and
+        live replies share both (429s on 2026-10-07). So: 8 s between renders,
+        at most KLOCK_PER_DAG a day, then the next UTC day; the 149 clips take
+        about three days, the hours just ahead first. A clip on disk costs no
+        request and no wait. No fallback voice: a clip that fails is tried once
+        more a minute later, then skipped; three skipped in a row means the
+        engine or the quota is out, so it waits for the next day. A time with
+        a missing clip goes to the model, as before.
         """
         from app.klockan import alla_delar
 
-        saknas, i_rad = [], 0
+        saknas, i_rad, idag = [], 0, renderat_idag(provider)
         for text in alla_delar():
             for forsok in (1, 2):
                 start = time.monotonic()
@@ -1233,11 +1260,14 @@ class Application:
                         i_rad += 1
                     else:
                         await asyncio.sleep(60)
-            if i_rad >= 3:
-                logger.warning(f"⚠️ clock clips stopped ({provider}): three failed in a row")
-                return
             if time.monotonic() - start > 0.5:  # a real render, not the disk
+                idag += 1
                 await asyncio.sleep(takt_s)
+            if i_rad >= 3 or idag >= KLOCK_PER_DAG:
+                logger.warning(f"⚠️ clock clips paused ({provider}) until tomorrow: "
+                               f"{'three failed in a row' if i_rad >= 3 else f'{idag} rendered today'}")
+                await asyncio.sleep(till_ny_dag())
+                i_rad, idag = 0, renderat_idag(provider)
         logger.info(f"🕐 clock clips ready ({provider}), missing: {saknas or 'none'}")
 
     def _markera_ha_verktyg(self, connection, schema) -> None:

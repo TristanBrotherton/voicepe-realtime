@@ -2,6 +2,23 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.9 (fork)
+
+- **Klockan säger tiden som en svensk, i Björns ton (Henrik 2026-10-07).** Med
+  tolvtimmars urtavla och närmaste fem minuter blir det "Hon är tjugo över fem."
+  eller "Hon är kvart i sex.". Varannan gång följer en torr rad som passar tiden
+  på dygnet, till exempel "Gå och lägg dig, för fan." på natten eller "Snart
+  dags att käka." på kvällen. Varje klipp är en hel fras, eftersom Gemini TTS inte
+  ger ljud för ett ensamt tal.
+- **149 klipp, fördelade över dagarna.** Gemini TTS ger 100 anrop om dagen per
+  projekt, och de levande svaren använder samma kvot. Uppvärmningen renderar
+  därför högst 60 klipp om dagen och fortsätter nästa UTC-dygn. Den tar de
+  närmaste timmarna först. Tre fel i rad betyder att kvoten eller motorn är
+  slut, och då väntar den till i morgon i stället för att ge upp. Saknas ett
+  klipp svarar modellen som förut. Dagens antal räknas från disken, så en
+  omstart samma dag börjar inte om på 60. Varje motor värms parallellt med sin
+  egen kvot. Hel timme heter "Hon är sex.", inte "prick", eftersom 17:58 avrundas.
+
 ## 0.27.8 (fork)
 
 - **Dygnstaket tappar högst en minut, också vid kill -9 (raawr US-032 AC-4).**
