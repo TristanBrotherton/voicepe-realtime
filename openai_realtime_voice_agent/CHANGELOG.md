@@ -2,6 +2,24 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.10 (fork)
+
+- **En tillståndsmaskin per session (raawr US-032 AC-9).** `app/session_state.py`
+  har läget IDLE, WAKE, LISTENING, THINKING, SPEAKING och CLOSING och en tabell med
+  utfall för varje par av läge och händelse. Den är den enda kod som skickar ett
+  fasmeddelande till enheten och den enda som väcker eller söver molnmotorn.
+  Varje byte blir en journalrad med orsak, `🧭 kontoret: SPEAKING -> CLOSING
+  (close: quiet for 30s)`. En händelse som läget inte tillåter ändrar ingenting
+  och skrivs som `rejected`. Väckningen vinner alltid över en nedstängning.
+- **En tappad länk stänger kedjan.** Provet med låtsashögtalaren på core visade
+  att kedjan stannade i THINKING när länken bröts. Nu stänger nedrivningen den
+  (`close: link lost or displaced`) och kedjan slutar i IDLE.
+- **En källtextsvakt** i `tests/test_session_state.py` faller om en annan modul
+  anropar motorns `sova`/`vakna` eller enhetens `send_phase`. På 0.27.9 fångar den
+  sju anrop i `websocket_handler.py` och `xai_realtime.py`.
+- **`tools/kedjekoll.py`** läser journalen och kontrollerar att en enhets kedja är
+  obruten, börjar och slutar i IDLE och saknar avvisade händelser.
+
 ## 0.27.9 (fork)
 
 - **Klockan säger tiden som en svensk, i Björns ton (Henrik 2026-10-07).** Med

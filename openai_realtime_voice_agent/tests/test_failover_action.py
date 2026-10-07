@@ -30,6 +30,8 @@ class FakeConnection:
         self.task = FakeTask(self.events)
         self.device_id = "10.30.0.81"
         self.phases = []
+        from app.session_state import SessionMaskin
+        self.maskin = SessionMaskin(self.device_id, self.send_phase)
 
     async def send_phase(self, value):
         self.phases.append(value)

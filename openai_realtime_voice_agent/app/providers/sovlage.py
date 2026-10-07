@@ -209,6 +209,14 @@ class SovlageMixin:
         self._bokfort_till = time.monotonic()
         self.budget.lagg_till(sekunder)
 
+    async def sov_begaran(self, reason: str) -> bool:
+        """The engine asks to sleep (xAI closes an idle session): through the
+        session's state machine, like every other sleep."""
+        from app.session_state import SessionMaskin
+
+        maskin = getattr(self, "_maskin", None) or SessionMaskin("engine")
+        return await maskin.sov(self, reason)
+
     def over_maxtid(self) -> bool:
         return self.oppen_tid() >= max_sekunder_per_samtal()
 

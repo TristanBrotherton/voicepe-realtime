@@ -82,6 +82,7 @@ class DeviceConnection:
     websocket: Any
     serializer: Any = None
     transport: Any = None
+    maskin: Any = None  # app/session_state.SessionMaskin, set by build_pipeline
     openai_service: Any = None
     # Which engine this connection's session actually runs ("openai" or
     # "gemini"), decided once by WebSocketHandler.serve_connection before the

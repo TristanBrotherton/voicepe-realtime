@@ -30,6 +30,7 @@ from app.providers import (
     supports_client_events,
 )
 from app import bana0, klockan
+from app.session_state import SessionMaskin
 
 # US-018: well under EARLY_ACK_SILENCE_MS (1500 default, 2000 on core), counted
 # from the same moment, so the honest line wins the slot over "Ett ögonblick."
@@ -217,9 +218,11 @@ class ConnectionRecovery(FrameProcessor):
     REFRESH_CHECK_S = 60.0    # poll cadence of the background check
 
     def __init__(self, openai_service, emit_idle=None, phase_emitter=None,
-                 provider="openai", router=None, on_failover=None, **kwargs):
+                 provider="openai", router=None, on_failover=None, maskin=None, **kwargs):
         super().__init__(**kwargs)
         self._service = openai_service
+        # The only way the engine is woken or put to sleep (app/session_state.py).
+        self._maskin = maskin or SessionMaskin("recovery")
         self._emit_idle = emit_idle  # async callable(value:str), this device's send_phase
         # Preferred idle route: PhaseEmitter.force_idle() keeps the emitter's
         # phase state consistent AND suppresses the racing `thinking` from VAD
@@ -764,11 +767,8 @@ class ConnectionRecovery(FrameProcessor):
         hold the device's frames (and its ping/pong) for more than a moment.
         """
         self.note_wake()
-        vakna = getattr(self._service, "vakna", None)
-        if vakna is None:
-            return
         try:
-            if await asyncio.wait_for(vakna(), self.VAKNA_TIMEOUT_S):
+            if await asyncio.wait_for(self._maskin.vakna(self._service), self.VAKNA_TIMEOUT_S):
                 self._connected_at = time.monotonic()
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ cloud connect on wake took over {self.VAKNA_TIMEOUT_S:.0f}s — going on")
@@ -830,17 +830,17 @@ class ConnectionRecovery(FrameProcessor):
                 from app.providers.sovlage import sov_efter_s
                 if self._service.over_budget():
                     logger.warning("💸 cloud budget for today used — disconnecting now")
-                    await self._service.sova("daily cloud budget used")
+                    await self._maskin.sov(self._service, "daily cloud budget used")
                 elif self._service.over_maxtid():
                     # Even mid-sentence: the next wake word connects again.
                     logger.warning("⏱️ cloud session reached its maximum length — disconnecting")
-                    await self._service.sova("maximum session length")
+                    await self._maskin.sov(self._service, "maximum session length")
                 elif self._vakning_utan_tal(time.monotonic()):
                     # Stuck in listening or replying must not keep the engine
                     # awake: nobody has spoken since this wake.
-                    await self._service.sova(f"wake without speech for {self.VAKNA_TIMEOUT_S:.0f}s")
+                    await self._maskin.sov(self._service, f"wake without speech for {self.VAKNA_TIMEOUT_S:.0f}s")
                 elif self._tyst_nog(time.monotonic()):
-                    await self._service.sova(f"quiet for {sov_efter_s():.0f}s")
+                    await self._maskin.sov(self._service, f"quiet for {sov_efter_s():.0f}s")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -919,7 +919,7 @@ def make_failover(connection):
         # Unstick the device first, so the LED does not blink through the gap
         # and leave the user thinking it is still listening.
         try:
-            await connection.send_phase("idle")
+            await connection.maskin.phase("idle", "failover")
         except Exception as e:
             logger.warning(f"⚠️ could not emit idle before failover: {e!r}")
         task = getattr(connection, "task", None)
@@ -1251,7 +1251,10 @@ class WebSocketHandler:
         serializer = connection.serializer
         # Phases go to this device only. They used to be broadcast, so one
         # room's listening/thinking/replying drove every device's LEDs.
-        send_phase = connection.send_phase
+        # Every phase message goes through the session's state machine.
+        maskin = SessionMaskin(client_id, connection.send_phase)
+        connection.maskin = maskin
+        send_phase = maskin.phase
         logger.info(f"🔗 Building pipeline for client: {client_id}")
         
         if openai_service is None:
@@ -1305,8 +1308,10 @@ class WebSocketHandler:
 
         connection.phase_emitter = phase_emitter
 
+        # An engine that closes itself (xAI, 900 s idle) sleeps through the machine too.
+        openai_service._maskin = maskin
         connection.recovery = ConnectionRecovery(
-            openai_service=openai_service, emit_idle=send_phase,
+            openai_service=openai_service, emit_idle=send_phase, maskin=maskin,
             phase_emitter=connection.phase_emitter,
             # provider names the engine THIS connection's service actually is
             # (see the comment below) -- the only thing that lets handle_error
@@ -2190,6 +2195,12 @@ class WebSocketHandler:
             # sova() is not the only close: a displacing reconnect and cleanup
             # land here too. bokfor() clears the clock, so a session that
             # already slept is not counted twice.
+            # The link dropped or a newer connection displaced this one: the
+            # engine goes down without sova(), so the state machine closes here
+            # (AC-9: the chain must end in IDLE, with its reason).
+            maskin = connection.maskin
+            stangs = (maskin is not None and not getattr(service, "sover", True)
+                      and maskin.handle("close", "link lost or displaced"))
             bokfor = getattr(service, "bokfor", None)
             if bokfor is not None:
                 try:
@@ -2205,6 +2216,8 @@ class WebSocketHandler:
                     break
                 except Exception as e:
                     logger.debug(f"{method}() for {connection.device_id}: {e!r}")
+            if stangs:
+                maskin.handle("closed", "link lost or displaced")
         connection.task = None
         connection.runner = None
         connection.pipeline = None

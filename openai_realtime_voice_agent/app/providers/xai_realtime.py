@@ -240,7 +240,7 @@ class XaiRealtimeLLMService(LocalTurnsMixin, SafeRealtimeLLMService):
             # Sleep, never reconnect (raawr INKAST 2026-10-04: reconnecting a
             # quiet session all night cost ~45 dollars; xAI bills per minute).
             logger.info("💤 xAI closed an idle session (900 s) — going to sleep, not reconnecting")
-            asyncio.get_running_loop().create_task(self.sova("xAI idle close (900 s)"))
+            asyncio.get_running_loop().create_task(self.sov_begaran("xAI idle close (900 s)"))
             return True
         return await super()._maybe_handle_evt_retrieve_conversation_item_error(evt)
 
