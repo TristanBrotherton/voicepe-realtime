@@ -213,12 +213,23 @@ async def test_klockan_varms_for_varje_motor_aven_nar_en_replik_fallerar():
     assert klockor == ["gemini", "openai"]
 
 
-@pytest.mark.parametrize("nu, sekunder", [
-    (datetime(2026, 10, 7, 14, 28, tzinfo=timezone.utc), (9 * 60 + 37) * 60),
-    (datetime(2026, 10, 8, 0, 2, tzinfo=timezone.utc), 180),  # not a whole day
-    (datetime(2026, 10, 8, 0, 5, tzinfo=timezone.utc), 24 * 3600),
+@pytest.mark.parametrize("nu, start", [
+    (datetime(2026, 10, 8, 6, 40, tzinfo=timezone.utc), datetime(2026, 10, 7, 7, 0, tzinfo=timezone.utc)),
+    (datetime(2026, 10, 8, 7, 1, tzinfo=timezone.utc), datetime(2026, 10, 8, 7, 0, tzinfo=timezone.utc)),
+    (datetime(2026, 12, 8, 7, 59, tzinfo=timezone.utc), datetime(2026, 12, 7, 8, 0, tzinfo=timezone.utc)),  # winter: PST
 ])
-def test_nasta_dag_ar_nasta_0005_utc(nu, sekunder):
+def test_googles_kvotdygn_borjar_vid_midnatt_i_pacific(nu, start):
+    import app.main as main
+
+    assert main.kvotdygn_start(nu) == start
+
+
+@pytest.mark.parametrize("nu, sekunder", [
+    (datetime(2026, 10, 8, 6, 40, tzinfo=timezone.utc), 25 * 60),         # 07:05 UTC
+    (datetime(2026, 10, 8, 7, 3, tzinfo=timezone.utc), 2 * 60),  # first minutes of the new day: wait for 07:05, not a day
+    (datetime(2026, 10, 8, 14, 28, tzinfo=timezone.utc), (16 * 60 + 37) * 60),
+])
+def test_nasta_dag_ar_fem_minuter_in_i_nasta_kvotdygn(nu, sekunder):
     import app.main as main
 
     assert main.till_ny_dag(nu) == sekunder

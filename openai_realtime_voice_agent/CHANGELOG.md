@@ -2,6 +2,12 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.14 (fork)
+
+- **Klockklippens kvotdygn följer Google (raawr US-032).** Googles TTS-kvot nollas vid
+  midnatt i Pacific (07:00 UTC på sommaren, 08:00 på vintern), inte 00:00 UTC. Uppvärmningen
+  väntar nu till fem minuter efter det, och dagens renderingar räknas från den tidpunkten.
+
 ## 0.27.13 (fork)
 
 - **Bana 0:s tal-till-text startar tidigt (raawr US-032).** Turdetektorn får en andra,

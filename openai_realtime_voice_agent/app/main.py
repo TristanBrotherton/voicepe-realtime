@@ -24,27 +24,37 @@ KLOCK_TAKT_S = 8.0  # ponytail: 7.5 renders/min under Gemini TTS's 10/min; ask f
 KLOCK_PER_DAG = 60  # of Gemini TTS's 100 a day; the rest is left for live replies
 
 
+def kvotdygn_start(nu=None):
+    """When Google's daily quota day began: midnight Pacific time, as UTC (the free
+    tier counts requests per Pacific day; the 429s of 2026-10-07/08 outlasted UTC
+    midnight and cleared in the morning, Swedish time)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    pt = ZoneInfo("America/Los_Angeles")
+    nu = (nu or _dt.datetime.now(_dt.timezone.utc)).astimezone(pt)
+    return nu.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(_dt.timezone.utc)
+
+
 def till_ny_dag(nu=None) -> float:
-    """Seconds to the next 00:05 UTC, when Google's daily quota has started over
-    (a 429 at 14:28 UTC said retry in 33226 s: about 23:42 UTC)."""
+    """Seconds to five minutes into the next quota day; in the first five minutes of one,
+    to that moment (a pause then does not lose a whole day)."""
     import datetime as _dt
     nu = nu or _dt.datetime.now(_dt.timezone.utc)
-    mal = nu.replace(hour=0, minute=5, second=0, microsecond=0)
+    mal = kvotdygn_start(nu) + _dt.timedelta(minutes=5)
     if mal <= nu:
         mal += _dt.timedelta(days=1)
     return (mal - nu).total_seconds()
 
 
 def renderat_idag(provider, cache_dir=None) -> int:
-    """Clips this engine's TTS rendered today (UTC), from the disk cache, so a
-    restart on the same day does not start a fresh daily share."""
-    import datetime as _dt
+    """Clips this engine's TTS rendered in the current quota day, from the disk cache,
+    so a restart on the same day does not start a fresh daily share."""
     from app import early_ack
     cache_dir = cache_dir or early_ack.CACHE_DIR
-    midnatt = _dt.datetime.now(_dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    start = kvotdygn_start().timestamp()
     try:
         with os.scandir(cache_dir) as filer:
-            return sum(1 for f in filer if f.name.startswith(f"{provider}_") and f.stat().st_mtime >= midnatt)
+            return sum(1 for f in filer if f.name.startswith(f"{provider}_") and f.stat().st_mtime >= start)
     except OSError:
         return 0
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
