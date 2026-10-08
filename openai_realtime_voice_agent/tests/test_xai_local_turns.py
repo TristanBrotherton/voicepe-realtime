@@ -22,6 +22,13 @@ from app.phase_emitter import PhaseEmitter, TurnLiveness
 from app.providers import XAI, ProviderOptions, build_service, drop_pending_input_audio
 
 
+@pytest.fixture(autouse=True)
+def fyllnadsreplikerna_pa(monkeypatch):
+    """The fillers are off by default since 0.27.12; these tests are about the net
+    around them (the silence ack, the local turn's ack) with them on."""
+    monkeypatch.setenv("EARLY_ACK", "1")
+
+
 def _options(**over):
     base = dict(api_key="xai-test", model="grok-voice-latest", voice="rex", instructions="Du är Björn.",
                 turn_detection_type="server_vad", vad_silence_duration_ms=800,

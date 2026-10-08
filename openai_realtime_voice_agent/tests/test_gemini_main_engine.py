@@ -110,19 +110,21 @@ def _silence_used(monkeypatch, **over):
     return used[0]
 
 
-def test_a_pause_of_a_second_does_not_end_his_turn(monkeypatch):
-    """800 ms cut him off mid-question at every natural pause."""
-    assert _silence_used(monkeypatch) == 1200
-    assert _silence_used(monkeypatch, gemini_turn_silence_ms=1500) == 1500
+def test_the_turn_ends_after_800_ms_of_quiet_and_it_can_be_set_back(monkeypatch):
+    """1200 ms until 0.27.12 (a pause of a second must not end his turn); 800 ms now,
+    measured with tools/paustest.py: pauses up to 0.8 s go through, 1 s ones cut.
+    GEMINI_TURN_SILENCE_MS=1200 is the way back."""
+    assert _silence_used(monkeypatch) == 800
+    assert _silence_used(monkeypatch, gemini_turn_silence_ms=1200) == 1200
     # Google's own VAD knob no longer decides the local turn end.
-    assert _silence_used(monkeypatch, gemini_vad_silence_duration_ms=300) == 1200
+    assert _silence_used(monkeypatch, gemini_vad_silence_duration_ms=300) == 800
 
 
 def test_the_turn_silence_is_an_add_on_setting():
     from app.main import Application
 
     app = Application()
-    assert app.gemini_turn_silence_ms == 1200
+    assert app.gemini_turn_silence_ms == 800
     app.gemini_turn_silence_ms = 900
     for name, value in dict(
         instructions="x", gemini_api_key="k", gemini_model="", gemini_voice="",

@@ -78,12 +78,12 @@ class ProviderOptions:
     # his turn. 800 ms cut him off mid-question at every natural pause
     # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
     # which is Google's own VAD and only used when local detection is off.
-    gemini_turn_silence_ms: int = 1200
+    gemini_turn_silence_ms: int = 800  # main.TURN_SILENCE_MS
     # xAI: "local" (default since 0.25.3) = the same local Silero turn end as
     # Gemini, with xai_turn_silence_ms; "server" = xAI's server_vad, which
     # ended turns 5-13 s late in a room with music (2026-10-02).
     xai_turn_detection: str = "local"
-    xai_turn_silence_ms: int = 1200
+    xai_turn_silence_ms: int = 800  # main.TURN_SILENCE_MS
     # "Proactive audio": Google's own answer to a speaker that hears the room.
     # The model listens to everything but decides for itself whether the audio
     # was addressed to it, and stays silent when it was not (silence is not

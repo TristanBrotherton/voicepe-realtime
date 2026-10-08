@@ -13,8 +13,13 @@ from app import ha_api, tool_selection
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
-from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, xai_tts
+from app.early_ack import EARLY_ACK_PHRASES, ack_phrase, gemini_tts, paa as early_ack_paa, xai_tts
 
+# How long a quiet ends the user's turn (Silero, locally; Gemini and xAI). 1200 ms
+# before 0.27.12. Measured with a pause inside a sentence (tools/paustest.py): 800 ms
+# lets a pause of up to 0.8 s through, 700 ms cuts at 0.8 s. A cut turn can be undone
+# with GEMINI_TURN_SILENCE_MS / XAI_TURN_SILENCE_MS (1200 = as before).
+TURN_SILENCE_MS = 800
 KLOCK_TAKT_S = 8.0  # ponytail: 7.5 renders/min under Gemini TTS's 10/min; ask for more quota if it bites
 KLOCK_PER_DAG = 60  # of Gemini TTS's 100 a day; the rest is left for live replies
 
@@ -257,11 +262,11 @@ class Application:
     """Main application class using Pipecat."""
 
     # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
-    gemini_turn_silence_ms = 1200
+    gemini_turn_silence_ms = TURN_SILENCE_MS
     # Same on xAI (0.25.3): XAI_TURN_SILENCE_MS; XAI_TURN_DETECTION=server
     # gives the turn end back to xAI's server_vad.
     xai_turn_detection = "local"
-    xai_turn_silence_ms = 1200
+    xai_turn_silence_ms = TURN_SILENCE_MS
 
     def __init__(self):
         """Initialize application."""
@@ -642,9 +647,9 @@ class Application:
         self.xai_voice = os.environ.get("XAI_VOICE", "").strip() or "rex"
         self.xai_turn_detection = os.environ.get("XAI_TURN_DETECTION", "").strip().lower() or "local"
         try:
-            self.xai_turn_silence_ms = int(os.environ.get("XAI_TURN_SILENCE_MS", "1200"))
+            self.xai_turn_silence_ms = int(os.environ.get("XAI_TURN_SILENCE_MS", str(TURN_SILENCE_MS)))
         except ValueError:
-            self.xai_turn_silence_ms = 1200
+            self.xai_turn_silence_ms = TURN_SILENCE_MS
         # Gemini's own turn detection: easy to start a turn (START LOW never
         # opened one for most commands, 2026-10-02 -- see ProviderOptions),
         # slow to end one.
@@ -667,9 +672,9 @@ class Application:
         except ValueError:
             self.gemini_vad_silence_duration_ms = 800
         try:
-            self.gemini_turn_silence_ms = int(os.environ.get("GEMINI_TURN_SILENCE_MS", "1200"))
+            self.gemini_turn_silence_ms = int(os.environ.get("GEMINI_TURN_SILENCE_MS", str(TURN_SILENCE_MS)))
         except ValueError:
-            self.gemini_turn_silence_ms = 1200
+            self.gemini_turn_silence_ms = TURN_SILENCE_MS
         self.gemini_proactive_audio = (
             os.environ.get("GEMINI_PROACTIVE_AUDIO", "").strip().lower() == "true"
         )
@@ -1222,7 +1227,7 @@ class Application:
                                     (XAI, self.xai_api_key)) if key]
         for provider in engines:
             # Bana 0's lines too: offline only the cached clip can speak (US-018).
-            for text in EARLY_ACK_PHRASES + LOKALA_REPLIKER:
+            for text in (EARLY_ACK_PHRASES if early_ack_paa() else ()) + LOKALA_REPLIKER:
                 try:
                     await self._ack_clip(provider, text)
                 except Exception as e:

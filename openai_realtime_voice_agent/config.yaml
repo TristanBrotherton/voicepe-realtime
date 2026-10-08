@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent (Raawr)
-version: "0.27.11"
+version: "0.27.12"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -73,7 +73,7 @@ options:
   gemini_vad_silence_duration_ms: 800
   # The add-on's own turn detection (default since 0.22.5): silence that ends
   # your turn. 800 cut questions off at every pause (2026-10-02).
-  gemini_turn_silence_ms: 1200
+  gemini_turn_silence_ms: 800
   # Google's own "was that meant for me?" judgement. Needs a native-audio
   # model (models/gemini-2.5-flash-native-audio-latest) — gemini-3.1-flash-live
   # does not support it, and the add-on refuses the combination rather than

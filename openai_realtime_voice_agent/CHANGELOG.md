@@ -2,6 +2,23 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.12 (fork)
+
+- **"Ett ögonblick" är borta (Henrik 2026-10-07: det blir konstigt).** Ledtråden till
+  modellen i de långsamma verktygens beskrivningar, timerklippen och deras
+  uppvärmning är av. `EARLY_ACK=1` slår på dem igen. Bana 0:s egna repliker
+  ("Klart.", "Jag når inte nätet") är kvar. Mätt på core 2026-10-08: tidigare var
+  första ljudet nästan alltid utfyllnaden, 3,5-3,8 s efter frågans slut, medan
+  svaret kom efter 4,2-5,2 s.
+- **Turslutet väntar 800 ms på tystnad i stället för 1200 ms** (Gemini och xAI).
+  `tools/paustest.py` visar att en paus på upp till 0,8 s mitt i en mening går igenom, att
+  0,7 s kapar vid 0,8 s paus, och att en paus på 1,0 s kapar redan vid 900 ms. Genom hela
+  kedjan på core: pauserna 0,6 s och 0,8 s blir en tur, 1,0 s blir två. Vägen tillbaka är
+  `GEMINI_TURN_SILENCE_MS=1200` och `XAI_TURN_SILENCE_MS=1200`. På core står
+  1200 i `/etc/raawr-rostagent.env`, och måste ändras där för att 800 ska gälla.
+- **`tools/forstaljud.py` delar upp väntan** från frågans slut till första ljud i
+  tystnad, lokal tur, motor och verktyg, och uppspelning.
+
 ## 0.27.11 (fork)
 
 - **Attrappens molnminuter har en egen bok och ett eget tak (Henrik 2026-10-08).**

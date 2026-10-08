@@ -21,6 +21,12 @@ from app.main import Application
 from app.phase_emitter import PhaseEmitter, TurnLiveness
 from app.providers import GEMINI, OPENAI, ProviderOptions, build_service
 
+
+@pytest.fixture(autouse=True)
+def fyllnadsreplikerna_pa(monkeypatch):
+    """The fillers are off by default since 0.27.12; these tests are about them when on."""
+    monkeypatch.setenv("EARLY_ACK", "1")
+
 TIMING = re.compile(r"⏱ tool (\S+) (\d+) (ok|fel)$")
 
 
@@ -527,3 +533,40 @@ async def test_followup_slow_tool_acks_only_past_the_followup_threshold(monkeypa
     service = _acking_service(GEMINI, monkeypatch, _followup_liveness())
     await _call(service, "web_search", _slow)
     assert service.early_ack.await_count == 0
+
+
+# --- off by default (the owner 2026-10-07: "Ett ögonblick" sounds odd) -------------
+
+def test_utan_env_ar_fyllnadsreplikerna_av(monkeypatch):
+    from app import early_ack
+    from app.providers import tool_registration as tr
+
+    monkeypatch.delenv("EARLY_ACK", raising=False)
+    tools = [{"name": "web_search", "description": "Search."}]
+    assert early_ack.with_ack_hint(tools) == tools  # no hint to the model
+    assert tr._early_ack_ms() == tr._silence_ack_ms() == tr._followup_ack_ms() == 0  # no timer clips
+    monkeypatch.setenv("EARLY_ACK", "1")
+    assert early_ack.SLOW_TOOL_HINT in early_ack.with_ack_hint(tools)[0]["description"]
+    assert tr._early_ack_ms() > 0
+
+
+@pytest.mark.asyncio
+async def test_uppvarmningen_hoppar_over_fyllnadsklippen_nar_de_ar_av(monkeypatch):
+    import app.main as main
+
+    monkeypatch.delenv("EARLY_ACK", raising=False)
+    klipp = []
+
+    class Agent:
+        gemini_api_key, openai_api_key, xai_api_key = "g", "", ""
+
+        async def _ack_clip(self, provider, text, fallback=True):
+            klipp.append(text)
+            return b"pcm"
+
+        async def _warm_klockan(self, provider):
+            pass
+
+    await main.Application._warm_early_acks(Agent())
+    from app.bana0 import LOKALA_REPLIKER
+    assert tuple(klipp) == LOKALA_REPLIKER  # bana 0's lines only: no "Ett ögonblick."

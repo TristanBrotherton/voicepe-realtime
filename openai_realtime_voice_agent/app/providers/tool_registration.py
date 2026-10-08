@@ -15,6 +15,8 @@ import logging
 import os
 import time
 
+from app.early_ack import paa as early_ack_paa
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +48,8 @@ def cap_tool_result(result, max_chars: int):
 
 
 def _early_ack_ms() -> int:
+    if not early_ack_paa():
+        return 0
     try:
         return max(0, int(os.environ.get("EARLY_ACK_MS", "700")))
     except ValueError:
@@ -53,6 +57,8 @@ def _early_ack_ms() -> int:
 
 
 def _silence_ack_ms() -> int:
+    if not early_ack_paa():
+        return 0
     try:
         return max(0, int(os.environ.get("EARLY_ACK_SILENCE_MS", "1500")))
     except ValueError:
@@ -60,6 +66,8 @@ def _silence_ack_ms() -> int:
 
 
 def _followup_ack_ms() -> int:
+    if not early_ack_paa():
+        return 0
     try:
         return max(0, int(os.environ.get("EARLY_ACK_FOLLOWUP_MS", "3000")))
     except ValueError:

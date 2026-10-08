@@ -15,6 +15,13 @@ Short, and never a question: a question mark would open the follow-up mic.
 """
 import os
 
+def paa() -> bool:
+    """The "Ett ögonblick" fillers: off since 0.27.12 (the owner 2026-10-07: it sounds
+    odd before the answer). EARLY_ACK=1 turns them back on: the hint to the model
+    in the slow tools' descriptions, the timer clips, and the clips' warm-up."""
+    return os.environ.get("EARLY_ACK", "0").strip() == "1"
+
+
 SLOW_TOOL_HINT = (
     " Säg först en kort mening om vad du ska göra, med egna ord "
     "(t.ex. 'Jag söker på nätet efter det' / 'Jag kollar i kalendern'), "
@@ -50,7 +57,10 @@ def is_slow_tool(name) -> bool:
 
 
 def with_ack_hint(tools):
-    """`tools` with SLOW_TOOL_HINT on each slow tool's description (copies, not in place)."""
+    """`tools` with SLOW_TOOL_HINT on each slow tool's description (copies, not in place).
+    Unchanged while the fillers are off (EARLY_ACK)."""
+    if not paa():
+        return list(tools)
     return [
         {**t, "description": (t.get("description") or "").rstrip() + SLOW_TOOL_HINT}
         if is_slow_tool(t.get("name")) and SLOW_TOOL_HINT not in (t.get("description") or "")

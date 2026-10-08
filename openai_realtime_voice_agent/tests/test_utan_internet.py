@@ -5,6 +5,13 @@ import pytest
 
 from app import bana0
 
+
+@pytest.fixture(autouse=True)
+def fyllnadsreplikerna_pa(monkeypatch):
+    """The fillers are off by default since 0.27.12; these tests are about the net
+    around them (the silence ack, the local turn's ack) with them on."""
+    monkeypatch.setenv("EARLY_ACK", "1")
+
 PCM = b"\x00" * 3200
 
 
