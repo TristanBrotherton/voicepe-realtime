@@ -2,6 +2,18 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.27.13 (fork)
+
+- **Bana 0:s tal-till-text startar tidigt (raawr US-032).** Turdetektorn får en andra,
+  kortare tystnadsgräns (`LOCAL_PRE_END_MS`, 500 ms, 0 = av) och säger då `preend`,
+  300 ms innan turen är slut. Bana 0 hämtar texten på det som sagts hittills medan
+  de sista 300 ms väntas ut, och använder den vid det riktiga slutet om det bara blivit
+  tystare (högst 0,6 s ljud till). Fortsätter talet kastas texten. Hit-eller-miss-beslutet
+  och comms-anropet sker som förut efter slutet, så **modellen hör fortfarande aldrig en
+  träff**. Mätt på core: den lokala turen efter tystnaden går från 0,3 s till 0,02 s, och
+  svaret kommer efter 3,3 s (ren fråga), 3,6 s (hemverktyg) och 4,1 s (Core), mot 3,9, 4,4
+  och 4,5 s med bara 800 ms utan tidig text. Gäller Gemini med bana 0.
+
 ## 0.27.12 (fork)
 
 - **"Ett ögonblick" är borta (Henrik 2026-10-07: det blir konstigt).** Ledtråden till

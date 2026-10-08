@@ -342,6 +342,10 @@ class RawAudioSerializer(FrameSerializer):
         """
         del self.turn_pcm[:-TURN_PCM_PREROLL]
 
+    def peek_turn_audio(self) -> bytes:
+        """The turn's mic audio so far, left in place (bana 0's early speech-to-text)."""
+        return bytes(self.turn_pcm)
+
     def take_turn_audio(self) -> bytes:
         """The turn's mic audio so far, and start a new one."""
         pcm = bytes(self.turn_pcm)

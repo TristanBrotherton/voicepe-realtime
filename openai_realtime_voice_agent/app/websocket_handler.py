@@ -32,6 +32,10 @@ from app.providers import (
 from app import bana0, klockan
 from app.session_state import SessionMaskin
 
+# The turn's audio may have grown by this much since the early speech-to-text started
+# (the last stretch of quiet, ~0.3 s at 16 kHz PCM16 mono) and still be the same words.
+SPEC_STT_SLACK_BYTES = 16000 * 2 * 6 // 10
+
 # US-018: well under EARLY_ACK_SILENCE_MS (1500 default, 2000 on core), counted
 # from the same moment, so the honest line wins the slot over "Ett ögonblick."
 OFFLINE_PROBE_S = 1.0
@@ -1709,10 +1713,45 @@ class WebSocketHandler:
                 except Exception as e:
                     logger.warning(f"⚠️ clock: settling the turn with the model failed: {e!r}")
 
+            # Speculative speech-to-text (raawr US-032): the detector says "preend" when the
+            # speech has been quiet for PRE_END_MS, 300 ms before the turn ends. The
+            # transcript is fetched then; at the real end bana 0 uses it if nothing but
+            # quiet was added, and the model has still not heard anything. A pause
+            # that ends in more speech, or a turn that runs on, throws it away.
+            spec = {}
+
+            def _spec_rensa():
+                task = spec.pop("task", None)
+                spec.pop("n", None)
+                if task is not None and not task.done():
+                    task.cancel()
+
+            def _pre_end():
+                pcm = serializer.peek_turn_audio()
+                _spec_rensa()
+                if pcm:
+                    spec["n"] = len(pcm)
+                    spec["task"] = asyncio.get_running_loop().create_task(
+                        bana0.transkribera(pcm, host, port, timeout_stt))
+
+            async def _stt(pcm, t):
+                task, n = spec.pop("task", None), spec.pop("n", 0)
+                if task is not None and 0 <= len(pcm) - n <= SPEC_STT_SLACK_BYTES:
+                    try:
+                        logger.info(f"⚡ bana0: using the early speech-to-text (turn grew {len(pcm) - n} B since)")
+                        return await asyncio.wait_for(task, t)
+                    except Exception as e:  # a failed early try is not the turn's answer
+                        logger.debug(f"bana0: early speech-to-text unusable ({e!r}), asking again")
+                elif task is not None:
+                    logger.info(f"⚡ bana0: early speech-to-text thrown away (turn grew {len(pcm) - n} B since)")
+                    if not task.done():
+                        task.cancel()
+                return await bana0.transkribera(pcm, host, port, t)
+
             async def _on_user_turn_end():
                 bana = await bana0.tur(
                     serializer.take_turn_audio(),
-                    stt=lambda pcm, t: bana0.transkribera(pcm, host, port, t),
+                    stt=_stt,
                     timeout_stt=timeout_stt,
                     timeout_comms=timeout_comms,
                     skicka_svar_till_modellen=lambda text: bana0_hit(provider, openai_service, text),
@@ -1725,7 +1764,13 @@ class WebSocketHandler:
                     await phase_emitter.force_idle(bana)
 
             openai_service.on_user_turn_end = _on_user_turn_end
-            openai_service.on_user_turn_start = serializer.start_turn_audio
+            def _tur_borjar():
+                _spec_rensa()
+                serializer.start_turn_audio()
+
+            openai_service.on_user_turn_start = _tur_borjar
+            if hasattr(openai_service, "on_user_turn_pre_end"):
+                openai_service.on_user_turn_pre_end = _pre_end
             serializer.is_replying = lambda: phase_emitter.phase == "replying"
 
         # Google dropped the socket with a turn in flight (1011, 2026-10-02

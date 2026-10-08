@@ -33,7 +33,7 @@ from pipecat.services.google.gemini_live.llm import (
 )
 from pipecat.transcriptions.language import Language
 
-from app.providers.local_turns import LocalTurns, LocalTurnsMixin
+from app.providers.local_turns import PRE_END_MS, LocalTurns, LocalTurnsMixin
 from app.providers.sovlage import SovlageMixin
 from app.providers.tool_registration import ToolRegistrationMixin
 
@@ -329,6 +329,9 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
     # neither answer it nor carry it into the next turn and do it twice).
     on_user_turn_start = None  # plain callable
     on_user_turn_end = None  # async callable
+    # Called (plain, no args) when a held turn has been quiet for PRE_END_MS but is not
+    # over yet: bana 0 starts its speech-to-text early (raawr US-032).
+    on_user_turn_pre_end = None
     _turn_end_task = None
     # Told (async, no args) when the socket dies with a turn in flight.
     on_turn_lost = None
@@ -360,6 +363,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             # Bana 0 holds this turn; keep collecting until it decides. Speech
             # that resumes during the decision belongs to the same turn.
             held.append(frame)
+            if event == "preend" and self.on_user_turn_pre_end is not None:
+                self.on_user_turn_pre_end()
             if event == "end":
                 await self.push_frame(UserStoppedSpeakingFrame())
                 self._decide_turn()
@@ -711,7 +716,7 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     if search:
         gemini_tools.append({"google_search": {}})
     language = _resolve_language(options.language or "sv-SE")
-    turns = LocalTurns.create(int(options.gemini_turn_silence_ms))
+    turns = LocalTurns.create(int(options.gemini_turn_silence_ms), pre_ms=PRE_END_MS)
     vad = GeminiVADParams(disabled=True) if turns else _build_vad_params(options)
     proactivity, affective, http_options = _native_audio_features(options, model)
     native = NATIVE_AUDIO_MODEL_MARKER in model
