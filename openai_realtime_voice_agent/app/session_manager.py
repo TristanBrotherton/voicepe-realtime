@@ -3,6 +3,8 @@ import logging
 import time
 from typing import Optional, Dict
 from pipecat.processors.aggregators.llm_context import LLMContext
+
+from app.context_restore import _strip_tool_plumbing
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
@@ -140,6 +142,17 @@ class SessionManager:
             # Use the constructor to properly copy messages and tools
             cached_messages = cached_context.get_messages()
             restore_messages = cached_messages.copy() if cached_messages else None
+            # Strip tool calls/results before trimming: their ids belong to the
+            # previous session and the server rejects the whole context if they
+            # come back. See _strip_tool_plumbing above.
+            before = len(restore_messages) if restore_messages else 0
+            restore_messages = _strip_tool_plumbing(restore_messages)
+            after = len(restore_messages) if restore_messages else 0
+            if before != after:
+                logger.info(
+                    f"🧹 Dropped {before - after} tool message(s) from restored "
+                    f"context for client {client_id} (stale tool call ids)"
+                )
             # Cap the restored history to the most-recent N messages so the
             # per-turn token cost stays bounded (see __init__ docstring). Keep a
             # leading system message if there is one, then the last N of the rest.
