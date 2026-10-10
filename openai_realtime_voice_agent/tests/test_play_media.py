@@ -146,3 +146,17 @@ async def test_no_room_named_plays_on_the_asking_device(monkeypatch, device, spe
     params = SimpleNamespace(arguments={"query": "P3", "media_type": "radio"}, result_callback=result_callback)
     await play_media_tool.create_play_media_tool_handler(device)(params)
     assert len(played) == 1 and speaker in played[0], (played, said)
+
+
+def test_koket_ar_entydigt_voice_pe_och_sonos_bara_nar_det_sags():
+    """Kitchen 2026-10-10: "Kök Voice" and "Kök Sonos" scored 25/25 for "köket"; the radio went to whichever came first."""
+    from app.play_media_tool import valj_spelare
+    voice = {"entity_id": "media_player.home_assistant_voice_0a8f25", "name": "Kök Voice"}
+    sonos = {"entity_id": "media_player.kok_3", "name": "Kök Sonos"}
+    kontor = {"entity_id": "media_player.home_assistant_voice_0a6bc9", "name": "Kontor"}
+    for ordning in ([voice, sonos, kontor], [sonos, voice, kontor], [kontor, sonos, voice]):
+        assert valj_spelare(ordning, "koket") == voice and valj_spelare(ordning, "köket") == voice
+        assert valj_spelare(ordning, "köket sonos") == sonos and valj_spelare(ordning, "kök sonos") == sonos
+        assert valj_spelare(ordning, "kontoret") == kontor
+    assert valj_spelare([sonos], "köket") == sonos  # no Voice PE reachable: Sonos is still better than nothing
+    assert valj_spelare([voice, sonos], "garaget") is None

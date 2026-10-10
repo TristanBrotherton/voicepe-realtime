@@ -2,6 +2,11 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.28.7 (fork)
+
+- **"Köket" betyder alltid Kök Voice (Voice PE med aux) för radio och musik** (Henrik 2026-10-10). "Kök Voice" och "Kök Sonos" fick samma poäng för "köket", så radion gick till den som kom först i listan;
+  Sonos har varken mikrofonens echoreferens eller duckningen. Nu vinner Voice PE vid lika poäng (`valj_spelare`), och Sonos bara när han säger Sonos ("köket sonos"). Gäller varje rum med både en Voice PE och en annan högtalare.
+
 ## 0.28.6 (fork)
 
 - **Köket: rumsljud får aldrig kapa Björns svar, men Henrik kan svara medan han pratar** (Henrik 2026-10-10). Tal som börjar medan ett svar spelas blir en KANDIDAT (`app/avbrott.py`) och

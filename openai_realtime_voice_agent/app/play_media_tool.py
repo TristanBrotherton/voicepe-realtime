@@ -150,6 +150,28 @@ def _score_name(name: str, query: str) -> int:
     return complete + hits * 5 + max(0, 20 - len(folded_name) // 4)
 
 
+def _ar_voice_pe(player: Dict[str, str]) -> bool:
+    """The Voice PE itself (its own speaker, or the aux jack on it), as opposed to another speaker in the room."""
+    return "home_assistant_voice" in (player.get("entity_id") or "") or "voice" in (player.get("name") or "").lower()
+
+
+def valj_spelare(players: List[Dict[str, str]], wanted: str) -> Optional[Dict[str, str]]:
+    """The player the user's words name. A room with two speakers (the kitchen: "Kök Voice" and "Kök Sonos") scores the
+    same for "köket": then the Voice PE wins, because it is the one with the microphone, the echo reference and the
+    ducking (kitchen 2026-10-10, the radio on a speaker the device could not duck). The other speaker only when the
+    user says its own name ("Sonos")."""
+    sonos = "sonos" in _fold(wanted)
+    scored = []
+    for p in players:
+        s = _score_player(p["name"], wanted)
+        if s:
+            scored.append((s + (3 if _ar_voice_pe(p) and not sonos else 0), p))
+    if not scored:
+        return None
+    scored.sort(key=lambda s: s[0], reverse=True)
+    return scored[0][1]
+
+
 def _score_player(name: str, wanted: str) -> int:
     """How well a speaker's name answers what the user called it.
 
@@ -333,13 +355,7 @@ def create_play_media_tool_handler(
                     await params.result_callback("No speakers are available.")
                     return
 
-                target = None
-                if wanted:
-                    scored = [(_score_player(p["name"], wanted), p) for p in players]
-                    scored = [s for s in scored if s[0]]
-                    if scored:
-                        scored.sort(key=lambda s: s[0], reverse=True)
-                        target = scored[0][1]
+                target = valj_spelare(players, wanted) if wanted else None
                 if target is None:
                     names = ", ".join(sorted(p["name"] for p in players))
                     logger.info(f"🎵 play_media: no player matching {wanted!r}")
