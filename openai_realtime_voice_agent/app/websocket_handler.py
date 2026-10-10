@@ -1874,6 +1874,13 @@ class WebSocketHandler:
                         logger.warning(f"⚠️ {lage} — the engine has more, a question may have been cut")
                     else:
                         logger.info(f"⚡ {lage}")
+                async def _avsluta():
+                    """A nej in the window: drop what the engine heard, then sleep it (like stopp)."""
+                    await drop_pending_input_audio(provider, openai_service)
+                    sov_begaran = getattr(openai_service, "sov_begaran", None)
+                    if sov_begaran is not None:
+                        await sov_begaran("nej")
+
                 bana = await bana0.tur(
                     pcm,
                     stt=_stt_noterad,
@@ -1887,8 +1894,9 @@ class WebSocketHandler:
                     efter_miss=_efter_miss,
                     klockan=_klockan if klockan.klipp_paa() else None,
                     tider=tider,
+                    avsluta=_avsluta if bana0.nej_stanger_paa() else None,
                 )
-                if bana in ("bana0", "klockan"):
+                if bana in ("bana0", "klockan", "nej"):
                     await phase_emitter.force_idle(bana)
 
             openai_service.on_user_turn_end = _on_user_turn_end

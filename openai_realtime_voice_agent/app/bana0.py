@@ -51,6 +51,11 @@ def text_till_modell_paa() -> bool:
     return os.environ.get("LOCAL_TEXT_TO_MODEL", "0") == "1"
 
 
+def nej_stanger_paa() -> bool:
+    """A whole-turn nej / tack / det var allt closes the session at once. ON by default; NEJ_STANGER=0 turns it off."""
+    return os.environ.get("NEJ_STANGER", "1") != "0"
+
+
 def ping_paa() -> bool:
     """The parallel track (raawr US-047): on a hit the held audio ALSO goes to the Gemini model, after a
     line saying what bana 0 heard and did. OFF by default. BANA0_PING=1 turns it on."""
@@ -323,6 +328,17 @@ def brus(text: Optional[str]) -> bool:
     return len(re.sub(r"[\W\d_]+", "", t)) < 2 or any(f in t for f in _PAHITT)
 
 
+# A whole turn that only says "no, that is all": the session closes at once, like "stopp" (Henrik 2026-10-11).
+_NEJ = {"nej", "nä", "nej tack", "nä tack", "tack", "tack så mycket", "tack tack", "det var allt", "det var det",
+        "det var allt tack", "nej det var allt", "nej tack det var allt", "nej det var det", "nej tack det är bra",
+        "det är bra", "det är bra tack", "nej det är bra", "inget mer", "nej inget mer"}
+
+
+def ar_nej(text: Optional[str]) -> bool:
+    """True when the whole turn is a no-thanks / that-is-all, nothing else."""
+    return " ".join(re.sub(r"[^\w\s]", " ", (text or "").lower()).split()) in _NEJ
+
+
 async def tur(
     pcm: bytes,
     *,
@@ -337,8 +353,12 @@ async def tur(
     skapa_svar_med_text: Optional[Callable[[str], Awaitable[None]]] = None,
     ping: Optional[Callable[[str, str], Awaitable[None]]] = None,
     tider=None,
+    avsluta: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> str:
-    """One finished user turn. Returns 'klockan', 'bana0' on a hit, 'modell' otherwise.
+    """One finished user turn. Returns 'nej', 'klockan', 'bana0' on a hit, 'modell' otherwise.
+
+    `avsluta()` closes the session when the whole turn was a nej / tack / det var allt: no
+    comms, no model answer. If it fails, the turn goes on as before.
 
     `klockan(text)` says the time from cached clips (US-032 AC-7): a clock question
     reaches neither comms nor the model. If it fails, the turn goes on as before.
@@ -358,6 +378,13 @@ async def tur(
             text = None
         if tider is not None:
             tider.mark("stt")
+        if avsluta is not None and ar_nej(text):
+            try:
+                await avsluta()
+                logger.info(f"bana0: nej {text!r}, the session closes")
+                return "nej"
+            except Exception as e:
+                logger.warning(f"bana0: closing on a nej failed, the turn goes on: {e!r}")
         if klockan is not None and klocka.ar_klockfraga(text):
             try:
                 await klockan(text)

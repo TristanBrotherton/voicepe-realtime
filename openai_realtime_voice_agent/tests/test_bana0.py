@@ -868,3 +868,37 @@ async def test_a_decision_that_ends_in_the_middle_of_the_continuation_hands_it_t
         await service._send_user_audio(_frame(b))
     await asyncio.sleep(0.05)
     assert len(avgjorde) == 3
+
+
+@pytest.mark.parametrize("text", ["Nej.", "Nej tack!", "Det var allt.", "tack", "Nä, tack"])
+def test_ar_nej_hela_turen(text):
+    assert bana0.ar_nej(text)
+
+
+@pytest.mark.parametrize("text", ["Nej, tänd köket", "Tack, vad blir det för väder", "Nej jag menade sovrummet", "", None])
+def test_ar_nej_inte_en_fraga_med_nej_i(text):
+    assert not bana0.ar_nej(text)
+
+
+def _tur_nej(text, avsluta):
+    async def stt(pcm, t):
+        return text
+
+    async def aldrig(*a):
+        raise AssertionError("a nej must reach neither comms nor the model")
+
+    return asyncio.run(bana0.tur(PCM, stt=stt, timeout_stt=1, timeout_comms=1,
+                                 skicka_svar_till_modellen=aldrig, skapa_svar=aldrig, avsluta=avsluta))
+
+
+def test_nej_stanger_utan_modell_och_utan_comms():
+    stangd = []
+
+    async def avsluta():
+        stangd.append(1)
+
+    assert _tur_nej("Nej tack.", avsluta) == "nej" and stangd == [1]
+
+
+def test_nej_utan_avsluta_gar_vidare_till_modellen():
+    assert _tur_nej("Nej tack.", None) == "modell"
