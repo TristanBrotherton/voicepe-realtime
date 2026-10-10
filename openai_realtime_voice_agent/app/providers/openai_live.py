@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 from pipecat.frames.frames import (
     FunctionCallResultFrame,
     InputAudioRawFrame,
+    InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -51,7 +52,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallFromLLM, LLMService
 
-from app import sprakkoll
+from app import avbrott, sprakkoll
 from app.providers.local_turns import LocalTurns, LocalTurnsMixin
 from app.providers.sovlage import Budget, SovlageMixin
 from app.providers.tool_registration import ToolRegistrationMixin
@@ -154,6 +155,9 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
         self._started = asyncio.Event()
         self._reader = None
         self._reply_open = False
+        self._sista_ljud_t = 0.0  # when the last real sound of the open reply came
+        self._svar_start_t = 0.0
+        self._kandidat = None  # speech that began while Björn speaks (app/avbrott.py)
         self._pre = None  # audio held at the start of a reply (see _ljud_ut)
         self._pre_s = 0.0
         self._pre_task = None
@@ -338,6 +342,7 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
         elif typ == "response.event":
             inner = ev.get("event") or {}
             item = inner.get("item") or {}
+            self._logga_handelse(inner)
             if inner.get("type") == "response.output_item.done" and item.get("type") == "function_call":
                 await self._tool_call(item)
         elif typ == "error":
@@ -349,6 +354,24 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
                 self._rate_ev.set()
         elif typ == "session.closed":
             logger.info(f"OpenAI Live session closed: {ev.get('reason')} {ev.get('usage')}")
+        else:
+            self._logga_handelse(ev)
+
+    def _logga_handelse(self, ev: Dict[str, Any]) -> None:
+        """What ends or cuts a Live answer was invisible in the journal (kitchen 2026-10-10). One line for every event
+        that says an answer is done, cancelled, interrupted or truncated, with its status; a new event type is
+        logged once per session."""
+        typ = str(ev.get("type") or "")
+        viktig = any(k in typ for k in ("cancel", "interrupt", "truncat", "incomplete", "response.done", "speech_"))
+        sedda = self.__dict__.setdefault("_sedda_typer", set())
+        if not viktig and (typ in sedda or typ.startswith(("session.output_", "session.input_"))):
+            return
+        sedda.add(typ)
+        resp = ev.get("response") or {}
+        status = resp.get("status") or ev.get("status")
+        detaljer = resp.get("status_details") or ev.get("status_details") or ev.get("reason")
+        logger.info(f"🔎 Live-händelse: {typ} status={status} {str(detaljer)[:120] if detaljer else ''} "
+                    f"(svar öppet={self._reply_open}, {time.monotonic() - self._svar_start_t:.1f} s sedan första ljudet)")
 
     _svar_start = ""
     _svar_kollad = False
@@ -381,6 +404,7 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
             return
         if not self._reply_open:
             self._reply_open = True
+            self._svar_start_t, self._ljud_bytes = time.monotonic(), 0
             self._pre, self._pre_s = ([] if _env_float("OPENAI_LIVE_PREBUF_S", 0.7) > 0 else None), 0.0
             if self.tider is not None:
                 self.tider.mark("modell")  # the first real sound from the engine
@@ -388,6 +412,8 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
             await self._flush_user_text()
             await self.push_frame(TTSStartedFrame())
             await self.push_frame(LLMFullResponseStartFrame())
+        self._sista_ljud_t = time.monotonic()
+        self._ljud_bytes = getattr(self, '_ljud_bytes', 0) + len(pcm)
         await self._ljud_ut(pcm)
         if self._reply_end_task is not None:
             self._reply_end_task.cancel()
@@ -438,6 +464,8 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
             return  # a tool is still running: the answer comes after it
         if self._pre is not None:
             await self._slapp_forbuffer()  # a short answer: whatever is held plays now
+        logger.info(f"🔚 Live-svar slut: {getattr(self, '_ljud_bytes', 0) / (2.0 * OUT_RATE):.1f} s ljud, "
+                    f"{time.monotonic() - self._svar_start_t:.1f} s sedan första ljudet, orsak=tystnad {_env_float('OPENAI_LIVE_REPLY_GAP_MS', 1500.0) / 1000:.1f} s")
         self._reply_open = False
         await self.push_frame(TTSStoppedFrame())
         await self.push_frame(LLMFullResponseEndFrame())
@@ -490,11 +518,28 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
 
     async def process_frame(self, frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame):
+            logger.info(f"🛑 InterruptionFrame: svar öppet={self._reply_open}, ljud senast {time.monotonic() - self._sista_ljud_t:.1f} s sedan, "
+                        f"{time.monotonic() - self._svar_start_t:.1f} s sedan första ljudet")
         if isinstance(frame, InputAudioRawFrame):
             await self._send_user_audio(frame)
         if isinstance(frame, LLMContextFrame):
             return  # Live keeps its own conversation
         await self.push_frame(frame, direction)
+
+    def _spelar(self) -> bool:
+        """Björn's answer is being heard right now (sound came within the last 0.6 s of an open reply)."""
+        return self._reply_open and time.monotonic() - self._sista_ljud_t < 0.6
+
+    async def _oppna_tur(self, ljud: bytes) -> None:
+        await self.push_frame(UserStartedSpeakingFrame())
+        if self.on_user_turn_start is not None:
+            self.on_user_turn_start()
+        if self.on_user_turn_end is not None:
+            self._held = [ljud]
+            return
+        self._activity_open = True
+        await self._append(ljud)
 
     async def _send_user_audio(self, frame) -> None:
         turns = self._turns
@@ -508,19 +553,37 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
                 await self.push_frame(UserStoppedSpeakingFrame())
                 self._decide_turn()
             return
+        if not self._activity_open and self._kandidat is not None:
+            # Speech began while Björn speaks: it is a barge-in only if it lasts and is loud enough (app/avbrott.py).
+            k = self._kandidat
+            k.lagg_till(frame.audio, tal=bool(getattr(turns, "_speaking", True)))
+            if k.godkand():
+                logger.info(f"🛡️ avbrott godkänt, Björn avbryts: {k.rad()}")
+                self._kandidat = None
+                await self._oppna_tur(bytes(k.ljud))
+                if event == "end":
+                    self._tider_start()
+                    await self.push_frame(UserStoppedSpeakingFrame())
+                    if self._held is not None:
+                        self._decide_turn()
+                    else:
+                        await self._end_activity()  # no bana 0 hook: Live gets the silent tail that ends the turn
+            elif event == "end":
+                logger.info(f"🛡️ avbrott avfärdat (rumsljud eller för kort), Björn pratar vidare: {k.rad()}")
+                self._kandidat = None
+            return
         if not self._activity_open:
             if event != "start":
                 self._keep_preroll(frame)
                 return
             preroll = self._take_preroll()
-            await self.push_frame(UserStartedSpeakingFrame())
-            if self.on_user_turn_start is not None:
-                self.on_user_turn_start()
-            if self.on_user_turn_end is not None:
-                self._held = [preroll, frame.audio]
+            if avbrott.paa() and self._spelar():
+                self._kandidat = avbrott.Kandidat(frame.sample_rate or 16000)
+                self._kandidat.lagg_till(preroll, tal=False)
+                self._kandidat.lagg_till(frame.audio, tal=True)
                 return
-            self._activity_open = True
-            await self._append(preroll)
+            await self._oppna_tur(preroll + frame.audio)
+            return
         await self._append(frame.audio)
         if event == "end":
             self._tider_start()
@@ -568,6 +631,7 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
     async def drop_turn(self) -> None:
         """Bana 0 hit (or the device dropped the input): Live never hears this turn."""
         self._held = None
+        self._kandidat = None  # a half-collected barge-in belongs to the input that was just dropped
         self._activity_open = False
         self._preroll = bytearray()
         self.cancel_silence_ack()

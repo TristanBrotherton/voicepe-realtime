@@ -466,9 +466,9 @@ class Application:
         # hardware tail so the mic doesn't catch the reply's own end. Sent to the
         # device in `hello`; lower = snappier, higher = safer against echo.
         try:
-            follow_up_open_delay_ms = int(os.environ.get("FOLLOW_UP_OPEN_DELAY_MS", "700"))
+            follow_up_open_delay_ms = int(os.environ.get("FOLLOW_UP_OPEN_DELAY_MS", "350"))
         except (TypeError, ValueError):
-            follow_up_open_delay_ms = 700
+            follow_up_open_delay_ms = 350
         follow_up_open_delay_ms = max(0, min(5000, follow_up_open_delay_ms))
         # Same idea at the WAKE boundary: delay (ms) after the wake chime before
         # the mic opens, so the chime's own hardware tail doesn't leak into the

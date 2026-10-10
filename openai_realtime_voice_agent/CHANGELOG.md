@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.28.6 (fork)
+
+- **Köket: rumsljud får aldrig kapa Björns svar, men Henrik kan svara medan han pratar** (Henrik 2026-10-10). Tal som börjar medan ett svar spelas blir en KANDIDAT (`app/avbrott.py`) och
+  blir ett avbrott först när det varat `AVBROTT_MIN_MS` (500) och har nivån `AVBROTT_MIN_DBFS` (−40 dBFS RMS över talet); annars kastas det (ingen tur, inget avbrott) och Björn pratar vidare.
+  Varje beslut är en journalrad med längd och nivå (`🛡️ avbrott godkänt/avfärdat: … ms tal, … dBFS`), så tröskeln kan trimmas ur riktiga rum. `AVBROTT_TROSKEL=0` ger gamla beteendet. Gäller OpenAI Live.
+- **Loggrader som saknades:** `🔚 Live-svar slut` (sekunder ljud, tid sedan första ljudet), `🛑 InterruptionFrame` (var i svaret ett avbrott kom) och `🔎 Live-händelse` för varje händelse som säger att ett svar är klart, avbrutet eller trunkerat.
+- **Följdfönstret öppnas tidigare:** `FOLLOW_UP_OPEN_DELAY_MS` standard 700 → 350, och tystnaden innan fasen blir idle är 0,6 s för Gemini i stället för 1,5 s (`idle_debounce_for`; OpenAI Live behåller 1,5 s, den stannar mitt i svaret). Ett uttryckligt `PHASE_IDLE_DEBOUNCE_MS` / `FOLLOW_UP_OPEN_DELAY_MS` i miljön gäller fortfarande, så **Rolle måste ta bort de två raderna ur /etc/raawr-rostagent.env** (1500 / 700) för att standardvärdena ska slå igenom.
+
 ## 0.28.5 (fork)
 
 - **OpenAI Live: svaret hackade i köket, nu hålls första ljudet tills 0,7 s finns** (kökets journal 2026-10-10, Henrik: "den är snabb, men det hackar rejält, svaren kommer tillbaka i omgångar").

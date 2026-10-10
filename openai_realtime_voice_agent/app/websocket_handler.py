@@ -26,6 +26,7 @@ from app.providers import (
     GEMINI,
     EnhetsRouter,
     OPENAI,
+    OPENAI_LIVE,
     bana0_hit,
     bana0_miss,
     device_provider,
@@ -71,6 +72,20 @@ logger = logging.getLogger(__name__)
 # engines (what the device already plays at) and OpenAI's own input rate.
 PIPELINE_SAMPLE_RATE = 24000
 
+
+
+def idle_debounce_for(provider: str) -> float:
+    """Seconds of silence after a reply before the phase goes idle (and the follow-up window can open). Kitchen/office
+    2026-10-10: 1.5 s of that plus the 0.7 s open delay left Henrik deaf for ~2.7 s after Björn's last word, so he
+    answered "Något mer?" into nothing. Gemini streams without gaps (max 0.13 s measured): 0.6 s. OpenAI Live stalls
+    mid-answer, so it keeps 1.5 s. An explicit PHASE_IDLE_DEBOUNCE_MS still wins, for both."""
+    env = os.environ.get("PHASE_IDLE_DEBOUNCE_MS")
+    if env:
+        try:
+            return max(0.0, float(env) / 1000.0)
+        except ValueError:
+            pass
+    return 1.5 if provider == OPENAI_LIVE else 0.6
 
 class SessionActivityTracker(FrameProcessor):
     """Processor that tracks session activity by monitoring audio frames."""
@@ -1168,7 +1183,7 @@ class WebSocketHandler:
         session_manager: Optional[SessionManager] = None,
         audio_recording_service: Optional[AudioRecordingService] = None,
         follow_up_ms: int = 0,
-        follow_up_open_delay_ms: int = 700,
+        follow_up_open_delay_ms: int = 350,
         wake_open_delay_ms: int = 700,
         playback_prebuffer_ms: int = 0,
         output_lead_buffer_ms: int = 0,
@@ -1331,7 +1346,8 @@ class WebSocketHandler:
         # racing-`thinking` suppression); it is APPENDED near the end of the
         # pipeline below, before transport.output().
         phase_emitter = PhaseEmitter(
-            send_phase=send_phase, liveness=connection.turn_liveness
+            send_phase=send_phase, liveness=connection.turn_liveness,
+            idle_debounce_s=idle_debounce_for(connection.provider or OPENAI),
         )
 
         async def _request_follow_up():

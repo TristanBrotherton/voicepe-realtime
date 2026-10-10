@@ -6,8 +6,10 @@ plays OpenAI. Each test fails on 0.27.0 (the engine did not exist).
 import asyncio
 import base64
 import json
+import time
 
 import pytest
+from pipecat.frames.frames import UserStartedSpeakingFrame
 from pipecat.frames.frames import TTSAudioRawFrame, LLMFullResponseEndFrame
 from websockets.asyncio.server import serve
 
@@ -587,3 +589,93 @@ async def test_tidsraden_skrivs_for_live_som_for_gemini(caplog):
     rad = [r.getMessage() for r in caplog.records if "⏱ tider koket" in r.getMessage()]
     assert rad and "turslut=800" in rad[0] and "modell=2000" in rad[0] and "enhet=2050" in rad[0]
     s._reply_end_task.cancel()
+
+
+# --- A barge-in must be speech, not room sound (app/avbrott.py) -----------------------------------------------
+
+
+def _ljud(dbfs_niva: float, antal: int = 1):
+    """`antal` frames of 10 ms of a 400 Hz tone at the given RMS level."""
+    import math
+    import struct
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    amp = 32768 * (10 ** (dbfs_niva / 20)) * math.sqrt(2)
+    pcm = struct.pack("<160h", *[int(amp * math.sin(2 * math.pi * 400 * n / 16000)) for n in range(160)])
+    return [InputAudioRawFrame(audio=pcm, sample_rate=16000, num_channels=1) for _ in range(antal)]
+
+
+class _Tal(Turer):
+    """A detector stand-in that also tells whether it is in speech (the gate counts only those frames)."""
+    _speaking = True
+
+
+async def _spela_in(s, frames, handelser):
+    s._turns = _Tal(handelser)
+    for f in frames:
+        await s._send_user_audio(f)
+
+
+def _pagar_svar(s):
+    s._reply_open = True
+    s._sista_ljud_t = time.monotonic()
+
+
+@pytest.mark.asyncio
+async def test_rumsljud_under_svaret_avbryter_inte_bjorn():
+    """Kitchen 2026-10-10: a TV or a voice in the next room must not cut the answer. Short or quiet speech that starts
+    while Björn speaks is thrown away: no turn, no interruption."""
+    s = _service("ws://x")
+    s.on_user_turn_end = lambda: asyncio.sleep(0)
+    _pagar_svar(s)
+    await _spela_in(s, _ljud(-55, 80), ["start"] + [None] * 78 + ["end"])  # long but far too quiet
+    assert s._held is None and s._kandidat is None
+    _pagar_svar(s)
+    await _spela_in(s, _ljud(-20, 20), ["start"] + [None] * 18 + ["end"])  # loud but only 200 ms
+    assert s._held is None and s._kandidat is None
+    assert not [f for f in s.frames if isinstance(f, UserStartedSpeakingFrame)]
+
+
+@pytest.mark.asyncio
+async def test_henriks_svar_medan_bjorn_pratar_avbryter_nar_det_ar_langt_och_hogt_nog():
+    s = _service("ws://x")
+    s.on_user_turn_end = lambda: asyncio.sleep(0)
+    _pagar_svar(s)
+    await _spela_in(s, _ljud(-22, 70), ["start"] + [None] * 69)  # 700 ms of clear speech
+    assert [f for f in s.frames if isinstance(f, UserStartedSpeakingFrame)], "a real answer is a barge-in"
+    assert s._held and s._kandidat is None
+
+
+@pytest.mark.asyncio
+async def test_utan_pagaende_svar_eller_med_troskeln_av_startar_tal_en_tur_direkt(monkeypatch):
+    s = _service("ws://x")
+    s.on_user_turn_end = lambda: asyncio.sleep(0)
+    await _spela_in(s, _ljud(-22, 3), ["start", None, None])  # no answer playing: no gate
+    assert s._held is not None and s._kandidat is None
+    s2 = _service("ws://x")
+    s2.on_user_turn_end = lambda: asyncio.sleep(0)
+    monkeypatch.setenv("AVBROTT_TROSKEL", "0")
+    _pagar_svar(s2)
+    await _spela_in(s2, _ljud(-22, 3), ["start", None, None])
+    assert s2._held is not None and s2._kandidat is None  # gate off: every start is a barge-in, as before
+
+
+def test_vilolage_efter_svaret_ar_kortare_for_gemini_an_for_live(monkeypatch):
+    """The follow-up window may open sooner on Gemini (no gaps); Live keeps its 1.5 s. An explicit env still wins."""
+    from app.websocket_handler import idle_debounce_for
+    monkeypatch.delenv("PHASE_IDLE_DEBOUNCE_MS", raising=False)
+    assert idle_debounce_for("gemini") == 0.6 and idle_debounce_for("openai_live") == 1.5
+    monkeypatch.setenv("PHASE_IDLE_DEBOUNCE_MS", "1000")
+    assert idle_debounce_for("gemini") == 1.0 and idle_debounce_for("openai_live") == 1.0
+
+
+@pytest.mark.asyncio
+async def test_drop_turn_kastar_en_halvfardig_avbrottskandidat():
+    """A's review of #55: a candidate left over from dropped input must not be mixed with the next speech."""
+    s = _service("ws://x")
+    s.on_user_turn_end = lambda: asyncio.sleep(0)
+    _pagar_svar(s)
+    await _spela_in(s, _ljud(-22, 10), ["start"] + [None] * 9)  # 100 ms: still a candidate
+    assert s._kandidat is not None
+    await s.drop_turn()
+    assert s._kandidat is None
