@@ -154,6 +154,10 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
         self._started = asyncio.Event()
         self._reader = None
         self._reply_open = False
+        self._pre = None  # audio held at the start of a reply (see _ljud_ut)
+        self._pre_s = 0.0
+        self._pre_task = None
+        self._pre_slapper = False
         self._reply_end_task = None
         self._user_text = ""
         self._on_turn_complete = None
@@ -377,16 +381,54 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
             return
         if not self._reply_open:
             self._reply_open = True
+            self._pre, self._pre_s = ([] if _env_float("OPENAI_LIVE_PREBUF_S", 0.7) > 0 else None), 0.0
             if self.tider is not None:
                 self.tider.mark("modell")  # the first real sound from the engine
             self.cancel_silence_ack()
             await self._flush_user_text()
             await self.push_frame(TTSStartedFrame())
             await self.push_frame(LLMFullResponseStartFrame())
-        await self.push_frame(TTSAudioRawFrame(audio=pcm, sample_rate=OUT_RATE, num_channels=1))
+        await self._ljud_ut(pcm)
         if self._reply_end_task is not None:
             self._reply_end_task.cancel()
         self._reply_end_task = asyncio.get_running_loop().create_task(self._end_reply_later())
+
+    async def _ljud_ut(self, pcm: bytes) -> None:
+        """The first sound of a reply is held until PREBUF_S of it is in hand (or PREBUF_MAX_S has passed): Live
+        sends 0.2-0.4 s, stalls 0.4-0.8 s, then streams at the speed it plays (kitchen 2026-10-10, measured with
+        the arrival times at the device), so the device ran dry right after the first word and the answer came in
+        pieces. OPENAI_LIVE_PREBUF_S=0 plays at once, as before."""
+        if self._pre is None:
+            return await self.push_frame(TTSAudioRawFrame(audio=pcm, sample_rate=OUT_RATE, num_channels=1))
+        self._pre.append(pcm)
+        self._pre_s += len(pcm) / (2.0 * OUT_RATE)
+        if self._pre_s >= _env_float("OPENAI_LIVE_PREBUF_S", 0.7):
+            await self._slapp_forbuffer()
+        elif self._pre_task is None:
+            self._pre_task = asyncio.get_running_loop().create_task(self._slapp_forbuffer_senare())
+
+    async def _slapp_forbuffer_senare(self) -> None:
+        await asyncio.sleep(_env_float("OPENAI_LIVE_PREBUF_MAX_S", 1.2))
+        self._pre_task = None
+        await self._slapp_forbuffer()
+
+    async def _slapp_forbuffer(self) -> None:
+        """Play what is held, in order. `_pre` stays the list until it is empty, so a chunk that arrives while
+        this runs is appended after the held ones, never pushed in front of them (A's review of #54)."""
+        pre = self._pre
+        if pre is None or self._pre_slapper:
+            return  # nothing held, or a drain already running: it will take what has been added
+        if self._pre_task is not None and self._pre_task is not asyncio.current_task():
+            self._pre_task.cancel()
+        self._pre_task = None
+        self._pre_slapper = True
+        try:
+            while pre:
+                await self.push_frame(TTSAudioRawFrame(audio=pre.pop(0), sample_rate=OUT_RATE, num_channels=1))
+        finally:
+            self._pre_slapper = False
+            if self._pre is pre:
+                self._pre, self._pre_s = None, 0.0
 
     async def _end_reply_later(self):
         await asyncio.sleep(_env_float("OPENAI_LIVE_REPLY_GAP_MS", 1500.0) / 1000.0)
@@ -394,6 +436,8 @@ class OpenAILiveService(SovlageMixin, LocalTurnsMixin, ToolRegistrationMixin, LL
         self._svar_start, self._svar_kollad = "", False
         if getattr(self, "_verktyg_pagar", 0) > 0:
             return  # a tool is still running: the answer comes after it
+        if self._pre is not None:
+            await self._slapp_forbuffer()  # a short answer: whatever is held plays now
         self._reply_open = False
         await self.push_frame(TTSStoppedFrame())
         await self.push_frame(LLMFullResponseEndFrame())

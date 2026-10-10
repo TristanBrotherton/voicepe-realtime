@@ -377,14 +377,85 @@ def test_sessionen_startas_med_det_riktiga_endpointen_godkanner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tystnaden_i_stromen_ar_inget_svar():
+async def test_tystnaden_i_stromen_ar_inget_svar(monkeypatch):
     """Live streams zeros between answers (probed live 2026-10-10); only real sound opens a reply."""
+    monkeypatch.setenv("OPENAI_LIVE_PREBUF_S", "0")
     s = _service("ws://x")
     await s._audio_out(b"\x00" * 4800)
     assert s.frames == [] and s._reply_open is False
     await s._audio_out(bytes([5, 1]) * 2400)
     assert any(isinstance(f, TTSAudioRawFrame) for f in s.frames) and s._reply_open is True
     s._reply_end_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_forsta_ljudet_haalls_tills_0_7_s_finns_sa_enheten_inte_tomkors(monkeypatch):
+    """Kitchen 2026-10-10: Live sends 0.2-0.4 s, stalls, then streams. The first sound waits for 0.7 s of audio."""
+    s = _service("ws://x")
+    bit = bytes([5, 1]) * 4800  # 0.2 s at 24 kHz s16
+    ljud = lambda: [f for f in s.frames if isinstance(f, TTSAudioRawFrame)]
+    await s._audio_out(bit)
+    await s._audio_out(bit)
+    await s._audio_out(bit)
+    assert s._reply_open and ljud() == []  # 0.6 s: still held
+    await s._audio_out(bit)
+    assert len(ljud()) == 4  # 0.8 s: all four released, in order
+    await s._audio_out(bit)
+    assert len(ljud()) == 5  # after that, straight through
+    s._reply_end_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_ett_kort_svar_och_en_langsam_start_spelas_anda(monkeypatch):
+    monkeypatch.setenv("OPENAI_LIVE_PREBUF_MAX_S", "0.05")
+    s = _service("ws://x")
+    bit = bytes([5, 1]) * 2400
+    await s._audio_out(bit)
+    await asyncio.sleep(0.2)  # the stall: the timer lets the first sound go
+    assert len([f for f in s.frames if isinstance(f, TTSAudioRawFrame)]) == 1
+    if s._reply_end_task is not None:
+        s._reply_end_task.cancel()
+    # a reply shorter than the buffer is played when it ends
+    monkeypatch.setenv("OPENAI_LIVE_REPLY_GAP_MS", "10")
+    monkeypatch.setenv("OPENAI_LIVE_PREBUF_MAX_S", "30")
+    s2 = _service("ws://x")
+    await s2._audio_out(bit)
+    await asyncio.sleep(0.2)
+    assert len([f for f in s2.frames if isinstance(f, TTSAudioRawFrame)]) == 1 and s2._reply_open is False
+
+
+@pytest.mark.asyncio
+async def test_prebuf_0_spelar_direkt_som_for(monkeypatch):
+    monkeypatch.setenv("OPENAI_LIVE_PREBUF_S", "0")
+    s = _service("ws://x")
+    await s._audio_out(bytes([5, 1]) * 2400)
+    assert len([f for f in s.frames if isinstance(f, TTSAudioRawFrame)]) == 1
+    s._reply_end_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_en_bit_under_urspolningen_hamnar_efter_de_hallna_inte_framfor(monkeypatch):
+    """A's review of #54: a chunk arriving while the held ones are pushed must not go in front of them."""
+    s = _service("ws://x")
+    ordning = []
+
+    async def push(frame, *a, **k):
+        if isinstance(frame, TTSAudioRawFrame):
+            ordning.append(frame.audio[0])
+        await asyncio.sleep(0.01)  # gives up control, as a real push does
+
+    s.push_frame = push
+    bit = lambda n: bytes([n, 1]) * 2400
+    await s._audio_out(bit(1))
+    await s._audio_out(bit(2))
+    tom = asyncio.get_running_loop().create_task(s._slapp_forbuffer())  # the timer's release
+    await asyncio.sleep(0.005)  # inside the loop
+    await s._audio_out(bit(3))  # a chunk arrives from the reader meanwhile
+    await tom
+    await asyncio.sleep(0.05)
+    assert ordning == [1, 2, 3]
+    if s._reply_end_task is not None:
+        s._reply_end_task.cancel()
 
 
 def test_svar_pa_annat_sprak_loggas_med_de_forsta_orden(caplog):

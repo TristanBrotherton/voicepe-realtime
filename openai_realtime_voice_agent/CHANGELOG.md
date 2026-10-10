@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.28.5 (fork)
+
+- **OpenAI Live: svaret hackade i köket, nu hålls första ljudet tills 0,7 s finns** (kökets journal 2026-10-10, Henrik: "den är snabb, men det hackar rejält, svaren kommer tillbaka i omgångar").
+  Mätt med ankomsttider vid enheten (attrappen, sidoinstans på core): Live skickar 0,2–0,4 s ljud, tystnar 0,36–0,8 s och strömmar sedan i uppspelningstakt, så enheten gick torr
+  direkt efter första ordet (min_lead −0,27…−0,81 s, ett stopp per svar; Gemini 0 stopp). Att behålla tystnaden mitt i svaret hjälpte inte (provat och förkastat: stoppet är inget ljud, det är
+  ingen data alls). Nu hålls det första ljudet till 0,7 s finns eller 1,2 s gått (`OPENAI_LIVE_PREBUF_S`, `OPENAI_LIVE_PREBUF_MAX_S`; 0 = som förut). Efter åtgärden: 0 stopp över 0,3 s,
+  min_lead −0,008…0,0 s på fyra svar. Priset: första ljud ca 1 s senare (kökets 1,7 s blir ca 2,7 s, Gemini ligger på 2,9 s).
+
 ## 0.28.4 (fork)
 
 - **Björns text hämtas ur Core genom comms i stället för ur en miljöfil (raawr US-056, D-20).** När en session byggs frågar agenten
