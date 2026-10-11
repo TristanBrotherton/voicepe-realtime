@@ -35,6 +35,7 @@ from app.providers import (
     supports_client_events,
 )
 from app import bana0, klockan
+from app import tur_ljud
 from app.session_state import SessionMaskin
 
 # The turn's audio may have grown by this much since the early speech-to-text started
@@ -1876,6 +1877,7 @@ class WebSocketHandler:
 
             async def _on_user_turn_end():
                 pcm = serializer.take_turn_audio()
+                tur_ljud.spara(pcm, getattr(connection, "device_id", None) or "enhet")
                 motorns = getattr(openai_service, "held_seconds", lambda: None)()
                 if motorns is not None:
                     # Normally bana 0 holds ~0.3 s MORE (pre-roll 0.8 s against the engine's 0.5 s).

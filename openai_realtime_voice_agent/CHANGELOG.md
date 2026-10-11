@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.3 (fork)
+
+- **Varje turs ljud kan sparas som egen fil** (raawr D-97, för att jämföra Google, xAI och bana 0 på riktigt tal). Av som standard. `TUR_LJUD_SPARA=1` slår på; `TUR_LJUD_KATALOG` (standard `/data/tur_ljud`) och `TUR_LJUD_MAX` (standard 40 filer) styr var och hur mycket. Är katalogen full sparas inget mer och journalen säger det en gång. Filerna är bana 0:s kopia av turen (16 kHz mono) och innehåller röst: slå av flaggan och radera katalogen efter jämförelsen.
+
 ## 0.29.2 (fork)
 
 - **Mätrad för turer utan väckning** (raawr D-97). När en tur startar loggas `📏 turn start level X dBFS, Y s since idle, Z s since wake`. Inget beteende ändras. Siffrorna ska visa var gränsen går mellan en följdfråga och radion i rummet.
