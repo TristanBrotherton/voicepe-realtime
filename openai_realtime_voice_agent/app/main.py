@@ -1205,6 +1205,11 @@ class Application:
                 # every later turn (see cap_tool_result).
                 description += (" ALWAYS filter by name, area or domain; unfiltered it "
                                 "is the whole house and gets cut off. For the time, use GetDateTime.")
+            if base == "HassMediaPause":
+                description += (" Also use it for 'stäng av', 'stoppa' or 'pausa' radio or music: "
+                                "speakers cannot be turned off, HassTurnOff on them fails.")
+            if base == "GetDateTime":
+                description += " Call it FIRST for any question about what time or date it is now."
             tools.append({
                 "type": "function",
                 "name": name,

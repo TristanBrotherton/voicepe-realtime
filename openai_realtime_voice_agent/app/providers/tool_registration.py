@@ -137,6 +137,82 @@ def loop_stop(liveness, function_name, arguments=None):
     return None
 
 
+def _lista(v):
+    return list(v) if isinstance(v, (list, tuple)) else ([v] if v else [])
+
+
+def media_paus(function_name, arguments):
+    """HassTurnOff aimed at a media player -> (HassMediaPause's name, its arguments), else None.
+
+    Voice PE speakers cannot be turned off: HA answers `failed: media_player.*` and the radio plays on
+    (kontoret 2026-10-11 'Stäng av radion'). Off for music means pause.
+    """
+    if function_name.rsplit("__", 1)[-1] != "HassTurnOff":
+        return None
+    if isinstance(arguments, str):  # some engines hand the arguments over as a JSON string
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    args = dict(arguments)
+    domaner = [str(d) for d in _lista(args.get("domain"))]
+    if not domaner or any(d != "media_player" for d in domaner):
+        return None  # 'turn off the lights and the radio' must still turn the lights off: only a pure speaker request is a pause
+    return "HassMediaPause", {k: args[k] for k in ("name", "area", "floor") if args.get(k)}
+
+
+def _namn(post):
+    return str(post.get("name") or post.get("id") or post) if isinstance(post, dict) else str(post)
+
+
+def ha_utfall(result):
+    """(success, failed) names from a Home Assistant intent result, ([], []) when it has none or another shape."""
+    def leta(o, djup=0):
+        if djup > 4:
+            return None
+        if isinstance(o, str):
+            t = o.strip()
+            if t[:1] in "{[":
+                try:
+                    return leta(json.loads(t), djup + 1)
+                except ValueError:
+                    return None
+            return None
+        if isinstance(o, dict):
+            if isinstance(o.get("failed"), list) or isinstance(o.get("success"), list):
+                return o
+            for v in o.values():
+                r = leta(v, djup + 1)
+                if r is not None:
+                    return r
+        if isinstance(o, list):
+            for v in o:
+                r = leta(v, djup + 1)
+                if r is not None:
+                    return r
+        return None
+    hit = leta(result)
+    if hit is None:
+        return [], []
+    return [_namn(x) for x in hit.get("success") or []], [_namn(x) for x in hit.get("failed") or []]
+
+
+def ha_misslyckades(result):
+    """A result that tells the model plainly when HA says failed is not empty, else None."""
+    ok, fel = ha_utfall(result)
+    if not fel:
+        return None
+    if ok:
+        text = (f"Delvis: klart för {', '.join(ok)}. INTE klart för {', '.join(fel)}. "
+                "Säg ifrån om det som inte gick, kvittera inte allt som klart.")
+    else:
+        text = (f"Det gick INTE: {', '.join(fel)} misslyckades. Säg ärligt till användaren att det inte gick. "
+                "Säg inte att det är klart.")
+    return {"error": text, "failed": fel, "success": ok}
+
+
 def _is_error(result) -> bool:
     return isinstance(result, dict) and "error" in result
 
@@ -224,6 +300,10 @@ class ToolRegistrationMixin:
         FunctionCallParams signature, so the wrapper does too (pipecat
         inspects the signature to pick the calling convention).
         """
+        if not hasattr(self, "_ra_handlers"):
+            self._ra_handlers = {}
+        self._ra_handlers[function_name] = handler
+
         async def liveness_tracked(params):
             # One line per call, every engine, every tool (MCP included):
             # `⏱ tool <name> <ms> ok|fel`, timed to the moment the result is
@@ -273,6 +353,10 @@ class ToolRegistrationMixin:
 
             async def capped_callback(result, *args, **kwargs):
                 stop_waiting_ack()
+                fel = ha_misslyckades(result)
+                if fel is not None:
+                    logger.warning(f"⚠️ {function_name}: Home Assistant says failed: {', '.join(fel['failed'])}")
+                    result = fel
                 log_timing("fel" if _is_error(result) else "ok")
                 return await original_callback(cap_tool_result(result, max_chars), *args, **kwargs)
 
@@ -302,6 +386,13 @@ class ToolRegistrationMixin:
                             )
                         })
                         return
+                paus = media_paus(function_name, getattr(params, "arguments", None))
+                if paus is not None:
+                    ny = next((n for n in (f"media_player__{paus[0]}", paus[0]) if n in self._ra_handlers), None)
+                    if ny is not None:
+                        logger.info(f"🎵 {function_name} on a speaker -> {ny} (a speaker cannot be turned off, it is paused)")
+                        params.function_name, params.arguments = ny, paus[1]
+                        return await self._ra_handlers[ny](params)
                 return await handler(params)
             except BaseException:
                 log_timing("fel")

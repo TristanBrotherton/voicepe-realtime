@@ -31,6 +31,7 @@ PHRASES = [
     "Hur länge ska ett ägg koka?",
     "Vad står i kalendern på måndag?",
 ]
+NYCKEL = ["klockan", "tänd", "väder", "p3", "mjölk", "radio", "ägg", "kalender"]  # "right action" proxy: the intent word is in the text
 MAX_ANROP = 10
 
 
@@ -143,11 +144,36 @@ async def xai_(pcm24k):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wav", required=True)
+    ap.add_argument("--wav", default="")
     ap.add_argument("--motorer", default="bana0,gemini,xai")
     ap.add_argument("--bara-klipp", action="store_true")
+    ap.add_argument("--filer", nargs="*", help="one 16 kHz wav per phrase, in order (tur_ljud files); skips the cutting")
     ap.add_argument("--max", type=int, default=len(PHRASES))
     a = ap.parse_args()
+    if a.filer:
+        klipp16s = [las(f) for f in a.filer]
+        if len(klipp16s) != len(PHRASES):
+            print(f"{len(klipp16s)} files, expected {len(PHRASES)}")
+            return
+        tot, hand = {}, {}
+        for m in a.motorer.split(","):
+            r = t = h = 0
+            for i, (fras, (d, hz)) in enumerate(zip(PHRASES, klipp16s)):
+                if m == "bana0":
+                    hort = await bana0_(d.tobytes())
+                elif m == "gemini":
+                    hort = await gemini_(d.tobytes())
+                else:
+                    hort = await xai_(till(d, hz, 24000).tobytes())
+                x, y = ratt(fras, hort)
+                ok = NYCKEL[i] in (hort or "").lower()
+                r, t, h = r + x, t + y, h + ok
+                print(f"{m:7} {x}/{y} {'handling-ok' if ok else 'handling-FEL':12} facit: {fras!r}  hörde: {hort!r}", flush=True)
+            tot[m] = (r, t, h)
+        print("--")
+        for m, (r, t, h) in tot.items():
+            print(f"{m:7} {r}/{t} ord rätt ({100 * r / max(t, 1):.0f} %), rätt nyckelord {h}/{len(PHRASES)}")
+        return
     data, hz = las(a.wav)
     bitar = klipp(data, hz)
     print(f"{len(bitar)} clips from {len(data) / hz:.1f} s, expected {len(PHRASES)}: "

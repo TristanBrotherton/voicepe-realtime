@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.4 (fork)
+
+- **Snabblagning efter provet 2026-10-11** (raawr D-97). (1) "Stäng av radion" körde `HassTurnOff` på högtalaren, HA svarade `failed` och radion spelade vidare. Ett `HassTurnOff` mot `media_player` blir nu `HassMediaPause`, och beskrivningen av pausverktyget säger att det gäller för "stäng av/stoppa". (2) Ett HA-svar med `failed` som inte är tomt når modellen som tydligt fel ("Det gick INTE: …", eller "Delvis: …"), så Björn säger ifrån i stället för att kvittera. (3) Journalen får en rad `💬 Björn sa: …` med modellens egna ord per tur (Gemini). (4) Persona-tillägget säger: klockan ovan gäller när samtalet öppnades, kör `GetDateTime` först för "vad är klockan nu", och gissa aldrig tider för matcher, resultat, öppettider eller priser: sök först. Googles egen sökning (`google_search`) var redan på i Live-sessionen på 3.x-modellerna; ändringen är regeln om att söka (texten säger "webbsökningen", eftersom den gäller alla motorer).
+
 ## 0.29.3 (fork)
 
 - **Varje turs ljud kan sparas som egen fil** (raawr D-97, för att jämföra Google, xAI och bana 0 på riktigt tal). Av som standard. `TUR_LJUD_SPARA=1` slår på; `TUR_LJUD_KATALOG` (standard `/data/tur_ljud`) och `TUR_LJUD_MAX` (standard 40 filer) styr var och hur mycket. Är katalogen full sparas inget mer och journalen säger det en gång. Filerna är bana 0:s kopia av turen (16 kHz mono) och innehåller röst: slå av flaggan och radera katalogen efter jämförelsen.

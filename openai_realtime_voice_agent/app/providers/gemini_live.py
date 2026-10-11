@@ -299,6 +299,16 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             logger.debug(f"transcription language check failed: {e!r}")
         await super()._handle_msg_input_transcription(message)
 
+    _svar_text: str = ""
+
+    async def _handle_msg_output_transcription(self, message) -> None:
+        """Keep what the model says, to put it in the journal when the turn ends (raawr D-97)."""
+        try:
+            self._svar_text += message.server_content.output_transcription.text or ""
+        except Exception as e:  # logging must never touch the turn
+            logger.debug(f"output transcription not kept: {e!r}")
+        await super()._handle_msg_output_transcription(message)
+
     async def _handle_msg_tool_call(self, message) -> None:
         self._answer_after_tool = True
         self._turn_rescue = None  # a tool may have acted already: the turn is no longer safe to replay
@@ -318,6 +328,9 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             logger.info("⏳ empty turn_complete after a tool call — the answer comes in a new turn")
             return
         self._reply_awaited_at = None
+        if self._svar_text.strip():
+            logger.info(f"💬 Björn sa: {self._svar_text.strip()[:400]}")
+        self._svar_text = ""
         self._transkr_start, self._transkr_kollad, self._tur_text = "", False, ""  # next turn: look again
         self._turn_rescue = None  # answered (also as text without sound): never replay it
         self.turer_klara += 1
