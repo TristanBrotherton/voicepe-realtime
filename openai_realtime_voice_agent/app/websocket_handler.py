@@ -1259,6 +1259,9 @@ class WebSocketHandler:
         self._offline_tasks: set = set()
         # main._ack_clip: a phrase in the engine's own voice, cached on disk.
         self.ack_clip = None
+        # Told after a reply, once the device is quiet again: main wires the morning question (app/sent_svar.py, US-051 AC-6).
+        self.efter_svar = None
+        self._efter_svar_uppgifter = set()
         self.say = None
     
     def create_transport(
@@ -1363,7 +1366,15 @@ class WebSocketHandler:
         # engine without this method keeps the frame-only path.
         set_turn_complete = getattr(openai_service, "set_turn_complete_handler", None)
         if set_turn_complete is not None:
-            set_turn_complete(phase_emitter.note_engine_turn_complete)
+            async def _tur_klar():
+                await phase_emitter.note_engine_turn_complete()
+                efter_svar = self.efter_svar
+                if efter_svar is not None:
+                    t = asyncio.get_running_loop().create_task(self._efter_svar_nar_tyst(phase_emitter, efter_svar, client_id))
+                    self._efter_svar_uppgifter.add(t)
+                    t.add_done_callback(self._efter_svar_uppgifter.discard)
+
+            set_turn_complete(_tur_klar)
 
         connection.phase_emitter = phase_emitter
 
@@ -2103,6 +2114,18 @@ class WebSocketHandler:
             How many devices took it.
         """
         return await self.devices.broadcast_json(obj)
+
+    @staticmethod
+    async def _efter_svar_nar_tyst(phase_emitter, efter_svar, rum, max_s: float = 15.0) -> None:
+        """Wait for the reply to be played out (the phase back at idle), then tell `efter_svar(rum)`. Never raises."""
+        try:
+            fran = time.monotonic()
+            await asyncio.sleep(1.0)
+            while getattr(phase_emitter, "phase", "idle") != "idle" and time.monotonic() - fran < max_s:
+                await asyncio.sleep(0.25)
+            await efter_svar(rum)
+        except Exception as e:
+            logger.warning(f"⚠️ after-reply hook failed: {e!r}")
 
     def serializer_for(self, device_id: Optional[str] = None) -> Optional[RawAudioSerializer]:
         """The serializer of one device, for inbound-audio suppression.

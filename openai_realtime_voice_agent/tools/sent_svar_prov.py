@@ -16,6 +16,8 @@ Port and path of /sent-svar are C's to confirm when built; this script is the on
 Scenarios (one verdict line each, JSON, exit 0 only if all PASS):
   dag   AC-1 question spoken, no fetch  | AC-2 ja -> fetch + answer audio | nej -> no fetch | silence -> no fetch
         AC-5 no cloud session opened for the question or the ja/nej (journal of --unit has no 'connected to the cloud')
+  morgon AC-6 (side instance with SENT_SVAR_NU=12:00): two notices arrive in a conversation (held), the model
+        answers a question, then "Ska jag ge dig det jag sparat?" is asked once; ja reads both, oldest first
   natt  AC-3 clock 03:00: fragar:false, no audio, no fetch (the answer stays at Core)
 """
 import argparse
@@ -80,7 +82,7 @@ class Enhet:
     """The device stand-in: counts audio bytes per window, can send speech or silence."""
 
     def __init__(self, ws):
-        self.ws, self.bytes, self.text = ws, 0, []
+        self.ws, self.bytes, self.text, self.stycken = ws, 0, [], []  # stycken: (time, bytes) per audio frame
         self.las = asyncio.create_task(self._las())
 
     async def _las(self):
@@ -88,6 +90,7 @@ class Enhet:
             async for m in self.ws:
                 if isinstance(m, bytes):
                     self.bytes += len(m)
+                    self.stycken.append((time.monotonic(), len(m)))
                 else:
                     self.text.append(m[:200])
         except websockets.ConnectionClosed:
@@ -192,13 +195,65 @@ async def natt(a, comms: FalskComms, v: list):
         ws.transport.abort()
 
 
+def omgangar(stycken: list, gap_s: float = 1.0) -> list[tuple[float, float, int]]:
+    """Audio frames grouped into bursts: (start, end, bytes); a gap of `gap_s` starts a new one."""
+    ut: list = []
+    for t, n in stycken:
+        if ut and t - ut[-1][1] < gap_s:
+            ut[-1] = (ut[-1][0], t, ut[-1][2] + n)
+        else:
+            ut.append((t, t, n))
+    return ut
+
+
+async def morgon(a, comms: FalskComms, v: list):
+    fraga_wav = pcm(a.fraga)
+    ja = pcm(a.ja)
+    async with websockets.connect(f"{a.ws}?device_id={a.enhet}", max_size=None, ping_interval=None) as ws:
+        e = Enhet(ws)
+        await ws.send(json.dumps({"type": "start"}))
+        await asyncio.sleep(9.0)
+        await ws.send(json.dumps({"type": "wake"}))
+        tal = asyncio.create_task(e.tala(fraga_wav))
+        await asyncio.sleep(1.0)  # the conversation is on: both notices are held
+        koder = []
+        for i in (0, 1):
+            kod, kropp = await skicka_notis(a.agent, f"prov-morgon-{i}-{int(time.time())}", a.enhet)
+            koder.append((kod, kropp.get("fragar"), kropp.get("orsak")))
+        sant(v, "AC-6 notiserna hålls mitt i samtalet", all(k == (202, False, "samtal") for k in koder), str(koder))
+        await tal
+        await e.tystnad(2.0)  # the turn ends on silence
+        await e.vanta_ljud(a.enhet_ljud_s)
+        # Wait for the burst after the model's reply: the morning question.
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 25 and len(omgangar(e.stycken)) < 2:
+            await asyncio.sleep(0.2)
+        bursts = omgangar(e.stycken)
+        sant(v, "AC-6 frågan kommer efter första svaret", len(bursts) >= 2, f"{len(bursts)} ljudomgångar")
+        if len(bursts) < 2:
+            return
+        fraga_s = bursts[1][2] / 48000
+        await asyncio.sleep(max(0.0, bursts[1][1] + fraga_s + 2.5 - time.monotonic()))
+        fore = e.bytes
+        await e.tala(ja)
+        await e.tystnad(7.0)
+        await e.vanta_ljud(a.enhet_ljud_s * 2)
+        ids = [p for p in comms.anrop if p[0].endswith("/svar")]
+        sant(v, "AC-6 ja: båda hämtas, det äldsta först, och läses", len(ids) == 2 and e.bytes - fore > 32000,
+             f"hämtningar={[k.get('result_id') for _, k in ids]}, ljud={e.bytes - fore} B")
+        await asyncio.sleep(3.0)
+        sant(v, "AC-6 frågan kommer bara en gång", len(omgangar(e.stycken)) <= 4, f"{len(omgangar(e.stycken))} omgångar")
+        ws.transport.abort()
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--scenario", choices=("dag", "natt"), required=True)
+    p.add_argument("--scenario", choices=("dag", "natt", "morgon"), required=True)
     p.add_argument("--ja", default="/root/q/ja.wav")
     p.add_argument("--nej", default="/root/q/nej.wav")
     p.add_argument("--agent", default="http://127.0.0.1:18081")
     p.add_argument("--ws", default="ws://127.0.0.1:18080/")
+    p.add_argument("--fraga", default="/root/q/q1.wav", help="a plain question the model answers (scenario morgon)")
     p.add_argument("--enhet", default="attrapp")
     p.add_argument("--enhet-ljud-s", dest="enhet_ljud_s", type=float, default=12.0)
     p.add_argument("--unit", default="prov-sent-svar")
@@ -206,7 +261,7 @@ def main() -> int:
     a = p.parse_args()
     comms, v = FalskComms(a.comms_port), []
     try:
-        asyncio.run({"dag": dag, "natt": natt}[a.scenario](a, comms, v))
+        asyncio.run({"dag": dag, "natt": natt, "morgon": morgon}[a.scenario](a, comms, v))
     except Exception as ex:  # a missing endpoint is a FAIL line, not a crash
         sant(v, f"{a.scenario}: provet kunde inte köras", False, repr(ex)[:200])
     finally:

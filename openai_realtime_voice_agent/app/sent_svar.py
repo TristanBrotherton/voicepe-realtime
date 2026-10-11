@@ -36,6 +36,8 @@ TAL_DBFS = -45.0       # a 20-640 ms chunk above this is speech
 TAL_SLUT_S = 1.0       # quiet after speech that closes the answer
 SPARA_MAX = 10         # notices remembered per room for the morning question
 TAK_SVAR_S = 24 * 3600
+MORGON_TAK = 3         # AC-6: at most three answers are read per yes
+MORGON_FRAGA = "Ska jag ge dig det jag sparat?"
 
 
 def fraga_text(agent: str, amne: str) -> str:
@@ -121,6 +123,7 @@ class SentSvar:
         self._tala, self._stt, self._enhet, self._hamta = tala, stt, enhet, hamta
         self.sparade: dict[str, list[dict]] = {}   # held notices per room: the morning question reads these
         self._pagar: set[str] = set()              # rooms with a question under way
+        self._morgon_fragad: dict[str, datetime.date] = {}  # the day each room was asked the morning question
         self._uppgifter: set = set()
 
     def _spara(self, rum: str, notis: dict) -> None:
@@ -153,26 +156,63 @@ class SentSvar:
         t.add_done_callback(self._uppgifter.discard)
         return {"fragar": True}
 
-    async def _fraga(self, g: dict, serializer) -> None:
-        rum, rid = g["rum"], g["result_id"]
+    async def _hor_ja_nej(self, rum: str, serializer, fraga: str) -> tuple[Optional[str], Optional[str]]:
+        """Say `fraga`, take the mic from the engine, hear the answer locally: (text, 'ja'|'nej'|None)."""
         lyssnare = Lyssnare()
         serializer.fraga_tap = lyssnare.mata  # before the question: the engine hears none of it
         try:
-            await self._tala(fraga_text(g["agent"], g["amne"]), rum)
+            await self._tala(fraga, rum)
             pcm = await lyssnare.lyssna()
             text = await self._stt(pcm) if lyssnare.tal else None
-            svar = tolka(text)
+            return text, tolka(text)
+        finally:
+            serializer.fraga_tap = None
+
+    async def _fraga(self, g: dict, serializer) -> None:
+        rum, rid = g["rum"], g["result_id"]
+        try:
+            text, svar = await self._hor_ja_nej(rum, serializer, fraga_text(g["agent"], g["amne"]))
             logger.info(f"📬 sent svar {rid} ({rum}): hörde {text!r} -> {svar or 'inget svar'}")
             if svar == "ja":
-                läst = await self._hamta(rid)
-                if läst:
-                    await self._tala(läst, rum)
-                else:
-                    await self._tala("Det svaret finns inte kvar.", rum)
+                await self._las(rum, rid)
             else:
                 self._spara(rum, g)  # a no or silence leaves it unread: the morning question may ask again
         except Exception as e:
             logger.warning(f"📬 sent svar {rid} ({rum}) failed: {e!r}")
         finally:
-            serializer.fraga_tap = None
             self._pagar.discard(rum)
+
+    async def _las(self, rum: str, rid: str) -> bool:
+        läst = await self._hamta(rid)
+        await self._tala(läst or "Det svaret finns inte kvar.", rum)
+        return bool(läst)
+
+    async def morgon(self, rum: str) -> bool:
+        """AC-6 (decision C 2026-10-11, Henrik may change it): after the first reply of a session at or after 07:00,
+        once per room and day, ask "Ska jag ge dig det jag sparat?" if unread answers are held. Yes: read at most three,
+        the oldest first, one at a time; no or silence: they stay. Never raises; True when a question was asked."""
+        try:
+            enhet = self._enhet(rum)
+            idag = nu().date()
+            nya = [n for n in self.sparade.get(rum, []) if time.time() - n["_t"] < TAK_SVAR_S]
+            if (enhet is None or self._stt is None or tyst_timme() or not nya or rum in self._pagar
+                    or self._morgon_fragad.get(rum) == idag):
+                return False
+            self._morgon_fragad[rum] = idag  # asked once, whatever the answer
+            self._pagar.add(rum)
+            try:
+                text, svar = await self._hor_ja_nej(rum, enhet[0], MORGON_FRAGA)
+                logger.info(f"📬 morgonfråga ({rum}, {len(nya)} sparade): hörde {text!r} -> {svar or 'inget svar'}")
+                if svar == "ja":
+                    nya.sort(key=lambda n: n["_t"])
+                    for n in nya[:MORGON_TAK]:
+                        await self._las(rum, n["result_id"])
+                        self.sparade[rum] = [m for m in self.sparade[rum] if m["result_id"] != n["result_id"]]
+                    if len(nya) > MORGON_TAK:
+                        await self._tala("Det finns fler.", rum)
+            finally:
+                self._pagar.discard(rum)
+            return True
+        except Exception as e:
+            logger.warning(f"📬 morgonfråga ({rum}) failed: {e!r}")
+            return False

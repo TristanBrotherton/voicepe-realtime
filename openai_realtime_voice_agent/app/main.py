@@ -652,6 +652,7 @@ class Application:
         self.websocket_handler.say = self._guarded_say
         self.websocket_handler.engine_probe = probe_engine
         self.websocket_handler.ack_clip = self._ack_clip
+        self.websocket_handler.efter_svar = lambda rum: self._sent_svar().morgon(rum)
         self._ack_clips = {}
         self.timer_registry.allow_legacy_ring = lambda device_id: (
             len(self.websocket_handler.devices) == 1

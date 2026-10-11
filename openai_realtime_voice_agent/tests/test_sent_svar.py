@@ -172,3 +172,77 @@ def test_tapen_ar_borta_efter_fragan():
     v = Varld(hort="nej")
     asyncio.run(kor(v))
     assert v.ser.fraga_tap is None
+
+
+# --- AC-6: the morning question (decision C 2026-10-11: after the first reply at or after 07:00) ---------------------
+
+def _spara(v, n, ald=0):
+    for i in range(n):
+        v.s.sparade.setdefault("kontoret", []).append(
+            {**NOTIS, "result_id": f"s{i}", "amne": f"amne{i}", "_t": sent_svar.time.time() - ald + i})
+
+
+async def morgon(v):
+    return await v.s.morgon("kontoret")
+
+
+def test_ac6_ja_laser_hogst_tre_det_aldsta_forst_och_sager_att_fler_finns():
+    v = Varld(hort="ja")
+    _spara(v, 5)
+    assert asyncio.run(morgon(v)) is True
+    assert v.sagt[0] == "Ska jag ge dig det jag sparat?"
+    assert v.hamtat == ["s0", "s1", "s2"] and v.sagt[-1] == "Det finns fler."
+    assert [n["result_id"] for n in v.s.sparade["kontoret"]] == ["s3", "s4"]
+
+
+def test_ac6_frågas_en_gång_per_dag():
+    v = Varld(hort="nej")
+    _spara(v, 2)
+    assert asyncio.run(morgon(v)) is True and asyncio.run(morgon(v)) is False
+    assert v.hamtat == [] and len(v.s.sparade["kontoret"]) == 2  # a no leaves them to ask for later
+    v2 = Varld(hort="ja")
+    v2.s._morgon_fragad = {"kontoret": sent_svar.nu().date() - sent_svar.datetime.timedelta(days=1)}
+    _spara(v2, 1)
+    assert asyncio.run(morgon(v2)) is True
+
+
+def test_ac6_inget_sparat_eller_natt_ger_ingen_fraga(monkeypatch):
+    v = Varld()
+    assert asyncio.run(morgon(v)) is False and v.sagt == []
+    _spara(v, 1)
+    monkeypatch.setenv("SENT_SVAR_NU", "06:30")
+    assert asyncio.run(morgon(v)) is False and v.sagt == []
+
+
+def test_ac6_foraldrade_svar_frågas_inte():
+    v = Varld()
+    _spara(v, 2, ald=sent_svar.TAK_SVAR_S + 100)
+    assert asyncio.run(morgon(v)) is False and v.sagt == []
+
+
+def test_ac6_tystnad_lasar_inget():
+    v = Varld(hort="ja")
+    v.talar = False
+    _spara(v, 1)
+    assert asyncio.run(morgon(v)) is True and v.hamtat == [] and len(v.sagt) == 1
+
+
+def test_ac6_efter_svar_hooken_vantar_pa_idle():
+    from app.websocket_handler import WebSocketHandler
+
+    class Em:
+        def __init__(self):
+            self.phase = "speaking"
+    em, anrop = Em(), []
+
+    async def efter(rum):
+        anrop.append((rum, em.phase))
+
+    async def go():
+        t = asyncio.create_task(WebSocketHandler._efter_svar_nar_tyst(em, efter, "kontoret", max_s=5.0))
+        await asyncio.sleep(1.6)
+        assert anrop == []
+        em.phase = "idle"
+        await t
+    asyncio.run(go())
+    assert anrop == [("kontoret", "idle")]

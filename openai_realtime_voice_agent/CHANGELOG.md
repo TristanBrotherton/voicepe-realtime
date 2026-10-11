@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.1 (fork)
+
+- **Morgonfrågan för sparade sena svar** (raawr US-051 AC-6). Svar som inte frågades för att det var natt (00-07) eller ett samtal pågick sparas i minnet. Efter det första modellsvaret vid eller efter 07:00 frågar Björn en gång per rum och dag "Ska jag ge dig det jag sparat?"; ja läser högst tre, det äldsta först, och säger "Det finns fler." om fler finns; nej och tystnad lämnar dem. Samma lokala ja/nej som 0.29.0, ingen molnsession för frågan. Ett snabbspårssvar (tänd/släck) räknas inte som svar: frågan väntar på nästa modellsvar. Sparade notiser ligger bara i minnet (en omstart tappar dem; svaret ligger kvar hos Core).
+
 ## 0.29.0 (fork)
 
 - **Ett sent svar frågas först, och läses bara efter ja** (raawr US-051, D-17). Comms postar `POST /sent-svar` (rum, result_id, agent, amne; aldrig texten) på websocket-porten, bara från loopback. Agenten svarar `{"fragar": true|false}` direkt och säger i så fall "<agent> har mer om <ämne>. Vill du höra det?" i motorns röst. Mikrofonen tas från motorn medan frågan lever (`fraga_tap` i serializern), så ingen molnsession öppnas för frågan eller för ja/nej (AC-5); orden hörs av bana 0:s lokala tal-till-text och läses mot två fasta listor (ja: ja, ja tack, kör, gärna, okej, visst, läs, berätta; nej: nej, nej tack, inte nu, senare, strunta i det). Ja hämtar texten hos Comms (`POST /kanal/rost/<rum>/svar`) och läser den; nej, annat och tystnad läser inget. Inget frågas 00:00-07:00 svensk tid eller mitt i ett samtal (`fragar:false`, sparas för morgonfrågan). `SENT_SVAR_NU=HH:MM` fejkar klockan i självprovet. Morgonfrågan (AC-6) och röst-ID (AC-4) är inte byggda.
