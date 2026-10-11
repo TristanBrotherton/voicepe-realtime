@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.5 (fork)
+
+- **Turens första ord tappas inte lika lätt** (raawr D-97). Av Henriks åtta sparade turer 2026-10-11 började tre redan på full talnivå i första 50 ms: det första ordet hade börjat före ringen. Molnets förljud är nu 1,0 s (var 0,5 s, `ENGINE_PREROLL_MS`) och bana 0:s ring 1,5 s (var 0,8 s, `TURN_PREROLL_MS`). Ringen är fortfarande den längre. Obevisat: att det också tar bort skräpet först i turen ("74 P3", "Tandläkarmottagning"); det mäts efter deploy med `📏`-raden och `tur_ljud`.
+
 ## 0.29.4 (fork)
 
 - **Snabblagning efter provet 2026-10-11** (raawr D-97). (1) "Stäng av radion" körde `HassTurnOff` på högtalaren, HA svarade `failed` och radion spelade vidare. Ett `HassTurnOff` mot `media_player` blir nu `HassMediaPause`, och beskrivningen av pausverktyget säger att det gäller för "stäng av/stoppa". (2) Ett HA-svar med `failed` som inte är tomt når modellen som tydligt fel ("Det gick INTE: …", eller "Delvis: …"), så Björn säger ifrån i stället för att kvittera. (3) Journalen får en rad `💬 Björn sa: …` med modellens egna ord per tur (Gemini). (4) Persona-tillägget säger: klockan ovan gäller när samtalet öppnades, kör `GetDateTime` först för "vad är klockan nu", och gissa aldrig tider för matcher, resultat, öppettider eller priser: sök först. Googles egen sökning (`google_search`) var redan på i Live-sessionen på 3.x-modellerna; ändringen är regeln om att söka (texten säger "webbsökningen", eftersom den gäller alla motorer).

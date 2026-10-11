@@ -132,7 +132,16 @@ class LocalTurnsMixin:
     # Set by the engine's build() when local turn detection is on; None means
     # the engine's own turn detection.
     _turns: Optional[LocalTurns] = None
-    PREROLL_S = 0.5
+    # 1.0 s since 2026-10-11 (was 0.5 s): the engine heard "Tänd" cut off and "Sätt på" as "74".
+    # ENGINE_PREROLL_MS tunes it; it must stay under the bana 0 ring (TURN_PREROLL_MS).
+    @staticmethod
+    def _preroll_s() -> float:
+        try:  # a misspelt value must not stop the agent starting
+            return max(0, int(os.environ.get("ENGINE_PREROLL_MS", "1000"))) / 1000
+        except ValueError:
+            return 1.0
+
+    PREROLL_S = _preroll_s.__func__()
 
     def _keep_preroll(self, frame) -> None:
         preroll = getattr(self, "_preroll", bytearray())

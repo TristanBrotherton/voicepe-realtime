@@ -426,9 +426,9 @@ async def test_bana0_av_ingen_krok_och_inga_egna_handelser():
 
 @pytest.mark.asyncio
 async def test_folj_upp_tur_innehaller_bara_anvandarens_yttrande():
-    # The pre-roll kept from before speech_started: 0.8 s, because the event
-    # arrives after the speech began and the first syllable must survive.
-    preroll = 16000 * 2 * 8 // 10
+    # The pre-roll kept from before speech_started (TURN_PCM_PREROLL, 1.5 s since 0.29.5), because the
+    # event arrives after the speech began and the first syllable must survive.
+    from app.raw_audio_serializer import TURN_PCM_PREROLL as preroll
     handler, connection, service, sent = _koppling(("127.0.0.1", 10300))
     ser = connection.serializer
     tidigare = b"\x07\x00" * 16000 * 3  # 3 s of silence/echo after the last turn
@@ -615,7 +615,7 @@ async def test_fraga_over_hans_eget_svar_tappar_inte_borjan():
     ser = RawAudioSerializer("koket", input_sample_rate=16000)
     ser.is_replying = lambda: True
     bit = b"\x01\x00" * 1600  # 100 ms
-    for _ in range(12):  # his own reply, then he starts to speak over it
+    for _ in range(TURN_PCM_PREROLL // len(bit) + 4):  # his own reply, then he starts to speak over it
         await ser.deserialize(bit)
     assert ser.start_turn_audio() is True  # the local VAD says he is speaking; the phase has not moved; the ring was used
     for _ in range(8):
