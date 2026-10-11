@@ -1919,6 +1919,17 @@ class WebSocketHandler:
                 ringen = serializer.start_turn_audio()
                 logger.info(f"⚡ bana0: turn audio starts, phase {getattr(connection.phase_emitter, 'phase', '?')}, "
                             f"pre-roll from the ring: {ringen}")
+                # D-97: a turn with no wake is a follow-up or the room leaking in. Log the level and how long
+                # the window had been open, so a threshold can be set from numbers.
+                try:
+                    from app.avbrott import dbfs
+                    em = connection.phase_emitter
+                    sedan_idle = time.monotonic() - em.idle_since if getattr(em, "idle_since", 0.0) else -1.0
+                    sedan_vakning = time.monotonic() - connection.recovery._last_wake
+                    logger.info(f"📏 turn start level {dbfs(serializer.peek_turn_audio()):.1f} dBFS, "
+                                f"{sedan_idle:.1f} s since idle, {sedan_vakning:.1f} s since wake")
+                except Exception as e:  # a log line must never break a turn
+                    logger.debug(f"turn start level not logged: {e!r}")
 
             openai_service.on_user_turn_start = _tur_borjar
             if hasattr(openai_service, "on_user_turn_pre_end"):

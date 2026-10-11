@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.2 (fork)
+
+- **Mätrad för turer utan väckning** (raawr D-97). När en tur startar loggas `📏 turn start level X dBFS, Y s since idle, Z s since wake`. Inget beteende ändras. Siffrorna ska visa var gränsen går mellan en följdfråga och radion i rummet.
+
 ## 0.29.1 (fork)
 
 - **Morgonfrågan för sparade sena svar** (raawr US-051 AC-6). Svar som inte frågades för att det var natt (00-07) eller ett samtal pågick sparas i minnet. Efter det första modellsvaret vid eller efter 07:00 frågar Björn en gång per rum och dag "Ska jag ge dig det jag sparat?"; ja läser högst tre, det äldsta först, och säger "Det finns fler." om fler finns; nej och tystnad lämnar dem. Samma lokala ja/nej som 0.29.0, ingen molnsession för frågan. Ett snabbspårssvar (tänd/släck) räknas inte som svar: frågan väntar på nästa modellsvar. Sparade notiser ligger bara i minnet (en omstart tappar dem; svaret ligger kvar hos Core).
