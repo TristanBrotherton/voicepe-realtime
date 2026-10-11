@@ -71,6 +71,8 @@ class RawAudioSerializer(FrameSerializer):
         # Out-of-band announcements (timer expiry): while playing, inbound mic
         # audio is dropped so the assistant can't hear and answer itself.
         self.suppress_inbound_until = 0.0
+        # A late-answer question (app/sent_svar.py) takes the mic for its yes/no: set, the engine hears nothing.
+        self.fraga_tap = None
         # Bana 0 (raawr US-016): this turn's mic audio as the device sent it
         # (16 kHz PCM16 mono), for the local STT. Reset on wake, taken at end
         # of turn.
@@ -206,6 +208,8 @@ class RawAudioSerializer(FrameSerializer):
                 # partial utterance at the cut-off so a later wake can't complete
                 # it into a stale answer.
                 logger.info("🧽 device mic flush received")
+                if self.fraga_tap is not None:
+                    self.fraga_tap(None)
                 if self._speaker_probe is not None:
                     self._speaker_probe.finalize_partial()
                 if self._on_mic_flush is not None:
@@ -309,6 +313,10 @@ class RawAudioSerializer(FrameSerializer):
         # announcement is playing (observed: the mic heard "your timer is done",
         # transcribed it, and the model replied to itself).
         if time.monotonic() < self.suppress_inbound_until:
+            return None
+
+        if self.fraga_tap is not None:
+            self.fraga_tap(message)
             return None
 
         # Tee the post-wake capture window to the speaker probe (no-op unless a

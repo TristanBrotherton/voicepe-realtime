@@ -1245,6 +1245,35 @@ class Application:
             register_openclaw_tool(service, device_id)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
 
+    def _sent_svar(self):
+        """The late-answer asker (app/sent_svar.py), built on first use from the live wiring."""
+        if getattr(self, "_sent_svar_obj", None) is None:
+            from app import bana0
+            from app.sent_svar import SentSvar
+
+            async def stt(pcm):
+                if not self.bana0_stt:
+                    return None
+                host, port = self.bana0_stt
+                return await bana0.transkribera(pcm, host, port, 3.0)
+
+            def enhet(rum):
+                c = self.websocket_handler.resolve_device(rum)
+                if c is None or c.serializer is None:
+                    return None
+                return c.serializer, (not getattr(c.openai_service, "sover", True)) or c.says_playing > 0
+
+            async def tala(text, rum):
+                # In the engine's own voice from the clip cache, never the conductor's dry one (and OpenAI's TTS answers 403).
+                c = self.websocket_handler.resolve_device(rum)
+                pcm = await self._ack_clip(getattr(c, "provider", ""), text)
+                await self._guarded_say(text, rum, pace=False, pcm=pcm)
+
+            self._sent_svar_obj = SentSvar(
+                tala=tala,
+                stt=stt if self.bana0_stt else None, enhet=enhet)
+        return self._sent_svar_obj
+
     async def _guarded_say(self, text, device_id=None, pace=True, pcm=None):
         """The conductor's TTS lane, guarded so the device cannot hear itself.
 
@@ -1524,7 +1553,8 @@ class Application:
         Returns:
             The configured FastAPI application.
         """
-        from fastapi import FastAPI, WebSocket
+        from fastapi import FastAPI, Request, WebSocket
+        from fastapi.responses import JSONResponse
 
         web_app = FastAPI(title="Voice PE Realtime backend")
 
@@ -1543,6 +1573,17 @@ class Application:
                 on_client_disconnected=_on_client_disconnected,
                 activity_callback=self._update_session_activity,
             )
+
+        @web_app.post("/sent-svar")
+        async def sent_svar(request: Request):
+            """Comms' notice of a late answer (raawr US-052 -> US-051): loopback only, never the text."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "invalid json"}, status_code=400)
+            return JSONResponse(await self._sent_svar().notis(body), status_code=202)
 
         @web_app.get("/healthz")
         async def healthz():
