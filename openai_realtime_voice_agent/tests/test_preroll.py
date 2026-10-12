@@ -39,3 +39,20 @@ def test_a_misspelt_env_value_does_not_stop_the_agent_starting(monkeypatch):
         monkeypatch.undo()
         importlib.reload(lt)
         importlib.reload(rs)
+
+
+def test_a_huge_value_is_clamped_to_three_seconds(monkeypatch):
+    import importlib
+
+    import app.providers.local_turns as lt
+    import app.raw_audio_serializer as rs
+    monkeypatch.setenv("ENGINE_PREROLL_MS", "999999")
+    monkeypatch.setenv("TURN_PREROLL_MS", "999999")
+    try:
+        importlib.reload(lt)
+        importlib.reload(rs)
+        assert lt.LocalTurnsMixin.PREROLL_S == 3.0 and rs.TURN_PCM_PREROLL == 16000 * 2 * 3
+    finally:
+        monkeypatch.undo()
+        importlib.reload(lt)
+        importlib.reload(rs)

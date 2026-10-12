@@ -277,7 +277,7 @@ async def _transkribera(pcm16k: bytes, host: str, port: int) -> Optional[str]:
             if header.get("payload_length"):
                 await reader.readexactly(header["payload_length"])
             if header.get("type") == "transcript":
-                return (data.get("text") or "").strip() or None
+                return (data.get("text") or "").strip()  # "" = it listened and heard no words
     finally:
         writer.close()
 
@@ -285,10 +285,21 @@ async def _transkribera(pcm16k: bytes, host: str, port: int) -> Optional[str]:
 async def transkribera(pcm16k: bytes, host: str, port: int, timeout: float) -> Optional[str]:
     """Raw Wyoming over asyncio streams. None on timeout, error, or empty text."""
     try:
-        return await asyncio.wait_for(_transkribera(pcm16k, host, port), timeout)
+        return (await asyncio.wait_for(_transkribera(pcm16k, host, port), timeout)) or None
     except Exception as e:  # incl. TimeoutError: every failure is a miss
         logger.warning(f"bana0: STT failed: {e!r}")
         return None
+
+
+async def transkribera_tydligt(pcm16k: bytes, host: str, port: int, timeout: float) -> tuple[Optional[str], bool]:
+    """(text, ok). ok=False is a MISS (timeout, error, no transcript): we do not know what was said. ok=True with
+    "" is a clear "no words heard". The echo net needs the difference: a miss must count as a person (US-060, A's FAIL on #65)."""
+    try:
+        text = await asyncio.wait_for(_transkribera(pcm16k, host, port), timeout)
+    except Exception as e:
+        logger.warning(f"bana0: STT failed: {e!r}")
+        return None, False
+    return (None, False) if text is None else (text, True)
 
 
 async def prova(text: str, timeout: float) -> Optional[str]:

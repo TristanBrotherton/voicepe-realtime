@@ -18,7 +18,7 @@ TURN_PCM_CAP = 16000 * 2 * 30  # 30 s of 16 kHz PCM16 mono
 def _ms(namn: str, standard: int) -> int:
     """An env value in ms; a misspelt one must not stop the agent starting (B on #62/#63)."""
     try:
-        return max(0, int(os.environ.get(namn, str(standard))))
+        return min(3000, max(0, int(os.environ.get(namn, str(standard)))))  # 0-3 s; more is a typo, not a wish
     except ValueError:
         return standard
 
@@ -319,6 +319,11 @@ class RawAudioSerializer(FrameSerializer):
                 except Exception as e:
                     logger.warning(f"⚠️ audio-ack failed: {e!r}")
 
+        # Echo measurement (US-060, EKO_PROV=1 only): every mic frame, before any guard.
+        if self.eko_mat is not None:
+            self.eko_mat(message)
+            return None  # measuring: nothing else may hear the mic (the engine would answer its own voice)
+
         # Announcement echo-guard: drop inbound audio while an out-of-band
         # announcement is playing (observed: the mic heard "your timer is done",
         # transcribed it, and the model replied to itself).
@@ -386,7 +391,20 @@ class RawAudioSerializer(FrameSerializer):
         self._samla_tur = False
         return pcm
 
+    _tysta_tills = 0.0
+    eko_mat = None
+
+    def tysta_svar(self, sek: float = 3.0) -> None:
+        """A person talked over the reply (US-060): what is left of it must not be sent. The device flushes its own queue
+        on "listening"; this stops the tail that is still on its way, until the next turn ends or `sek` has passed."""
+        self._tysta_tills = time.monotonic() + sek
+
+    def tysta_slut(self) -> None:
+        self._tysta_tills = 0.0
+
     async def serialize(self, frame: Frame) -> bytes:
+        if isinstance(frame, OutputAudioRawFrame) and self._tysta_tills and time.monotonic() < self._tysta_tills:
+            return b""
         if isinstance(frame, OutputAudioRawFrame):
             self._reply_audio_since_wake = True
             if self.tider is not None:

@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.7 (fork)
+
+- **Full duplex: ekonätet i agenten och ett mätverktyg** (raawr US-060, D-22; allt av som standard). `BARGE_IN=1` slår på lager 2: tal som börjar medan Björn svarar, eller strax efter (`EKO_SVANS_MS`, 1,5 s), skrivs ut lokalt (bana 0) och jämförs med Björns egen utskrift av turen. Hans egna ord ignoreras (`🔊 … his own words, ignored`); annat tal är ett avbrott: turen startar som vanligt, fasen blir `listening` (enheten tömmer sin uppspelningskö, om firmwaren har `barge_in`), och resten av hans svar skickas inte (`tysta_svar`). `ANTI_EKO=0` släpper nätet så XMOS-lagret kan mätas ensamt. Firmware: `barge_in` är en substitution (standard false), Kontors stub sätter true. `EKO_PROV=1` slår på `POST /eko-prov` (loopback): spelar ett klipp med enhetens mikrofon öppen och lämnar tillbaka vad mikrofonen hörde; `tools/eko_prov.py` kör mätningen (AC-1) mot bana 0 och Gemini. Obevisat tills det är flashat och mätt (efter 07:00).
+
 ## 0.29.5 (fork)
 
 - **Turens första ord tappas inte lika lätt** (raawr D-97). Av Henriks åtta sparade turer 2026-10-11 började tre redan på full talnivå i första 50 ms: det första ordet hade börjat före ringen. Molnets förljud är nu 1,0 s (var 0,5 s, `ENGINE_PREROLL_MS`) och bana 0:s ring 1,5 s (var 0,8 s, `TURN_PREROLL_MS`). Ringen är fortfarande den längre. Obevisat: att det också tar bort skräpet först i turen ("74 P3", "Tandläkarmottagning"); det mäts efter deploy med `📏`-raden och `tur_ljud`.

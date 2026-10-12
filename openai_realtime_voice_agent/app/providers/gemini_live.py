@@ -33,6 +33,7 @@ from pipecat.services.google.gemini_live.llm import (
 )
 from pipecat.transcriptions.language import Language
 
+from app import eko_vakt as _eko
 from app import sprakkoll
 from app.providers.local_turns import PRE_END_MS, LocalTurns, LocalTurnsMixin
 from app.providers.sovlage import SovlageMixin
@@ -300,11 +301,16 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         await super()._handle_msg_input_transcription(message)
 
     _svar_text: str = ""
+    svar = None  # eko_vakt.Svar: what he has said, for the full-duplex echo net (US-060)
 
     async def _handle_msg_output_transcription(self, message) -> None:
-        """Keep what the model says, to put it in the journal when the turn ends (raawr D-97)."""
+        """Keep what the model says: for the journal when the turn ends (raawr D-97), and for the echo net."""
         try:
-            self._svar_text += message.server_content.output_transcription.text or ""
+            text = message.server_content.output_transcription.text or ""
+            self._svar_text += text
+            if self.svar is None:
+                self.svar = _eko.Svar()
+            self.svar.mata(text)
         except Exception as e:  # logging must never touch the turn
             logger.debug(f"output transcription not kept: {e!r}")
         await super()._handle_msg_output_transcription(message)
@@ -331,6 +337,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         if self._svar_text.strip():
             logger.info(f"💬 Björn sa: {self._svar_text.strip()[:400]}")
         self._svar_text = ""
+        if self.svar is not None:
+            self.svar.klar()
         self._transkr_start, self._transkr_kollad, self._tur_text = "", False, ""  # next turn: look again
         self._turn_rescue = None  # answered (also as text without sound): never replay it
         self.turer_klara += 1
@@ -400,6 +408,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         if turns is None:
             return await super()._send_user_audio(frame)
         event = turns.feed(frame.audio)
+        if self.eko_vakt is not None and await self._eko_kandidat(frame, event):
+            return
         if event == "end" and self._tidigt:
             self._tidigt = False  # this turn was ended early (end_early); this is only its normal end
             event = None
@@ -469,6 +479,72 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             self._tider_start()
             await self.push_frame(UserStoppedSpeakingFrame())
             await self._end_activity()
+
+    # Full duplex, layer 2 (US-060, D-22). eko_vakt(): True while he replies or just after. eko_dom(pcm): True = the
+    # speech heard is his own words. Both are set by the handler when BARGE_IN=1; None = this does nothing.
+    eko_vakt = None
+    eko_dom = None
+    on_barge_in = None  # called once when a person's speech is confirmed over his reply
+    EKO_MIN_S = 0.7
+    _kandidat = None
+    _kandidat_task = None
+    _kandidat_slut = False
+
+    async def _eko_kandidat(self, frame, event) -> bool:
+        """Speech that starts over his reply is a candidate, not yet a turn: it is written out locally and compared with
+        what he said. Echo is dropped; a person is let in as a normal turn start. True = this frame was taken."""
+        turns = self._turns
+        kand = self._kandidat
+        if kand is None:
+            if event != "start" or not self.eko_vakt():
+                return False
+            pre = self._take_preroll()
+            self._kandidat = [type(frame)(audio=pre, sample_rate=frame.sample_rate, num_channels=frame.num_channels), frame]
+            self._kandidat_slut, self._kandidat_task = False, None
+            return True
+        kand.append(frame)
+        if event == "end":
+            self._kandidat_slut = True
+        if self._kandidat_task is None:
+            if self._kandidat_slut or sum(len(f.audio) for f in kand) >= self.EKO_MIN_S * frame.sample_rate * 2:
+                pcm = b"".join(f.audio for f in kand)
+                self._kandidat_task = asyncio.get_running_loop().create_task(self.eko_dom(pcm, frame.sample_rate))
+            return True
+        if not self._kandidat_task.done():
+            return True
+        try:
+            eko = bool(self._kandidat_task.result())
+        except Exception as e:
+            logger.warning(f"⚠️ echo net failed ({e!r}): the speech is let through")
+            eko = False
+        frames, slut = self._kandidat, self._kandidat_slut
+        self._kandidat = self._kandidat_task = None
+        self._kandidat_slut = False
+        if eko:
+            turns.reset()
+            return True
+        if self.on_barge_in is not None:
+            self.on_barge_in()
+        await self.push_frame(UserStartedSpeakingFrame())
+        if self.on_user_turn_start is not None:
+            self.on_user_turn_start()
+        if self.on_user_turn_end is not None:
+            self._held = list(frames)
+            if slut:
+                self._avgjord = True
+                self._tider_start()
+                await self.push_frame(UserStoppedSpeakingFrame())
+                self._decide_turn()
+            return True
+        self._activity_open = True
+        await self._send_activity(activity_start=ActivityStart())
+        for f in frames:
+            await self._send_pcm(f, f.audio)
+        if slut:
+            self._tider_start()
+            await self.push_frame(UserStoppedSpeakingFrame())
+            await self._end_activity()
+        return True
 
     async def _end_activity(self) -> None:
         self._activity_open = False

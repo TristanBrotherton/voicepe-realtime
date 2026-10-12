@@ -137,7 +137,7 @@ class LocalTurnsMixin:
     @staticmethod
     def _preroll_s() -> float:
         try:  # a misspelt value must not stop the agent starting
-            return max(0, int(os.environ.get("ENGINE_PREROLL_MS", "1000"))) / 1000
+            return min(3000, max(0, int(os.environ.get("ENGINE_PREROLL_MS", "1000")))) / 1000  # 0-3 s
         except ValueError:
             return 1.0
 

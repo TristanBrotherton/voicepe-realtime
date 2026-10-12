@@ -1280,6 +1280,33 @@ class Application:
                 stt=stt if self.bana0_stt else None, enhet=enhet)
         return self._sent_svar_obj
 
+    async def _eko_prov(self, rum: str, pcm: bytes, extra_s: float) -> dict:
+        """Play `pcm` (24 kHz) on `rum` with the device's mic streaming, and hand back what the mic heard."""
+        import base64
+
+        c = self.websocket_handler.resolve_device(rum)
+        if c is None or c.serializer is None or c.maskin is None:
+            return {"error": "okand_enhet"}
+        if getattr(getattr(c, "phase_emitter", None), "phase", None) not in (None, "idle"):
+            return {"error": "upptagen"}
+        ser, got = c.serializer, bytearray()
+        ser.eko_mat = got.extend
+        try:
+            await c.maskin.phase("listening", "eko-prov")   # the device opens its mic gate
+            await asyncio.sleep(0.6)
+            mark = len(got)
+            clip = len(pcm) / 48000.0
+            await self.enrollment_conductor._say("", device_id=rum, pace=False, pcm=pcm)
+            await asyncio.sleep(clip + extra_s)
+        finally:
+            ser.eko_mat = None
+            await c.maskin.phase("idle", "eko-prov")
+        from app.avbrott import dbfs
+        heard = bytes(got)
+        steg = [round(dbfs(heard[i:i + 8000]), 1) for i in range(mark, len(heard) - 8000, 8000)]
+        return {"clip_s": round(clip, 1), "heard_s": round(len(heard) / 32000, 1), "mark_s": round(mark / 32000, 1),
+                "levels_dbfs_per_250ms": steg, "pcm_b64": base64.b64encode(heard).decode()}
+
     async def _guarded_say(self, text, device_id=None, pace=True, pcm=None):
         """The conductor's TTS lane, guarded so the device cannot hear itself.
 
@@ -1590,6 +1617,26 @@ class Application:
             except Exception:
                 return JSONResponse({"error": "invalid json"}, status_code=400)
             return JSONResponse(await self._sent_svar().notis(body), status_code=202)
+
+        @web_app.post("/eko-prov")
+        async def eko_prov(request: Request):
+            """Echo measurement (raawr US-060, AC-1): loopback only, and only with EKO_PROV=1.
+
+            Body {rum, pcm_b64 (24 kHz mono PCM16), extra_s}. The device is told "listening" so it streams its mic,
+            the clip is played through the speaker, and every mic frame is captured before any guard. The answer is
+            the captured 16 kHz PCM16 (base64) and the loudest 0.25 s level while the clip played."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            if os.environ.get("EKO_PROV", "0") != "1":
+                return JSONResponse({"error": "eko_prov_off"}, status_code=404)
+            try:
+                body = await request.json()
+                import base64
+                pcm = base64.b64decode(body["pcm_b64"])
+                rum = body["rum"]
+            except Exception:
+                return JSONResponse({"error": "invalid body"}, status_code=400)
+            return JSONResponse(await self._eko_prov(rum, pcm, float(body.get("extra_s", 2.0))))
 
         @web_app.get("/healthz")
         async def healthz():

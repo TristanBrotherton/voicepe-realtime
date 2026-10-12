@@ -35,7 +35,7 @@ from app.providers import (
     supports_client_events,
 )
 from app import bana0, klockan
-from app import tur_ljud
+from app import eko_vakt, tur_ljud
 from app.session_state import SessionMaskin
 
 # The turn's audio may have grown by this much since the early speech-to-text started
@@ -1876,6 +1876,7 @@ class WebSocketHandler:
                 await openai_service.ping_and_answer(bana0.ping_text(hort, svar))
 
             async def _on_user_turn_end():
+                serializer.tysta_slut()  # the next reply is wanted again (US-060)
                 pcm = serializer.take_turn_audio()
                 tur_ljud.spara(pcm, getattr(connection, "device_id", None) or "enhet")
                 motorns = getattr(openai_service, "held_seconds", lambda: None)()
@@ -1934,6 +1935,28 @@ class WebSocketHandler:
                     logger.debug(f"turn start level not logged: {e!r}")
 
             openai_service.on_user_turn_start = _tur_borjar
+
+            if eko_vakt.paa() and hasattr(openai_service, "eko_dom"):
+                # Full duplex (US-060, D-22): the mic is open while he speaks. Layer 1 is the XMOS echo canceller;
+                # this is layer 2 -- speech that starts over his reply (or just after) is written out locally and
+                # compared with his own words. ANTI_EKO=0 leaves layer 1 alone (to measure it).
+                async def _eko_dom(pcm, rate):
+                    if rate != 16000:
+                        import numpy as _np
+                        a = _np.frombuffer(pcm, dtype=_np.int16).astype(_np.float32)
+                        n = int(len(a) * 16000 / rate)
+                        pcm = _np.interp(_np.linspace(0, len(a) - 1, n), _np.arange(len(a)), a).astype(_np.int16).tobytes()
+                    hort, ok = await bana0.transkribera_tydligt(pcm, host, port, timeout_stt)
+                    hans = openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else ""
+                    eko = eko_vakt.dom(hort, ok, hans)
+                    logger.info(f"🔊 over his reply: heard {hort!r} -> {'his own words, ignored' if eko else 'a person, interrupts'}")
+                    return eko
+
+                if eko_vakt.nat_paa():
+                    openai_service.eko_vakt = lambda: (phase_emitter.phase == "replying"
+                                                       or eko_vakt.i_svans(getattr(phase_emitter, "idle_since", 0.0)))
+                    openai_service.eko_dom = _eko_dom
+                openai_service.on_barge_in = lambda: (serializer.tysta_svar(), logger.info("🔊 interrupted: his reply is cut"))[0]
             if hasattr(openai_service, "on_user_turn_pre_end"):
                 openai_service.on_user_turn_pre_end = _pre_end
             serializer.is_replying = lambda: phase_emitter.phase == "replying"

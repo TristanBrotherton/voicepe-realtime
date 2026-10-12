@@ -902,3 +902,25 @@ def test_nej_stanger_utan_modell_och_utan_comms():
 
 def test_nej_utan_avsluta_gar_vidare_till_modellen():
     assert _tur_nej("Nej tack.", None) == "modell"
+
+
+@pytest.mark.asyncio
+async def test_the_clear_stt_tells_a_miss_from_no_words(monkeypatch):
+    """US-060 / A's FAIL on #65: 'heard nothing' and 'could not hear' are different answers."""
+    from app import bana0
+
+    async def tyst(pcm, host, port):
+        return ""
+
+    async def miss(pcm, host, port):
+        return None
+
+    async def fel(pcm, host, port):
+        raise ConnectionError("down")
+    monkeypatch.setattr(bana0, "_transkribera", tyst)
+    assert await bana0.transkribera_tydligt(b"", "h", 1, 1.0) == ("", True)
+    assert await bana0.transkribera(b"", "h", 1, 1.0) is None  # the old call is unchanged
+    monkeypatch.setattr(bana0, "_transkribera", miss)
+    assert await bana0.transkribera_tydligt(b"", "h", 1, 1.0) == (None, False)
+    monkeypatch.setattr(bana0, "_transkribera", fel)
+    assert await bana0.transkribera_tydligt(b"", "h", 1, 1.0) == (None, False)
