@@ -25,9 +25,15 @@ def _bygg(events, vakt, dom):
     return service, turns, sent, pushed, starter, barge
 
 
+def _hog(b):
+    """A frame of speech-level audio (about -20 dBFS); b makes frames tell apart."""
+    from pipecat.frames.frames import InputAudioRawFrame
+    return InputAudioRawFrame(audio=bytes([b, 0x30]) * 320, sample_rate=16000, num_channels=1)
+
+
 async def _mata(service, antal):
     for b in range(antal):
-        await service._send_user_audio(_frame(b + 1))
+        await service._send_user_audio(_hog(b + 1))
         await asyncio.sleep(0.01)
 
 
@@ -57,7 +63,7 @@ async def test_a_person_over_his_reply_interrupts_and_the_turn_keeps_the_start()
     assert barge == [1] and starter == [1]
     assert any(isinstance(f, UserStartedSpeakingFrame) for f in pushed)
     held = service._held
-    assert held and held[1].audio == _frame(1).audio  # the first frame of the speech is in the turn
+    assert held and held[1].audio == _hog(1).audio  # the first frame of the speech is in the turn
     n = len(held)
     await _mata(service, 2)
     assert len(service._held) > n  # the rest of the speech joins the same turn
@@ -87,3 +93,36 @@ async def test_a_failing_judge_lets_the_speech_through():
 async def test_no_net_no_change():
     service = build_service("gemini", _options(), OPENAI_SHAPE)
     assert service.eko_vakt is None and service.eko_dom is None
+
+
+@pytest.mark.asyncio
+async def test_speech_under_the_level_floor_is_noise_even_when_the_stt_writes_words():
+    """The echo capture 2026-10-12: the room floor (-42..-45 dBFS) fooled the VAD for 4.8 s and the STT wrote 'Björn.'"""
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    async def dom(pcm, rate):
+        return False  # the words are not his own
+
+    service, turns, sent, pushed, starter, barge = _bygg(["start"] + [None] * 7, lambda: True, dom)
+    service.on_user_turn_end = lambda: asyncio.sleep(0)
+    tyst = InputAudioRawFrame(audio=(b"\x10\x00" * 320), sample_rate=16000, num_channels=1)  # about -66 dBFS
+    for _ in range(6):
+        await service._send_user_audio(tyst)
+        await asyncio.sleep(0.01)
+    assert barge == [] and starter == [] and turns.resets == 1
+
+
+@pytest.mark.asyncio
+async def test_loud_speech_over_the_floor_still_interrupts():
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    async def dom(pcm, rate):
+        return False
+
+    service, turns, sent, pushed, starter, barge = _bygg(["start"] + [None] * 7, lambda: True, dom)
+    service.on_user_turn_end = lambda: asyncio.sleep(0)
+    hogt = InputAudioRawFrame(audio=(b"\x00\x30" * 320), sample_rate=16000, num_channels=1)  # about -20 dBFS
+    for _ in range(6):
+        await service._send_user_audio(hogt)
+        await asyncio.sleep(0.01)
+    assert barge == [1] and starter == [1]

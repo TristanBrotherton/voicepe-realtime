@@ -490,6 +490,14 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
     _kandidat_task = None
     _kandidat_slut = False
 
+    @staticmethod
+    def _for_tyst(frames) -> bool:
+        """The loudest 0.25 s of the candidate is under the floor: room noise or a faint echo, not a person."""
+        from app.avbrott import dbfs
+        pcm = b"".join(f.audio for f in frames)
+        steg = [dbfs(pcm[i:i + 8000]) for i in range(0, max(len(pcm) - 8000, 1), 8000)]
+        return bool(steg) and max(steg) < _eko.niva_dbfs()
+
     async def _eko_kandidat(self, frame, event) -> bool:
         """Speech that starts over his reply is a candidate, not yet a turn: it is written out locally and compared with
         what he said. Echo is dropped; a person is let in as a normal turn start. True = this frame was taken."""
@@ -520,6 +528,9 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         frames, slut = self._kandidat, self._kandidat_slut
         self._kandidat = self._kandidat_task = None
         self._kandidat_slut = False
+        if not eko and self._for_tyst(frames):
+            logger.info("🔇 over his reply: too quiet to be a person, ignored")
+            eko = True
         if eko:
             turns.reset()
             return True

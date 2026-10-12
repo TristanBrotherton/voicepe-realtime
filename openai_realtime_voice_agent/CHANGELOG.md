@@ -2,6 +2,10 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.29.8 (fork)
+
+- **Ekonätet: nivågräns och kända hittepå-fraser** (raawr US-060, efter ekoprovet 07:00). Mätt på Kontor med aux (28 s klipp, 3 körningar, bara XMOS-lagret): rummets golv med Björns röst igång låg på −50 till −53 dBFS med toppar −41 till −47, och Geminis utskrift hade inga av hans ord (men "¿Qué tal?" ur bruset). Silero tog en gång brus för tal i 4,8 s, och bana 0 skrev "Björn." och "Tack till elever och personal …" ur golvet; nätet räknade det som en person. Nu: tal över hans svar vars högsta 0,25 s ligger under −36 dBFS (`EKO_NIVA_DBFS`; Henrik ligger på −12 till −20) är brus och ignoreras, och bana 0:s kända brusfraser räknas aldrig som en person.
+
 ## 0.29.7 (fork)
 
 - **Full duplex: ekonätet i agenten och ett mätverktyg** (raawr US-060, D-22; allt av som standard). `BARGE_IN=1` slår på lager 2: tal som börjar medan Björn svarar, eller strax efter (`EKO_SVANS_MS`, 1,5 s), skrivs ut lokalt (bana 0) och jämförs med Björns egen utskrift av turen. Hans egna ord ignoreras (`🔊 … his own words, ignored`); annat tal är ett avbrott: turen startar som vanligt, fasen blir `listening` (enheten tömmer sin uppspelningskö, om firmwaren har `barge_in`), och resten av hans svar skickas inte (`tysta_svar`). `ANTI_EKO=0` släpper nätet så XMOS-lagret kan mätas ensamt. Firmware: `barge_in` är en substitution (standard false), Kontors stub sätter true. `EKO_PROV=1` slår på `POST /eko-prov` (loopback): spelar ett klipp med enhetens mikrofon öppen och lämnar tillbaka vad mikrofonen hörde; `tools/eko_prov.py` kör mätningen (AC-1) mot bana 0 och Gemini. Obevisat tills det är flashat och mätt (efter 07:00).

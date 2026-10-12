@@ -17,6 +17,19 @@ LANGT = 7               # words shorter than this must match exactly: 'vänta' i
 ANDEL = 0.6             # this share of the heard words found among his = echo
 
 
+NIVA_DBFS = -36.0       # speech quieter than this (loudest 0.25 s) over his reply is room noise, not a person (measured 2026-10-12: echo -41..-52, Henrik -12..-20)
+
+# What the local speech-to-text writes when it is given noise (seen live on the echo capture): never a person.
+LUDD = ("tack till elever och personal", "tack för att du tittade", "tack för att ni tittade", "undertexter")
+
+
+def niva_dbfs() -> float:
+    try:
+        return float(os.environ.get("EKO_NIVA_DBFS", str(NIVA_DBFS)))
+    except ValueError:
+        return NIVA_DBFS
+
+
 def paa() -> bool:
     return os.environ.get("BARGE_IN", "0") == "1"
 
@@ -54,6 +67,8 @@ def dom(hort: "str | None", ok: bool, hans: str) -> bool:
     that failed or timed out (ok False) must never throw a real interruption away (A on #65)."""
     if not ok:
         return False
+    if any(l in (hort or "").lower() for l in LUDD):
+        return True  # what it writes of noise
     return ar_eko(hort, hans)
 
 

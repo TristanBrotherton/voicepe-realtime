@@ -69,3 +69,9 @@ def test_off_by_default(monkeypatch):
     assert ev.paa()
     monkeypatch.setenv("ANTI_EKO", "0")
     assert not ev.nat_paa()
+
+
+def test_what_the_stt_writes_of_noise_is_never_a_person():
+    # the live capture 2026-10-12: 'Tack till elever och personal vid Säkerhetssäkerheten.' from the room floor
+    assert ev.dom("Tack till elever och personal vid Värmland.", True, BJORN)
+    assert not ev.dom("vänta", True, BJORN)
