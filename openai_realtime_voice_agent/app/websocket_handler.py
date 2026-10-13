@@ -2133,6 +2133,9 @@ class WebSocketHandler:
             return False
         try:
             await client.send(data)
+            ser = getattr(connection, "serializer", None)
+            if ser is not None and ser.eko_stamp is not None:  # delay study: when each chunk really left
+                ser.eko_stamp.append(("send", time.monotonic(), ser.eko_pos() if ser.eko_pos else None, len(data)))
             if getattr(connection, "tider", None) is not None:
                 connection.tider.mark("enhet")  # bana 0's own clips and the receipts go this way (B, #34)
             return True

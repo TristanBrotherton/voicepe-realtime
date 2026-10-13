@@ -30,3 +30,19 @@ def test_the_endpoint_is_off_unless_asked(monkeypatch):
     monkeypatch.delenv("EKO_PROV", raising=False)
     import os
     assert os.environ.get("EKO_PROV", "0") != "1"
+
+
+@pytest.mark.asyncio
+async def test_the_devices_play_stamp_is_pinned_to_the_mic_position():
+    """Delay study: the device says when the burst reached it and when the speaker took the first sample; the agent
+    notes where in the mic capture that arrived. Without a study running nothing is kept."""
+    import json
+    ser = RawAudioSerializer("kontoret", input_sample_rate=16000)
+    stamp = json.dumps({"type": "play_stamp", "rx_ms": 1000, "play_ms": 1250, "first_bytes": 960})
+    assert await ser.deserialize(stamp) is None and ser.eko_stamp is None  # not studying: nothing kept
+    got = bytearray()
+    ser.eko_mat, ser.eko_stamp, ser.eko_pos = got.extend, [], (lambda: len(got))
+    await ser.deserialize(b"\x01\x00" * 16000)  # one second of mic
+    await ser.deserialize(stamp)
+    (kind, _, pos, extra), = ser.eko_stamp
+    assert kind == "play" and pos == 32000 and extra["play_ms"] - extra["rx_ms"] == 250

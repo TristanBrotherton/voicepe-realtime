@@ -29,8 +29,8 @@ def las_wav(path):
         return w.readframes(w.getnframes())
 
 
-def post(rum, pcm, extra_s, port):
-    body = json.dumps({"rum": rum, "pcm_b64": base64.b64encode(pcm).decode(), "extra_s": extra_s}).encode()
+def post(rum, pcm, extra_s, port, pace=False):
+    body = json.dumps({"rum": rum, "pcm_b64": base64.b64encode(pcm).decode(), "extra_s": extra_s, "pace": pace}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/eko-prov", body, {"content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=len(pcm) / 48000 + 60) as r:
         return json.loads(r.read())
@@ -44,6 +44,7 @@ async def main():
     ap.add_argument("--gange", type=int, default=3)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--utan-moln", action="store_true")
+    ap.add_argument("--pace", action="store_true", help="send the clip in real time, as a reply is (default: all at once)")
     ap.add_argument("--spara", help="folder to keep each capture as a wav")
     a = ap.parse_args()
     from app import bana0, eko_vakt
@@ -53,11 +54,12 @@ async def main():
     host, port = os.environ.get("BANA0_STT", "127.0.0.1:10300").rsplit(":", 1)
     ok = 0
     for i in range(a.gange):
-        r = post(a.rum, pcm, 2.0, a.port)
+        r = post(a.rum, pcm, 2.0, a.port, a.pace)
         if "error" in r:
             print(i + 1, "error", r["error"])
             continue
         heard = base64.b64decode(r.pop("pcm_b64"))
+        print(f"   sand: {r.get('sand')}")
         lv = r["levels_dbfs_per_250ms"]
         topp = max(lv) if lv else None
         b = await bana0.transkribera(heard[int(r["mark_s"] * 32000):], host, int(port), 15.0)

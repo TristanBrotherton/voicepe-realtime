@@ -213,6 +213,14 @@ class RawAudioSerializer(FrameSerializer):
                         await self._on_session_start()
                     except Exception as e:
                         logger.warning(f"⚠️ device session-start handler failed: {e!r}")
+            elif isinstance(data, dict) and data.get("type") == "play_stamp":
+                # Delay study (raawr US-060): the device's own clock for "the burst reached me" and "the speaker took
+                # its first sample". The agent stamps the arrival against the mic position (same socket, so ordered).
+                logger.info(f"⏱ device: audio burst rx_ms={data.get('rx_ms')} play_ms={data.get('play_ms')} "
+                            f"(rx->play {int(data.get('play_ms', 0)) - int(data.get('rx_ms', 0))} ms), "
+                            f"first {data.get('first_bytes')} B")
+                if self.eko_stamp is not None:
+                    self.eko_stamp.append(("play", time.monotonic(), self.eko_pos() if self.eko_pos else None, data))
             elif isinstance(data, dict) and data.get("type") == "flush":
                 # A follow-up window timed out mid-stream: drop any uncommitted
                 # partial utterance at the cut-off so a later wake can't complete
@@ -393,6 +401,8 @@ class RawAudioSerializer(FrameSerializer):
 
     _tysta_tills = 0.0
     eko_mat = None
+    eko_stamp = None  # list while /eko-prov runs: (kind, monotonic, mic_bytes_so_far, extra)
+    eko_pos = None
 
     def tysta_svar(self, sek: float = 3.0) -> None:
         """A person talked over the reply (US-060): what is left of it must not be sent. The device flushes its own queue
