@@ -14,8 +14,11 @@ import time
 MIN_ORD = 1             # fewer words than this is not speech
 LIKA = 0.75             # two words this alike are the same word (the local STT is not exact on his voice)
 LANGT = 7               # words shorter than this must match exactly: 'vänta' is not 'väntar', 'sluta' is not 'slutar', 'ja' is not 'jag' (A on #65)
-LAGST_ORD = 3           # fewer non-matching words than this over his reply count as echo unless one is a stop word
-STOPPORD = {"vänta", "stopp", "stop", "sluta", "tyst", "nej", "björn", "hallå", "paus", "avbryt", "tack"}
+# While he is speaking only these interrupt him, spelt exactly so. Replayed on the live recordings of 2026-10-12/13
+# (tools/eko_replay.py): the local speech-to-text writes 'Tack.', 'Tack så mycket.', 'Björn.', 'Vad sluts?' and
+# 'Tänd i köket.' of his own voice coming back, so 'tack', 'björn', 'nej', 'hallå' and near-misses are NOT stop words.
+STOPPORD = {"vänta", "stopp", "stop", "stoppa", "sluta", "tyst", "tysta", "paus", "pausa", "avbryt"}
+UNDER_TAL_S = 1.0       # his voice is in the room this long after the last audio was sent (device buffer 0.4-0.6 s + room)
 LIKNAR_MIN = 3          # liknar_svar needs this many words: "köket" / "tänd köket" answering his own question is never an echo (A on #70)
 ANDEL = 0.5             # this share of the heard words found among his = echo
 
@@ -77,19 +80,47 @@ def utskrift_efter(nuvarande_ord: int, svar_sek: float) -> bool:
     return nuvarande_ord == 0 or nuvarande_ord < ORD_PER_S * max(0.0, svar_sek - SVAR_UNDANTAG_S)
 
 
-def dom(hort: "str | None", ok: bool, hans: str) -> bool:
-    """The net's verdict: True = ignore (his own words, or clearly no words). In doubt it is the person: a speech-to-text
-    that failed or timed out (ok False) must never throw a real interruption away (A on #65)."""
+def har_stoppord(text: "str | None") -> bool:
+    return any(w in STOPPORD for w in ord_(text))
+
+
+def under_tal(sedan_svar_s: float, kandidat_s: float, fas_svarar: bool) -> bool:
+    """The candidate STARTED while his voice was in the room: he is replying now, or the last reply audio was sent no
+    longer ago than the candidate is long plus UNDER_TAL_S."""
+    return fas_svarar or sedan_svar_s <= kandidat_s + UNDER_TAL_S
+
+
+ERLE_TILLIT_DB = 20.0   # the canceller took this much off his echo in the seconds before the speech: what is loud now is not him
+ERLE_TILLIT_RAMAR = 80  # ...measured over at least 0.8 s of his voice (the first second of a reply is never trusted)
+ERLE_TILLIT_S = 4.0     # ...the last 1.5 s of it (ERLE_TILLIT_SISTA) within this long before the speech began: he pauses between sentences
+ERLE_TILLIT_SISTA = 150
+
+
+def dom(hort: "str | None", ok: bool, hans: str, under_tal: bool = False, erle_fore: "float | None" = None) -> bool:
+    """The net's verdict: True = ignore (his own words, or clearly no words).
+
+    `under_tal` (the speech started while his own voice was in the room). Two cases:
+    - The canceller is doing its work (`erle_fore` >= ERLE_TILLIT_DB): his echo is some 30 dB down, far under the floor
+      the caller sets (eko_vakt.niva_dbfs). A sound over that floor is a person, whatever the speech-to-text makes of it
+      -- Henrik's second, louder "vänta" was written 'Tack.' (2026-10-13 09:48). Only his own words are still ignored.
+    - It is not, or nobody knows (the start of a reply, a cold canceller): then only a stop word interrupts him.
+      Everything else the speech-to-text writes there is his own voice coming back, however it is spelt -- 'Fåla.',
+      'Lämmar sa mord.', 'Det är en klockan.', 'Välkommen till mig.' all cut him and started a new reply on top of
+      the old one (live 2026-10-12 21:01 and 2026-10-13 07:03). A speech-to-text that failed says nothing about a stop
+      word, so it does not interrupt him either.
+
+    Just after he stopped (not `under_tal`) it is the old rule: his own words are ignored, anything else is a person,
+    and in doubt (ok False) it is the person -- a short answer to his question ("köket") must get through (A on #65, #70)."""
+    slacker = under_tal and erle_fore is not None and erle_fore >= ERLE_TILLIT_DB
     if not ok:
-        return False
-    if any(l in (hort or "").lower() for l in LUDD):
-        return True  # what it writes of noise
+        return under_tal and not slacker
     if ar_eko(hort, hans):
         return True
-    # A real interruption over his reply is a stop word or a sentence. One or two odd words ('Fåla.') are what the
-    # local STT writes of his own voice coming back (Kontoret 2026-10-12 live test): not allowed to cut him.
-    h = ord_(hort)
-    return len(h) < LAGST_ORD and not any(w in STOPPORD for w in h)
+    if slacker:
+        return False  # also when the text is one of the LUDD phrases: Henrik's shouted "vänta" was written as one
+    if any(l in (hort or "").lower() for l in LUDD):
+        return True  # what it writes of noise
+    return under_tal and not har_stoppord(hort)
 
 
 class Svar:
@@ -143,3 +174,38 @@ def vakt_verktyg(turtext: "str | None", hans: str, sedan_barge_s: "float | None"
     if sedan_barge_s is not None and sedan_barge_s <= x_s and not (turtext or "").strip():
         return "ignored: unclear speech right after an interruption. Do nothing; ask if it was meant."
     return None
+
+
+def vakt_oppen(fas: str, idle_sedan: float, sedan_barge_s: "float | None", nu: "float | None" = None) -> bool:
+    """The echo veto and the tool guard apply now: he is replying, he stopped a moment ago, or his reply was cut by an
+    interruption less than TOOL_VAKT_S ago. The last one is the turn an interruption starts: the phase goes listening ->
+    thinking and never idle, so the first two are both false exactly when that turn ends and the model calls a tool
+    (A on #72). An interruption on his own echo (the level alone cuts him, MjukAec.person) is then a turn made of his
+    own voice with the tools unguarded."""
+    return fas == "replying" or i_svans(idle_sedan, nu) or (sedan_barge_s is not None and sedan_barge_s <= TOOL_VAKT_S)
+
+
+def veto_tur(fas: str, idle_sedan: float, sedan_barge_s: "float | None", turtext: "str | None", hans: str) -> bool:
+    """Drop this turn before the model is asked: the guards apply and its words are his own last reply."""
+    return vakt_oppen(fas, idle_sedan, sedan_barge_s) and liknar_svar(turtext, hans)
+
+
+def veto_verktyg(fas: str, idle_sedan: float, sedan_barge_s: "float | None", turtext: "str | None", hans: str) -> "str | None":
+    """Why a tool call must not run now, or None (vakt_verktyg, inside the window where the guards apply)."""
+    if not vakt_oppen(fas, idle_sedan, sedan_barge_s):
+        return None
+    return vakt_verktyg(turtext, hans, sedan_barge_s)
+
+
+# Words that, alone or together, only tell him to hold on: "vänta lite", "stopp stopp", "nej vänta".
+BARA_AVBROTT_ORD = STOPPORD | {"lite", "nu", "nej", "nä", "okej", "ok", "björn", "tack", "ett", "tag", "en", "sekund", "stund", "du"}
+
+
+def bara_avbrott(turtext: "str | None") -> bool:
+    """The turn that cut him off said nothing to answer: no words the speech-to-text could write, one word, or only
+    hold-on words. He stops and listens; nothing is said back. One word of any spelling counts, because the
+    speech-to-text can not be trusted on a short word over his voice: Henrik's "vänta" was written 'Tack.', 'Välta!',
+    'Merda.' and 'Stå.' (Kontoret 2026-10-13). Henrik the same day, when he answered the word three seconds later:
+    "det flyter inte på som ett samtal"."""
+    h = ord_(turtext)
+    return len(h) <= 1 or all(w in BARA_AVBROTT_ORD for w in h)

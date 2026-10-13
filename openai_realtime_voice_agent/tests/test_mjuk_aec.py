@@ -51,11 +51,56 @@ def _db(x):
     return 20 * np.log10(max(np.sqrt(np.mean(x.astype(np.float64) ** 2)), 1e-3) / 32768)
 
 
-def test_the_echo_is_taken_down_when_the_reference_leads():
+def test_the_echo_is_taken_down_when_the_reference_leads(monkeypatch):
+    monkeypatch.setenv("SOFT_TAL_DB", "0")
     mic, ut = _kor(True)
     a, b = 6 * RATE, 11 * RATE
     erle = _db(mic[a:b]) - _db(ut[a - FRAME * 3:b - FRAME * 3])
     assert erle >= 12, f"only {erle:.1f} dB"
+
+
+def _tva_svar(med_stampel, hall_s=0.33):
+    """Two replies 10 s apart. The device plays the first at once and holds the second `hall_s` (its jitter buffer)."""
+    ref = _tal(16.0)
+    n8, steg = 8 * RATE, 320
+    mic = np.concatenate([_eko(ref[:n8]), _eko(ref[n8:], tap_ms=tuple(ms + int(hall_s * 1000) for ms in (150, 190, 240)))])
+    klock = [0.0]
+    aec = MjukAec(klocka=lambda: klock[0])
+    aec.matt_max = 10 ** 6                                             # keep every frame: the test asks afterwards
+    for i in range(0, len(ref) - steg, steg):
+        t = i / RATE + (10.0 if i >= n8 else 0.0)
+        klock[0] = t
+        aec.ref(ref[i:i + steg].tobytes(), RATE, t)
+        if med_stampel and i == n8 + (int((hall_s + 0.03) * RATE) // steg) * steg:
+            aec.spelstart(hall_s, t)                                   # the device's play_stamp arrives
+        aec.process(mic[i:i + steg].tobytes(), t + steg / RATE)
+    return aec, 18.0
+
+
+def test_the_reference_moves_with_the_device_when_it_holds_the_start_of_a_reply():
+    """Kontoret 2026-10-13 07:03: the first reply after the wake came 470 ms after the reference (120-170 ms on the
+    following ones) and was not cancelled at all. The device reports the wait (play_stamp)."""
+    utan, t0 = _tva_svar(False)
+    med, _ = _tva_svar(True)
+    e_utan, e_med = utan.erle(t0 + 0.6, t0 + 2.6), med.erle(t0 + 0.6, t0 + 2.6)
+    assert e_med is not None and e_med >= 12, f"with the stamp only {e_med} dB"
+    assert e_utan is None or e_med >= e_utan + 6, f"the stamp did not help: {e_utan:.1f} -> {e_med:.1f} dB"
+
+
+def test_erle_says_how_much_was_taken_off_and_nothing_when_nothing_played():
+    aec, _ = _tva_svar(False, hall_s=0.0)
+    assert aec.erle(4.0, 8.0) >= 12
+    assert aec.erle(9.0, 17.5) is None             # the pause between the replies: no measurement
+
+
+def test_while_he_speaks_the_gain_is_fixed_and_the_agc_stands_still(monkeypatch):
+    """Live 2026-10-13: the AGC lifted what was left of his echo by up to 24 dB and the turn detector took it for speech."""
+    monkeypatch.setenv("SOFT_TAL_DB", "12")
+    mic, ut = _kor(True)
+    monkeypatch.setenv("SOFT_TAL_DB", "0")
+    _, utan = _kor(True)
+    a, b = 6 * RATE, 11 * RATE
+    assert 11.0 <= _db(ut[a:b]) - _db(utan[a:b]) <= 13.0
 
 
 def test_it_is_only_off_by_flag(monkeypatch):
@@ -129,3 +174,61 @@ def test_the_canceller_is_kept_per_device_across_reconnects(monkeypatch):
     monkeypatch.setattr(MjukAec, "_per_enhet", {})
     a = MjukAec.for_enhet("kontoret")
     assert a is not None and MjukAec.for_enhet("kontoret") is a and MjukAec.for_enhet("koket") is not a
+
+
+def test_mic_packets_that_arrive_in_clumps_do_not_move_the_reference():
+    """Kontoret 2026-10-13 09:35, a clip through the reply path: the canceller took 2.3 dB with each mic packet timed
+    by its arrival and 32 dB with a steady reference. The mic's time is counted from its own samples."""
+    ref = _tal(10.0)
+    mic = _eko(ref)
+    steg = 320
+    klock = [0.0]
+    aec = MjukAec(klocka=lambda: klock[0])
+    aec.matt_max = 10 ** 6
+    r = np.random.default_rng(3)
+    for i in range(0, len(ref) - steg, steg):
+        t = i / RATE
+        aec.ref(ref[i:i + steg].tobytes(), RATE, t)
+        sen = float(r.choice([0.0, 0.0, 0.012, 0.025, 0.04]))          # the network holds some packets back
+        aec.process(mic[i:i + steg].tobytes(), t + steg / RATE + sen)
+    assert aec.erle(5.0, 9.5) >= 12, f"only {aec.erle(5.0, 9.5):.1f} dB"
+
+
+def _matt(aec, n, mic, ren, ref=-18.0, t0=0.0):
+    aec.matt += [(t0 + (len(aec.matt) + 1) * 0.01, mic, ren, ref) for _ in range(n)]
+
+
+def test_louder_than_his_own_echo_over_a_working_canceller_is_a_person():
+    def laget(ren_fore, ren_nu, svar_start=-10.0):
+        aec = MjukAec(klocka=lambda: 0.0)
+        aec.svar_start = svar_start
+        _matt(aec, 300, -25.0, ren_fore)          # 3 s of his echo: -25 in the mic, this much left after the canceller
+        _matt(aec, 20, -15.0, ren_nu)             # then 0.2 s of this out of the canceller
+        return aec
+
+    assert laget(-55.0, -15.0).person(-36.0) is True       # 30 dB taken off before it, and louder than his echo gets
+    assert laget(-55.0, -30.0).person(-36.0) is False      # over the fixed floor but not over his echo: it may be him, slipped through
+    assert laget(-28.0, -15.0).person(-36.0) is False      # the canceller was not working: no trust
+    assert laget(-55.0, -15.0, svar_start=2.0).person(-36.0) is False   # the reply began (or broke) 1.2 s ago
+    assert laget(-55.0, -50.0).person(-36.0) is False      # nothing loud
+
+
+def test_a_hole_in_what_was_sent_or_a_hold_on_the_device_starts_the_wait_over():
+    aec = MjukAec(klocka=lambda: 0.0)
+    ljud = (np.ones(FRAME * 2) * 1000).astype(np.int16).tobytes()
+    aec.ref(ljud, RATE, 10.0)
+    assert aec.svar_start == 10.0                 # a reply begins
+    aec.ref(ljud, RATE, 10.02)
+    assert aec.svar_start == 10.0                 # back to back: the same reply
+    aec.ref(ljud, RATE, 10.2)
+    assert aec.svar_start == 10.2                 # a hole of 0.16 s
+    aec.spelstart(0.3, 11.0)
+    assert aec.svar_start == 11.0                 # the device held the audio
+
+
+def test_a_word_of_the_persons_in_the_window_does_not_hide_that_the_canceller_works():
+    aec = MjukAec(klocka=lambda: 0.0)
+    _matt(aec, 100, -25.0, -55.0)
+    _matt(aec, 40, -12.0, -12.0)                  # the person's first word: loud in, loud out
+    _matt(aec, 60, -25.0, -55.0)
+    assert aec.erle(0.0, 2.0, 80, 150) >= 29.0    # as an energy sum this was 4 dB

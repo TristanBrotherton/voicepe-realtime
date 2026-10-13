@@ -104,9 +104,129 @@ def test_answering_his_choice_question_with_a_word_from_it_is_not_an_echo():
     assert eko_vakt.liknar_svar("Vilket rum vill du tända", fraga)   # his own sentence back is still caught
 
 
-def test_one_or_two_odd_words_over_his_reply_do_not_cut_him_but_a_stop_word_does():
-    """Kontoret 2026-10-12 live test: 'Fåla.' (the STT's spelling of his own voice) cut his reply."""
-    hans = "en räv gick i skogen"
-    assert eko_vakt.dom("Fåla.", True, hans)           # ignored
-    assert not eko_vakt.dom("Vänta.", True, hans)      # a person
-    assert not eko_vakt.dom("släck lampan nu", True, hans)
+def test_while_he_speaks_only_a_stop_word_cuts_him():
+    """Kontoret live 2026-10-12 21:01 and 2026-10-13 07:03: every one of these was his own voice coming back, was taken
+    for a person, cut his reply and started a new one on top of it."""
+    hans = "Räven rymde från jägaren och hittade en jävla massa mat. Slut."
+    for eko in ("Fåla.", "Lämmar sa mord.", "Det finns där.", "Det är en stor.", "Tänd i köket.", "Det är en klockan.",
+                "Tack till elever och personer som hjälpte med videon.", "Välkommen till mig."):
+        assert eko_vakt.dom(eko, True, hans, under_tal=True), eko
+    for eko in ("Björn.", "Vad sluts?", "Tack.", "Tack så mycket.", "Hör du?"):   # written of his echo in the replay
+        assert eko_vakt.dom(eko, True, hans, under_tal=True), eko
+    for person in ("Vänta.", "vänta lite", "Stopp!", "Björn, vänta", "sluta", "Tyst!"):
+        assert not eko_vakt.dom(person, True, hans, under_tal=True), person
+    assert eko_vakt.dom(None, False, hans, under_tal=True)        # a failed speech-to-text does not cut him
+
+
+def test_just_after_he_stopped_a_short_answer_still_gets_through():
+    """A on #65 and #70: the rule above must not eat the answer to his own question."""
+    fraga = "Vilket rum vill du tända, köket eller sovrummet?"
+    assert not eko_vakt.dom("badrummet", True, fraga)              # a person
+    assert not eko_vakt.dom("släck lampan nu", True, fraga)
+    assert not eko_vakt.dom(None, False, fraga)                    # in doubt it is the person
+    assert eko_vakt.dom("Vilket rum vill du tända", True, fraga)   # his own words are still his own
+
+
+def test_the_candidate_started_while_his_voice_was_in_the_room():
+    assert eko_vakt.under_tal(99.0, 1.0, True)        # he is replying now
+    assert eko_vakt.under_tal(1.5, 0.8, False)        # 0.8 s of speech that began 0.7 s after his last audio
+    assert not eko_vakt.under_tal(3.0, 0.8, False)    # began 2.2 s after he went quiet: a person answering
+
+
+def test_when_the_canceller_works_a_loud_sound_is_a_person_whatever_it_is_written_as():
+    """Henrik 2026-10-13 09:48: his "vänta" over the reply was written 'Tack.' and 'Tack så mycket.' and ignored. The
+    canceller had taken his echo 30 and 34 dB down just before; what was loud then was not Björn."""
+    hans = "Jag är inte här för att berätta sagor. Jag är här för att hålla ordning på huset."
+    assert not eko_vakt.dom("Tack.", True, hans, under_tal=True, erle_fore=29.9)
+    assert not eko_vakt.dom("Tack så mycket.", True, hans, under_tal=True, erle_fore=34.8)
+    assert not eko_vakt.dom(None, False, hans, under_tal=True, erle_fore=30.0)        # the speech-to-text failed: still a person
+    assert eko_vakt.dom("hålla ordning på huset", True, hans, under_tal=True, erle_fore=30.0)   # his own words stay his
+    assert not eko_vakt.dom("Tack till elever och personer som hjälpte med videon.", True, hans, under_tal=True, erle_fore=33.8)
+    # not measured (the start of a reply) or poorly cancelled: the stop-word rule, as before
+    for erle in (None, 4.0, 19.9):
+        assert eko_vakt.dom("Tack.", True, hans, under_tal=True, erle_fore=erle)
+        assert not eko_vakt.dom("Vänta.", True, hans, under_tal=True, erle_fore=erle)
+    # and it only counts while he speaks
+    assert not eko_vakt.dom("köket", True, hans, under_tal=False, erle_fore=30.0)
+
+
+def test_the_guards_stay_on_for_the_turn_an_interruption_starts():
+    """A on #72: an interruption turns the phase to listening, then thinking, and never idle -- so "replying or just
+    after" was false exactly when that turn ended and the model called a tool. A cut on his own echo (the level alone
+    cuts him) was then a turn of his own voice with the tools unguarded."""
+    hans = "räven gick i skogen och sedan kom en uggla och sa åt honom"
+    eko = "räven gick i skogen och sedan"
+    # the phase is thinking, it never went idle, and he was cut 2 s ago
+    assert eko_vakt.vakt_oppen("thinking", 0.0, 2.0) is True
+    assert eko_vakt.veto_tur("thinking", 0.0, 2.0, eko, hans) is True                  # the turn is dropped
+    assert "your own last reply" in eko_vakt.veto_verktyg("thinking", 0.0, 2.0, eko, hans)   # a tool does not run on it
+    assert "unclear speech" in eko_vakt.veto_verktyg("thinking", 0.0, 2.0, "", hans)   # nor on speech nobody could write
+    assert "unclear speech" in eko_vakt.veto_verktyg("listening", 0.0, 0.3, None, hans)
+    # a real order after the interruption still runs
+    assert eko_vakt.veto_verktyg("thinking", 0.0, 2.0, "tänd lampan i köket", hans) is None
+    assert eko_vakt.veto_tur("thinking", 0.0, 2.0, "tänd lampan i köket", hans) is False
+    # no interruption, or one long ago: outside his reply the guards are off, as before (A on #70)
+    assert eko_vakt.vakt_oppen("thinking", 0.0, None) is False
+    assert eko_vakt.veto_verktyg("thinking", 0.0, None, eko, hans) is None
+    assert eko_vakt.veto_verktyg("thinking", 0.0, eko_vakt.TOOL_VAKT_S + 1, eko, hans) is None
+    assert eko_vakt.veto_tur("thinking", 0.0, eko_vakt.TOOL_VAKT_S + 1, eko, hans) is False
+    # while he replies and just after, as before
+    assert eko_vakt.veto_verktyg("replying", 0.0, None, eko, hans) is not None
+    import time as _t
+    assert eko_vakt.veto_tur("idle", _t.monotonic() - 0.5, None, eko, hans) is True
+
+
+def test_the_handler_asks_the_guards_through_the_window_that_covers_an_interruption():
+    """The two places that decide (the turn veto, the tool guard) must not carry a window of their own again."""
+    import inspect
+    from app import websocket_handler
+    src = inspect.getsource(websocket_handler)
+    assert "eko_vakt.veto_tur(" in src and "eko_vakt.veto_verktyg(" in src
+    assert "eko_vakt.vakt_verktyg(" not in src and "eko_vakt.liknar_svar(" not in src
+
+
+@pytest.mark.parametrize("text", ["Vänta.", "Välta!", "Tack.", "Stå.", "Merda.", "Stopp stopp", "Nej vänta lite", "vänta nu Björn", "", None])
+def test_a_word_that_only_cuts_him_off_asks_for_nothing(text):
+    assert eko_vakt.bara_avbrott(text)
+
+
+@pytest.mark.parametrize("text", ["Men vad är status på huset?", "Tänd lampan", "Vänta, vad sa du om huset?", "nästa låt"])
+def test_a_sentence_said_over_him_is_a_turn_to_answer(text):
+    assert not eko_vakt.bara_avbrott(text)
+
+
+@pytest.mark.asyncio
+async def test_a_bare_interruption_stops_him_and_nothing_is_answered_or_closed():
+    """Kontoret 2026-10-13 16:20: "vänta" cut him, was written 'Tack.' / 'Välta!', and three seconds later he answered
+    the word (or the session closed on the 'Tack.'). Henrik: "det flyter inte på som ett samtal"."""
+    from app import bana0
+    hant = []
+
+    async def stt(pcm, timeout):
+        return "Tack."
+
+    async def fel(*a):
+        raise AssertionError("the turn went on")
+
+    async def vanta():
+        hant.append("vanta")
+
+    async def avsluta():
+        hant.append("stangd")
+
+    def tur(avbrott):
+        return bana0.tur(b"\0" * 3200, stt=stt, timeout_stt=1.0, timeout_comms=1.0, skicka_svar_till_modellen=fel,
+                         skapa_svar=fel, avsluta=avsluta, bara_avbrott=lambda t: avbrott and eko_vakt.bara_avbrott(t),
+                         vanta=vanta)
+    assert await tur(True) == "vanta" and hant == ["vanta"]          # he was cut: silent, listening, the session stays
+    assert await tur(False) == "nej" and hant == ["vanta", "stangd"]  # nobody cut him: "tack" closes, as before
+
+
+def test_a_muted_reply_is_not_him_speaking():
+    from app.raw_audio_serializer import RawAudioSerializer
+    s = RawAudioSerializer.__new__(RawAudioSerializer)
+    assert s.tystad() is False
+    s.tysta_svar(5.0)
+    assert s.tystad() is True
+    s._tysta_tills = 1.0
+    assert s.tystad() is False

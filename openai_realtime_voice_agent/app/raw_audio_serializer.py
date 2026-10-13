@@ -222,6 +222,8 @@ class RawAudioSerializer(FrameSerializer):
                 logger.info(f"⏱ device: audio burst rx_ms={data.get('rx_ms')} play_ms={data.get('play_ms')} "
                             f"(rx->play {int(data.get('play_ms', 0)) - int(data.get('rx_ms', 0))} ms), "
                             f"first {data.get('first_bytes')} B")
+                if self.aec is not None:   # the device held the burst this long (jitter buffer): the echo comes that much later
+                    self.aec.spelstart((int(data.get("play_ms", 0)) - int(data.get("rx_ms", 0))) / 1000.0)
                 if self.eko_stamp is not None:
                     self.eko_stamp.append(("play", time.monotonic(), self.eko_pos() if self.eko_pos else None, data))
             elif isinstance(data, dict) and data.get("type") == "flush":
@@ -411,6 +413,10 @@ class RawAudioSerializer(FrameSerializer):
     _svar_sek = 0.0
     _svar_sist = 0.0
 
+    def sedan_svar(self) -> float:
+        """Seconds since reply audio was last sent to the speaker (a very large number when none has been)."""
+        return time.monotonic() - self._svar_sist if self._svar_sist else 1e9
+
     def svar_sek(self) -> float:
         """Seconds of reply audio sent since this reply began (a new one begins after 2.5 s without audio)."""
         return self._svar_sek if time.monotonic() - self._svar_sist < 2.5 else 0.0
@@ -423,6 +429,10 @@ class RawAudioSerializer(FrameSerializer):
         """A person talked over the reply (US-060): what is left of it must not be sent. The device flushes its own queue
         on "listening"; this stops the tail that is still on its way, until the next turn ends or `sek` has passed."""
         self._tysta_tills = time.monotonic() + sek
+
+    def tystad(self) -> bool:
+        """What he says now is not sent to the speaker (tysta_svar): to the room he is not speaking."""
+        return bool(self._tysta_tills) and time.monotonic() < self._tysta_tills
 
     def tysta_slut(self, efter_s: float = 0.7) -> None:
         """The next turn is being decided: the old reply's tail (the model keeps generating until the new activity

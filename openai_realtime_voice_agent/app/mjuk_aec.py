@@ -33,6 +33,18 @@ AGC_ATTACK_S = 0.05           # gain goes DOWN this fast (a loud word must not c
 AGC_RELEASE_S = 0.25          # and UP this slowly (a word is short; the hold below keeps it between words)
 AGC_GOLV_MARGINAL_DB = 9.0    # a frame this far over the noise floor counts as speech
 AGC_MIN_DB = -44.0            # ...but never a frame quieter than this
+SAMMANHANG_S = 0.25           # STADIG_TAKT: a chunk sent this late still belongs to the same unbroken stream
+MIC_PAUS_S = 0.5              # no mic packet for this long: the stream was closed, the next one is a new stretch
+MIC_DRIFT = 200e-6            # the device's sample clock may run this much slower than ours
+SPELSTART_MIN_S = 0.06        # the device waited at least this long before it played a burst: move the reference with it
+ERLE_REF_DB = -45.0           # a frame counts for the ERLE only when the speaker was this loud...
+ERLE_MIC_DB = -50.0           # ...and the mic heard at least this much of it
+ERLE_MIN_RAMAR = 30           # fewer frames than this (0.3 s) is no measurement
+NIVA_FONSTER = 20             # person(): the last 0.2 s...
+NIVA_HOGA = 12                # ...with at least 0.12 s of it loud
+NIVA_OVER_EKO_DB = float(os.environ.get("NIVA_OVER_EKO_DB", "-2"))   # ...over his echo's loudest frames (95th percentile) plus this
+NIVA_HAL_S = 0.03             # a hole this long in what was sent is a break (shorter ones the canceller rides out)
+NIVA_SVAR_S = 2.0             # ...and not in the first seconds of a reply, or after a break in it
 
 
 def soft_aec_paa() -> bool:
@@ -66,6 +78,17 @@ class MjukAec:
         self.spar_ref: List[np.ndarray] = []
         self.spar_full = False
         self.agc_max_db = float(os.environ.get("SOFT_AGC_DB", "24"))
+        # While he speaks the AGC stands still: it lifted what was left of his echo by up to 24 dB and the turn detector
+        # took it for speech (live 2026-10-13). SOFT_TAL_DB is a fixed gain for that time instead, 0 = none. It is 0
+        # until the canceller takes his echo down on live replies: replayed with 12 dB the echo it leaves today got
+        # louder and the speech-to-text wrote stop words out of it.
+        self.tal_db = float(os.environ.get("SOFT_TAL_DB", "0"))
+        self.matt: List[Tuple[float, float, float, float]] = []   # (frame end, mic dBFS, cleaned dBFS, ref dBFS), last 4 s
+        self.svar_start = -1e9   # when what is sent to the speaker last began, or broke (a hole, a hold on the device)
+        self.matt_max = 400
+        self.mic_sist: Optional[float] = None     # when the last mic packet came
+        self.mic_ankare: Optional[float] = None   # our clock at sample 0 of this stretch of the mic stream
+        self.mic_n = 0                            # samples of this stretch so far
         self.agc_db = 0.0                 # the gain now
         self.golv_db = -50.0              # noise floor estimate (slow minimum of the frame levels)
 
@@ -121,13 +144,94 @@ class MjukAec:
                 n = int(len(a) * RATE / rate)
                 a = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a.astype(np.float32)).astype(np.int16)
             t = self.klocka() if t is None else t
-            start = max(t, self.ref_slut)          # the device plays chunks back to back
+            # The device plays chunks back to back. With the steady pacer (STADIG_TAKT=1) it also has a cushion, so a
+            # chunk that is sent a little late still plays without a hole; without it a late chunk IS a hole.
+            sammanhang = SAMMANHANG_S if os.environ.get("STADIG_TAKT", "0") == "1" else 0.0
+            start = self.ref_slut if t <= self.ref_slut + sammanhang else t
+            if start - self.ref_slut > NIVA_HAL_S:
+                self.svar_start = start     # a new reply, or a hole in this one: the echo is not where it was
             self.ref_slut = start + len(a) / RATE
             self.tidslinje.append((start, a))
             while self.tidslinje and self.tidslinje[0][0] + len(self.tidslinje[0][1]) / RATE < t - 2.0:
                 self.tidslinje.pop(0)
         except Exception as e:
             self._fel(e)
+
+    def spelstart(self, forsening_s: float, t: Optional[float] = None) -> None:
+        """The device says it held a burst `forsening_s` before the speaker took it (its jitter buffer at the start of
+        a reply, ~0.33 s; firmware play_stamp). The echo comes that much later, for the whole burst: move the reference
+        with it. Without this the first reply after a wake is not cancelled at all (measured 2026-10-13: 470 ms from
+        reference to echo on the first reply, 120-170 ms on the following)."""
+        try:
+            if forsening_s < SPELSTART_MIN_S or forsening_s > 2.0:
+                return
+            t = self.klocka() if t is None else t
+            self.svar_start = t
+            fran = t - forsening_s - 0.15            # the burst began about this long ago
+            for i, (start, a) in enumerate(self.tidslinje):
+                if start >= fran:
+                    self.tidslinje[i] = (start + forsening_s, a)
+            if self.ref_slut >= fran:
+                self.ref_slut += forsening_s
+        except Exception as e:
+            self._fel(e)
+
+    def erle(self, t0: float, t1: float, minst: int = ERLE_MIN_RAMAR, sista: Optional[int] = None) -> Optional[float]:
+        """How many dB the canceller took off his echo between t0 and t1 (energy in / energy out over the frames where
+        the speaker played and the mic heard it). `sista`: only the last so many of those frames (he pauses between
+        sentences, and the first second of a reply is before the canceller found its place). None = fewer than `minst`
+        frames, too little to tell. Measured BEFORE a candidate starts it says whether a loud sound after the canceller
+        can be trusted to be a person."""
+        ramar = [(mic_db, ren_db) for t, mic_db, ren_db, ref_db in self.matt
+                 if t0 <= t <= t1 and ref_db > ERLE_REF_DB and mic_db > ERLE_MIC_DB]
+        if sista:
+            ramar = ramar[-sista:]
+        if len(ramar) < minst:
+            return None
+        # The median frame, not the energy sum: a word the person said in the window is loud in and loud out, and as a
+        # sum it hid that the canceller worked (live 2026-10-13 12:07: 3.9 dB as a sum, 30.8 dB as the median frame, so
+        # Henrik's second "vänta" was taken for echo).
+        return float(np.median([m - r for m, r in ramar]))
+
+    def person(self, niva_db: float, tillit_db: float = 20.0, over_db: Optional[float] = None) -> bool:
+        """A person is talking over him, right now, told by the level alone: at least NIVA_HOGA of the last NIVA_FONSTER
+        frames out of the canceller are louder than his own echo gets in the mic (its 95th percentile over the last
+        seconds, plus `over_db`), and never under `niva_db`. The canceller must have been working just before (the
+        median frame, see erle) and the reply must be NIVA_SVAR_S old with no break in what was sent.
+
+        Why "louder than his own echo": when the device's playback slips mid-reply the canceller loses him for a second
+        and what comes out is his echo at up to its full level. Nothing measured tells that from a voice (waveform and
+        spectrum against the reference, a fresh filter fit, the echo's delay: all overlap, 2026-10-13), but it can not be
+        louder than the echo was. 84 simulated slips on clean recordings: 37 false at a fixed -36 dBFS, 4 at the echo's
+        loudest frames -4 dB, 0 at -2 dB (and Henrik's words: 10 of 12 found at -2, 6 at 0).
+        No speech-to-text and no turn detector: the detector missed Henrik's "stopp" three times of seven (12:07)."""
+        try:
+            m = self.matt
+            if len(m) < NIVA_FONSTER + ERLE_MIN_RAMAR:
+                return False
+            nu = m[-1][0]
+            if nu - self.svar_start < NIVA_SVAR_S:
+                return False
+            t1 = m[-NIVA_FONSTER][0] - 0.1
+            # His echo alone: the frames the canceller took at least 10 dB off (a word of the person's earlier in the
+            # window is loud in AND out, and would lift the floor over the person's next word).
+            fore = [mic for t, mic, ren, ref in m
+                    if t1 - 4.0 <= t <= t1 and ref > ERLE_REF_DB and mic > ERLE_MIC_DB and mic - ren >= 10.0]
+            if len(fore) < 80:
+                return False
+            golv = max(niva_db, float(np.percentile(fore, 95)) + (NIVA_OVER_EKO_DB if over_db is None else over_db))
+            if sum(1 for _, _, ren, _ in m[-NIVA_FONSTER:] if ren > golv) < NIVA_HOGA:
+                return False
+            e = self.erle(t1 - 4.0, t1, 80, 150)
+            return e is not None and e >= tillit_db
+        except Exception as e:
+            self._fel(e)
+            return False
+
+    @staticmethod
+    def _db(x: np.ndarray) -> float:
+        x = x.astype(np.float32)
+        return float(20 * np.log10(max(float(np.sqrt(np.mean(x * x))), 1.0) / 32768))
 
     def _ref_ram(self, t0: float) -> np.ndarray:
         ram = np.zeros(FRAME, dtype=np.int16)
@@ -150,6 +254,22 @@ class MjukAec:
         try:
             t = self.klocka() if t is None else t
             aktiv = self.ref_slut >= t - IDLE_BYPASS_S     # something is (or just was) playing: cancel it
+            # The mic is one unbroken 16 kHz stream, but its packets arrive in clumps (the network). Taking each
+            # packet's arrival as its time moved the reference +-20 ms against the mic within one reply, and the
+            # canceller took 2 dB where a steady reference took 32 (measured live 2026-10-13 09:35). So the time of a
+            # sample is counted from the stream itself: an anchor (the packet that came through fastest) plus the
+            # samples since. A pause in the stream starts a new anchor.
+            n_in = len(pcm) // 2
+            if self.mic_sist is None or t - self.mic_sist > MIC_PAUS_S:
+                self.mic_ankare, self.mic_n = None, 0
+            self.mic_sist = t
+            self.mic_n += n_in
+            kand = t - self.mic_n / RATE
+            if self.mic_ankare is None or kand < self.mic_ankare:
+                self.mic_ankare = kand
+            else:
+                self.mic_ankare += min(kand - self.mic_ankare, MIC_DRIFT * n_in / RATE)   # a slow device clock, no more
+            t = self.mic_ankare + self.mic_n / RATE
             a = np.concatenate([self.rest, np.frombuffer(pcm, dtype=np.int16)])
             tot = len(a)
             ut: List[bytes] = []
@@ -169,10 +289,17 @@ class MjukAec:
                 if aktiv:
                     self.ap.process_reverse_stream(refr.tobytes())
                     ren = self.ap.process_stream(ram.tobytes())
+                    renad = np.frombuffer(ren, dtype=np.int16)
+                    slut = t - (tot - i - FRAME) / RATE
+                    self.matt.append((slut, self._db(ram), self._db(renad), self._db(refr)))
+                    if len(self.matt) > self.matt_max:
+                        del self.matt[:-self.matt_max]
+                    if self.tal_db:
+                        ren = np.clip(renad.astype(np.float32) * 10 ** (self.tal_db / 20), -32768, 32767).astype(np.int16).tobytes()
                 else:
                     ren = ram.tobytes()
-                if self.agc_max_db > 0:
-                    ren = self._agc(np.frombuffer(ren, dtype=np.int16)).tobytes()
+                    if self.agc_max_db > 0:
+                        ren = self._agc(np.frombuffer(ren, dtype=np.int16)).tobytes()
                 ut.append(ren)
                 i += FRAME
             if self.spara:

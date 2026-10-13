@@ -1665,12 +1665,37 @@ class Application:
             if c is None or c.task is None or c.maskin is None:
                 return JSONResponse({"error": "okand_enhet"})
             await c.maskin.phase("listening", "fraga-prov")
+            if c.serializer is not None:  # only the question reaches the pipeline: mixed frame by frame with the live mic it is no speech
+                c.serializer.suppress_inbound_until = time.monotonic() + len(pcm) / 32000 + 0.9
             step = 640  # 20 ms at 16 kHz
             for i in range(0, len(pcm) + 32000, step):
                 chunk = pcm[i:i + step].ljust(step, b"\0")
                 await c.task.queue_frame(InputAudioRawFrame(audio=chunk, sample_rate=16000, num_channels=1))
                 await asyncio.sleep(0.02)
             return JSONResponse({"ok": True, "s": round(len(pcm) / 32000, 1)})
+
+        @web_app.post("/svar-prov")
+        async def svar_prov(request: Request):
+            """Test only (EKO_PROV=1, loopback): play a clip (24 kHz mono pcm) through the REPLY path -- the pipeline, the
+            pacer and the serializer, as the engine's own audio goes -- with the mic open, so AEC_SPARA records it."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            if os.environ.get("EKO_PROV", "0") != "1":
+                return JSONResponse({"error": "eko_prov_off"}, status_code=404)
+            import base64
+            from pipecat.frames.frames import TTSAudioRawFrame
+            body = await request.json()
+            pcm = base64.b64decode(body["pcm_b64"])
+            c = self.websocket_handler.resolve_device(body["rum"])
+            if c is None or c.task is None or c.maskin is None:
+                return JSONResponse({"error": "okand_enhet"})
+            await c.maskin.phase("listening", "svar-prov")
+            await asyncio.sleep(0.5)
+            for i in range(0, len(pcm), 1024):
+                await c.task.queue_frame(TTSAudioRawFrame(audio=pcm[i:i + 1024], sample_rate=24000, num_channels=1))
+            await asyncio.sleep(len(pcm) / 48000 + 2.0)
+            await c.maskin.phase("idle", "svar-prov")
+            return JSONResponse({"ok": True, "s": round(len(pcm) / 48000, 1)})
 
         @web_app.get("/healthz")
         async def healthz():

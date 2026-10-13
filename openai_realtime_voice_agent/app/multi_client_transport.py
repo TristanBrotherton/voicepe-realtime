@@ -1,6 +1,8 @@
 """Per-connection FastAPI transport for binary audio and text control frames."""
 
 import asyncio
+import os
+import time
 import typing
 
 from loguru import logger
@@ -108,6 +110,33 @@ class MixedFastAPIWebsocketInputTransport(FastAPIWebsocketInputTransport):
         await self.push_frame(EndFrame())
 
 
+def stadig_takt() -> bool:
+    return os.environ.get("STADIG_TAKT", "0") == "1"
+
+
+STADIG_LEAD_S = float(os.environ.get("STADIG_LEAD_MS", "120")) / 1000    # sent at once at the start of a reply: the device's cushion
+STADIG_OMSTART_S = 0.25                                                 # this far behind: the device ran dry anyway, start over
+
+
+class StadigUtTransport(FastAPIWebsocketOutputTransport):
+    """Reply audio at exactly real time, with a small cushion in the device (STADIG_TAKT=1; off = pipecat's own pacer).
+
+    Pipecat's pacer starts its clock over every time a frame is late, so the time lost is never made up and the device
+    gets no cushion: every late frame is a hole in what the speaker plays, a few to 60 ms long (measured on the live
+    recordings 2026-10-12/13: 70 holes in 29 s of reply, the echo wandering 119-155 ms against what was sent). A voice
+    with holes at moments only the device knows cannot be cancelled. Here the schedule is kept (a late frame is followed
+    by early ones) and the first STADIG_LEAD_MS go out at once, so the speaker plays one unbroken stream."""
+
+    async def _write_audio_sleep(self):
+        if not stadig_takt():
+            return await super()._write_audio_sleep()
+        now = time.monotonic()
+        if self._next_send_time == 0 or now - self._next_send_time > STADIG_OMSTART_S:
+            self._next_send_time = now - STADIG_LEAD_S
+        self._next_send_time += self._send_interval
+        await asyncio.sleep(max(0.0, self._next_send_time - now))
+
+
 class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
     """A per-connection transport whose client speaks both frame types.
 
@@ -140,7 +169,7 @@ class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
         self._input = MixedFastAPIWebsocketInputTransport(
             self, self._client, self._params, name=self._input_name
         )
-        self._output = FastAPIWebsocketOutputTransport(
+        self._output = StadigUtTransport(
             self, self._client, self._params, name=self._output_name
         )
 

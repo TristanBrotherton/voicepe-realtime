@@ -391,8 +391,13 @@ async def tur(
     avsluta: Optional[Callable[[], Awaitable[None]]] = None,
     eko_veto: Optional[Callable[[str], bool]] = None,
     kasta_tur: Optional[Callable[[], Awaitable[None]]] = None,
+    bara_avbrott: Optional[Callable[[Optional[str]], bool]] = None,
+    vanta: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> str:
-    """One finished user turn. Returns 'nej', 'klockan', 'bana0' on a hit, 'modell' otherwise.
+    """One finished user turn. Returns 'nej', 'klockan', 'bana0' on a hit, 'vanta', 'modell' otherwise.
+
+    `bara_avbrott(text)` True = this turn cut his reply off and said nothing to answer ("vänta"). `vanta()` then
+    hands the turn to the model with its answer muted (full duplex, US-060): no house, no closing, nothing said.
 
     `avsluta()` closes the session when the whole turn was a nej / tack / det var allt: no
     comms, no model answer. If it fails, the turn goes on as before.
@@ -425,6 +430,14 @@ async def tur(
                 return "eko"
             except Exception as e:
                 logger.warning(f"bana0: dropping the echo turn failed, it goes on: {e!r}")
+        if bara_avbrott is not None and vanta is not None and bara_avbrott(text):
+            # Before the nej below: his "vänta" is often written 'Tack.', and that would close the session.
+            try:
+                await vanta()
+                logger.info(f"bana0: {text!r} only cut him off: he stops and listens, nothing is answered")
+                return "vanta"
+            except Exception as e:
+                logger.warning(f"bana0: holding on after the interruption failed, the turn goes on: {e!r}")
         if avsluta is not None and ar_nej(text):
             try:
                 await avsluta()

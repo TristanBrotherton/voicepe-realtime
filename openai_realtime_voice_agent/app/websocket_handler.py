@@ -49,6 +49,7 @@ SPEC_STT_KONTROLL = os.environ.get("SPEC_STT_KONTROLL", "1") != "0"  # 0 = off
 OFFLINE_PROBE_S = 1.0
 # After a hit the model confirms in its own words; past this, the cached "Klart.".
 OK_VANTA_S = 2.5
+VANTA_TYST_S = 12.0  # after a bare "vänta" over his reply: what the engine answers to it is not spoken, for this long at most
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
@@ -1888,6 +1889,16 @@ class WebSocketHandler:
                         logger.warning(f"⚠️ {lage} — the engine has more, a question may have been cut")
                     else:
                         logger.info(f"⚡ {lage}")
+                barge_tur, connection.barge_tur = getattr(connection, "barge_tur", False), False
+
+                async def _vanta():
+                    """He was cut off by a word that asks for nothing ("vänta"): the engine gets the turn, so it knows
+                    it was interrupted and stops generating the old reply, but what it answers is not spoken and it
+                    runs no tool on it (no text for the tool guard). He is silent and the mic is open."""
+                    connection.bana0_heard = ""
+                    serializer.tysta_svar(VANTA_TYST_S)
+                    await bana0_miss(provider, openai_service)
+
                 async def _avsluta():
                     """A nej in the window: drop what the engine heard, then sleep it (like stopp)."""
                     await drop_pending_input_audio(provider, openai_service)
@@ -1909,15 +1920,23 @@ class WebSocketHandler:
                     klockan=_klockan if klockan.klipp_paa() else None,
                     tider=tider,
                     avsluta=_avsluta if bana0.nej_stanger_paa() else None,
-                    eko_veto=(lambda t: (phase_emitter.phase == "replying" or eko_vakt.i_svans(getattr(phase_emitter, "idle_since", 0.0))) and eko_vakt.liknar_svar(
-                        t, openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else ""))
+                    eko_veto=(lambda t: eko_vakt.veto_tur(
+                        phase_emitter.phase, getattr(phase_emitter, "idle_since", 0.0), _sedan_barge(), t,
+                        openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else ""))
                     if eko_vakt.paa() and eko_vakt.nat_paa() else None,
                     kasta_tur=openai_service.drop_turn if hasattr(openai_service, "drop_turn") else None,
+                    bara_avbrott=(lambda t: barge_tur and eko_vakt.bara_avbrott(t)) if eko_vakt.paa() else None,
+                    vanta=_vanta,
                 )
                 if bana in ("bana0", "klockan", "nej", "eko"):
                     await phase_emitter.force_idle(bana)
 
             openai_service.on_user_turn_end = _on_user_turn_end
+            def _sedan_barge():
+                """Seconds since his reply was last cut by an interruption; None when it never was."""
+                t = getattr(connection, "barge_in_t", None)
+                return (time.monotonic() - t) if t else None
+
             def _tur_borjar():
                 _spec_rensa()
                 avbryt = getattr(connection, "avbryt_core", None)
@@ -1950,31 +1969,53 @@ class WebSocketHandler:
                         a = _np.frombuffer(pcm, dtype=_np.int16).astype(_np.float32)
                         n = int(len(a) * 16000 / rate)
                         pcm = _np.interp(_np.linspace(0, len(a) - 1, n), _np.arange(len(a)), a).astype(_np.int16).tobytes()
+                    t_stt = time.monotonic()
                     hort, ok = await bana0.transkribera_tydligt(pcm, host, port, timeout_stt)
+                    stt_s = time.monotonic() - t_stt
                     svar_obj = getattr(openai_service, "svar", None)
                     hans = svar_obj.text() if svar_obj is not None else ""
-                    if ok and svar_obj is not None and eko_vakt.utskrift_efter(svar_obj.nu_ord(), serializer.svar_sek()):
+                    under = eko_vakt.under_tal(serializer.sedan_svar(), len(pcm) / 32000.0, phase_emitter.phase == "replying")
+                    # While he speaks only a stop word gets through anyway, and the engine's transcript of a reply often
+                    # comes after the reply (0 words 8.4 s in, Kontoret 2026-10-13 12:08: Henrik's "vänta" was thrown
+                    # away here). So this guard is for the moment just after he stopped, where any words interrupt.
+                    if not under and ok and svar_obj is not None and eko_vakt.utskrift_efter(svar_obj.nu_ord(), serializer.svar_sek()):
                         logger.info(f"🔊 over his reply: heard {hort!r}; his own transcript is behind the audio "
                                     f"({svar_obj.nu_ord()} words, {serializer.svar_sek():.1f} s sent) -> his own words, ignored")
                         return True
-                    eko = eko_vakt.dom(hort, ok, hans)
-                    logger.info(f"🔊 over his reply: heard {hort!r} -> {'his own words, ignored' if eko else 'a person, interrupts'}")
+                    erle = None
+                    # EKO_TILLIT_TEXT=1: with the canceller working, any words over the floor interrupt him, not only a
+                    # stop word. Off: when the device's playback slips mid-reply the canceller was working until that
+                    # moment, and what the speech-to-text then writes of his echo is not his words (see MjukAec.person).
+                    if under and serializer.aec is not None and os.environ.get("EKO_TILLIT_TEXT", "0") == "1":
+                        borjan = time.monotonic() - stt_s - len(pcm) / 32000.0
+                        erle = serializer.aec.erle(borjan - eko_vakt.ERLE_TILLIT_S, borjan, eko_vakt.ERLE_TILLIT_RAMAR, eko_vakt.ERLE_TILLIT_SISTA)
+                    eko = eko_vakt.dom(hort, ok, hans, under, erle)
+                    logger.info(f"🔊 over his reply: heard {hort!r} ({'while he speaks' if under else 'just after'}, "
+                                f"echo {'not measured' if erle is None else f'{erle:.0f} dB down'}) -> "
+                                f"{'ignored' if eko else 'a person, interrupts'}")
                     return eko
 
                 if eko_vakt.nat_paa():
-                    openai_service.eko_vakt = lambda: (phase_emitter.phase == "replying"
-                                                       or eko_vakt.i_svans(getattr(phase_emitter, "idle_since", 0.0)))
+                    # Not while his reply is muted (after an interruption): nothing of him is in the room then, and
+                    # what the person says next ("vänta ... vad sa du om huset?") is a turn, not a candidate.
+                    openai_service.eko_vakt = lambda: (not serializer.tystad()
+                                                       and (phase_emitter.phase == "replying"
+                                                            or eko_vakt.i_svans(getattr(phase_emitter, "idle_since", 0.0))))
                     openai_service.eko_dom = _eko_dom
+                if os.environ.get("NIVA_KLIPP", "1") == "1":
+                    openai_service.niva_person = lambda: (phase_emitter.phase == "replying" and serializer.aec is not None
+                                                          and serializer.aec.person(eko_vakt.niva_dbfs(), eko_vakt.ERLE_TILLIT_DB))
                 def _barge():
                     connection.barge_in_t = time.monotonic()
+                    connection.barge_tur = True   # the turn now being heard is the one that cut him
                     serializer.tysta_svar()
                     logger.info("🔊 interrupted: his reply is cut")
 
                 openai_service.on_barge_in = _barge
-                openai_service.verktygsvakt = lambda: None if not (phase_emitter.phase == "replying" or eko_vakt.i_svans(getattr(phase_emitter, "idle_since", 0.0))) else eko_vakt.vakt_verktyg(
+                openai_service.verktygsvakt = lambda: eko_vakt.veto_verktyg(
+                    phase_emitter.phase, getattr(phase_emitter, "idle_since", 0.0), _sedan_barge(),
                     getattr(connection, "bana0_heard", "") or "",
-                    openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else "",
-                    (time.monotonic() - connection.barge_in_t) if getattr(connection, "barge_in_t", None) else None)
+                    openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else "")
             if hasattr(openai_service, "on_user_turn_pre_end"):
                 openai_service.on_user_turn_pre_end = _pre_end
             serializer.is_replying = lambda: phase_emitter.phase == "replying"
