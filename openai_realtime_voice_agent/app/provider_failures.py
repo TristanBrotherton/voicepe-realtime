@@ -39,6 +39,7 @@ _MONEY = (
     "billing_hard_limit_reached",
     "resource_exhausted",
     "quota exceeded",
+    "spending cap",  # Google AI Studio: "Your project has exceeded its monthly spending cap" (1011, 2026-10-13)
 )
 _MONEY_CODES = (r"\b402\b",)
 _AUTH = (

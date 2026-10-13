@@ -11,6 +11,12 @@ def test_openai_out_of_money_switches_immediately():
     assert classify("Billing hard limit has been reached") is Failure.MONEY
 
 
+def test_googles_monthly_spending_cap_is_money():
+    """Live 2026-10-13 20:54, every wake in the house: the text Google sent."""
+    assert classify("1011 None. Your project has exceeded its monthly spending cap. Please go to AI Studio at "
+                    "https://ai.studio/spend to manage your project") is Failure.MONEY
+
+
 def test_gemini_exhausted_quota_switches_immediately():
     # Google says RESOURCE_EXHAUSTED for a spent budget too. It never clears
     # in the seconds a retry would take, so switching is the useful answer.

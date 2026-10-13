@@ -883,8 +883,25 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         await self._reconnect()
         return True
 
+    # Why the last connect was refused, when the reason is money (the same sign OpenAI Live gives: ConnectionRecovery.vakna
+    # reads it and moves this speaker to the next engine). Kontoret and the kitchen 2026-10-13 20:54: Google answered
+    # every wake with "exceeded its monthly spending cap", nothing told the router, and the house stayed on an engine
+    # that could not answer.
+    vagran = None
+
+    async def _connection_task_handler(self, config):
+        try:
+            await super()._connection_task_handler(config)
+        except Exception as e:
+            from app.provider_failures import Failure, classify
+            if classify(str(e)) is Failure.MONEY:
+                self.vagran = "tak"
+                logger.error(f"💸 Gemini refuses the connection, the account's money is used: {str(e)[:160]}")
+            raise
+
     async def _handle_session_ready(self, session):
         """A new socket knows nothing of an activity the old one had open."""
+        self.vagran = None
         self._activity_open = False
         self._answer_after_tool = False
         self._preroll = bytearray()
