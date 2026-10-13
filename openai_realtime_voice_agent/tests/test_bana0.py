@@ -156,7 +156,8 @@ async def test_traff_ger_ingen_modellbegaran_och_inget_verktyg(comms):
 @pytest.mark.asyncio
 async def test_miss_gar_till_modellen(comms):
     comms.svar = httpx.Response(204)
-    server, port, _ = await _wyoming(_transcript("vad är klockan"))
+    # not a phrase from the speech-to-text's hint: those never reach comms (test_bana0_pahittat)
+    server, port, _ = await _wyoming(_transcript("vad heter du"))
     service, said = FakeService(), []
     async with server:
         assert await _tur(port, service, said) == "modell"

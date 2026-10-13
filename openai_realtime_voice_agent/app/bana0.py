@@ -11,6 +11,7 @@ wiring (main.py / websocket_handler.py) stays a few lines and the tests need
 no live HA, STT or model.
 """
 import asyncio
+import difflib
 import inspect
 import json
 import logging
@@ -339,6 +340,29 @@ def brus(text: Optional[str]) -> bool:
     return len(re.sub(r"[\W\d_]+", "", t)) < 2 or any(f in t for f in _PAHITT)
 
 
+# The speech-to-text is given a hint of common house phrases (the wyoming-raawr bridge, STT_INITIAL_PROMPT, HEN-362),
+# and Whisper hands the hint back when what it hears is noise or his own voice from the speaker. Written of his
+# own echo where nobody said it, 2026-10-12/13: 'Tänd i köket.' / 'Tänd i követ.' three times in replays of live
+# recordings and once live (07:04:17), 'Vad är klockan?' twice, 'Björn.' once. And live 2026-10-12 21:40
+# 'Tänd i köket.' -> HA 'Slog på lampan' (whether anyone said it is not known). A text that is the hint and nothing else is therefore no
+# proof that anyone said it. The same default as the bridge; set STT_INITIAL_PROMPT here too if the bridge's is changed.
+STT_LEDTRAD = os.environ.get("STT_INITIAL_PROMPT", "Vad är klockan? Tänd i köket. Björn.")
+LEDTRAD_LIKA = 0.8      # 'Tänd i követ.' is still the hint; 'Tänd i köket och hallen' is not
+
+
+def _meningar(text: Optional[str]) -> list:
+    return [m for m in (" ".join(re.findall(r"[a-zåäöé0-9]+", d.lower())) for d in re.split(r"[.!?]+", text or "")) if m]
+
+
+def ur_ledtraden(text: Optional[str]) -> bool:
+    """True when every sentence of the text is one of the speech-to-text's own hint phrases, give or take a letter:
+    the text may be invented. Anything said beyond the hint ("tänd i köket och hallen") makes it a person's words."""
+    fraser = _meningar(STT_LEDTRAD)
+    hort = _meningar(text)
+    return bool(fraser and hort) and all(
+        any(difflib.SequenceMatcher(None, m, f).ratio() >= LEDTRAD_LIKA for f in fraser) for m in hort)
+
+
 # A whole turn that only says "no, that is all": the session closes at once, like "stopp" (Henrik 2026-10-11).
 _NEJ = {"nej", "nä", "nej tack", "nä tack", "tack", "tack så mycket", "tack tack", "det var allt", "det var det",
         "det var allt tack", "nej det var allt", "nej tack det var allt", "nej det var det", "nej tack det är bra",
@@ -383,6 +407,7 @@ async def tur(
     net when the model stays silent (vakta_bekraftelse, US-018).
     `efter_miss()` runs after the model was asked (vakta_natet, US-018).
     """
+    pahittat = False
     try:
         text = await stt(pcm, timeout_stt) if pcm else None
         logger.info(f"bana0: heard {text!r}")
@@ -414,7 +439,13 @@ async def tur(
                 return "klockan"
             except Exception as e:
                 logger.warning(f"bana0: the clock failed, the turn goes on: {e!r}")
-        svar = await prova(text, timeout_comms) if text else None
+        pahittat = ur_ledtraden(text)
+        if pahittat:
+            # The house is never touched on this text alone. The model gets the AUDIO, not the text: it hears for
+            # itself whether anyone asked, and a real "tänd i köket" is then done by the model (a second or two later).
+            logger.warning(f"bana0: {text!r} is the speech-to-text's own hint and nothing else: it may be invented. "
+                           "Not sent to the house; the model answers from the audio")
+        svar = await prova(text, timeout_comms) if text and not pahittat else None
         if tider is not None and text:
             tider.mark("comms")
     except Exception as e:
@@ -422,7 +453,7 @@ async def tur(
         svar = None
     if not svar:
         try:
-            if skapa_svar_med_text is not None and text:
+            if skapa_svar_med_text is not None and text and not pahittat:
                 await skapa_svar_med_text(text)
             else:
                 await skapa_svar()
