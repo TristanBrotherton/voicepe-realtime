@@ -2,6 +2,11 @@
 
 All notable changes to this add-on. Newest first.
 
+## Unreleased (fork)
+
+- **Mjukvaru-AEC och AGC i agenten** (raawr US-060, väg B; av som standard). `SOFT_AEC=1` (kräver `pip install aec-audio-processing` i agentens venv; saknas biblioteket händer inget): WebRTC AEC3 på mikrofonströmmen med det agenten själv skickar till högtalaren som referens (placerad vid sändningstid, utan extra fördröjning, för AEC3 hittar de 0,1-0,25 s själv), följt av en mjukvaru-AGC som bara lyfter (högst `SOFT_AGC_DB`, standard 24, 0 = av) och står still nära brusgolvet. Mätt offline på Kontors levande inspelningar (XMOS-AGC av): eko −22 → −55 dBFS (ERLE ~30 dB), "vänta" tappar 3-6 dB. Simulerat avstånd (talet 9,5 och 14 dB svagare): utan AGC hamnar 3 av 4 under −36 dBFS-gränsen, med AGC 1 av 4. Kräver Kontors firmware med `kanal0_steg: NONE` och `mic_gain: 100` (raawr #740). Obevisat med motor och riktiga avstånd.
+  Dessutom i samma PR: `AEC_SPARA=1` sparar mikrofon (vänster) och referens (höger) som 16 kHz stereo-wav per uppspelning (`AEC_SPARA_KATALOG`, standard `/data/aec_spara`, tak `AEC_SPARA_MAX` 30) så ett liveprov kan spelas upp offline (innehåller röst: radera efteråt); en verktygsspärr (`TOOL_VAKT_S`, standard 8 s) som inte kör något verktyg på en tur som låter som Björns egen senaste replik (minst `MIN_ORD` ord) eller som saknar text strax efter ett självavbrott. Syntetisk återskapning av liveloopen 2026-10-12 (20 korta repliker, referensen med verklig rumsimpuls): utan AEC 20 av 20 falska avbrott (12 av 20 även med full text), med AEC3+AGC 1 av 13 (den allra första repliken, innan filtret lärt sig rummet), 7 av 7 "vänta" hörs. AEC:n behålls per enhet över återanslutningar.
+
 ## 0.29.8 (fork)
 
 - **Ekonätet: nivågräns och kända hittepå-fraser** (raawr US-060, efter ekoprovet 07:00). Mätt på Kontor med aux (28 s klipp, 3 körningar, bara XMOS-lagret): rummets golv med Björns röst igång låg på −50 till −53 dBFS med toppar −41 till −47, och Geminis utskrift hade inga av hans ord (men "¿Qué tal?" ur bruset). Silero tog en gång brus för tal i 4,8 s, och bana 0 skrev "Björn." och "Tack till elever och personal …" ur golvet; nätet räknade det som en person. Nu: tal över hans svar vars högsta 0,25 s ligger under −36 dBFS (`EKO_NIVA_DBFS`; Henrik ligger på −12 till −20) är brus och ignoreras, och bana 0:s kända brusfraser räknas aldrig som en person.

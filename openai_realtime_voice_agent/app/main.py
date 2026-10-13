@@ -1649,6 +1649,29 @@ class Application:
                 return JSONResponse({"error": "invalid body"}, status_code=400)
             return JSONResponse(await self._eko_prov(rum, pcm, float(body.get("extra_s", 2.0)), bool(body.get("pace", False))))
 
+        @web_app.post("/fraga-prov")
+        async def fraga_prov(request: Request):
+            """Test only (EKO_PROV=1): speak a question INTO the session as if the mic heard it (16 kHz mono pcm), no wake word.
+            Björn answers on the real speaker, so the echo path is the real one."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            if os.environ.get("EKO_PROV", "0") != "1":
+                return JSONResponse({"error": "eko_prov_off"}, status_code=404)
+            import base64
+            from pipecat.frames.frames import InputAudioRawFrame
+            body = await request.json()
+            pcm = base64.b64decode(body["pcm_b64"])
+            c = self.websocket_handler.resolve_device(body["rum"])
+            if c is None or c.task is None or c.maskin is None:
+                return JSONResponse({"error": "okand_enhet"})
+            await c.maskin.phase("listening", "fraga-prov")
+            step = 640  # 20 ms at 16 kHz
+            for i in range(0, len(pcm) + 32000, step):
+                chunk = pcm[i:i + step].ljust(step, b"\0")
+                await c.task.queue_frame(InputAudioRawFrame(audio=chunk, sample_rate=16000, num_channels=1))
+                await asyncio.sleep(0.02)
+            return JSONResponse({"ok": True, "s": round(len(pcm) / 32000, 1)})
+
         @web_app.get("/healthz")
         async def healthz():
             """Liveness plus the currently connected device ids."""

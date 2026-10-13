@@ -365,6 +365,8 @@ async def tur(
     ping: Optional[Callable[[str, str], Awaitable[None]]] = None,
     tider=None,
     avsluta: Optional[Callable[[], Awaitable[None]]] = None,
+    eko_veto: Optional[Callable[[str], bool]] = None,
+    kasta_tur: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> str:
     """One finished user turn. Returns 'nej', 'klockan', 'bana0' on a hit, 'modell' otherwise.
 
@@ -389,6 +391,15 @@ async def tur(
             text = None
         if tider is not None:
             tider.mark("stt")
+        if eko_veto is not None and text and kasta_tur is not None and eko_veto(text):
+            # His own last reply came back through the mic as a "turn" (raawr US-060, Kontoret 2026-10-12 21:39):
+            # the model is never asked to answer it. Nothing is said, nothing is done.
+            try:
+                await kasta_tur()
+                logger.warning(f"bana0: {text!r} is his own last reply coming back; the turn is dropped")
+                return "eko"
+            except Exception as e:
+                logger.warning(f"bana0: dropping the echo turn failed, it goes on: {e!r}")
         if avsluta is not None and ar_nej(text):
             try:
                 await avsluta()

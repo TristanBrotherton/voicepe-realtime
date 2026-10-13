@@ -14,7 +14,10 @@ import time
 MIN_ORD = 1             # fewer words than this is not speech
 LIKA = 0.75             # two words this alike are the same word (the local STT is not exact on his voice)
 LANGT = 7               # words shorter than this must match exactly: 'vänta' is not 'väntar', 'sluta' is not 'slutar', 'ja' is not 'jag' (A on #65)
-ANDEL = 0.6             # this share of the heard words found among his = echo
+LAGST_ORD = 3           # fewer non-matching words than this over his reply count as echo unless one is a stop word
+STOPPORD = {"vänta", "stopp", "stop", "sluta", "tyst", "nej", "björn", "hallå", "paus", "avbryt", "tack"}
+LIKNAR_MIN = 3          # liknar_svar needs this many words: "köket" / "tänd köket" answering his own question is never an echo (A on #70)
+ANDEL = 0.5             # this share of the heard words found among his = echo
 
 
 NIVA_DBFS = -36.0       # speech quieter than this (loudest 0.25 s) over his reply is room noise, not a person (measured 2026-10-12: echo -41..-52, Henrik -12..-20)
@@ -62,6 +65,18 @@ def ar_eko(hort: "str | None", hans: str) -> bool:
     return traffar / len(h) >= ANDEL
 
 
+ORD_PER_S = 1.0         # at least this many of his words per second of reply audio, once the transcript can have caught up
+SVAR_UNDANTAG_S = 2.0   # the transcript may trail the audio by about this long
+
+
+def utskrift_efter(nuvarande_ord: int, svar_sek: float) -> bool:
+    """His own transcript of THIS reply has not caught up with the audio already sent: what the mic hears over it is far
+    more likely to be him than a person. (Kontoret 2026-10-12: 'Vilken dörr.' heard over a reply whose text had not come.)"""
+    if svar_sek <= 0.3:
+        return False
+    return nuvarande_ord == 0 or nuvarande_ord < ORD_PER_S * max(0.0, svar_sek - SVAR_UNDANTAG_S)
+
+
 def dom(hort: "str | None", ok: bool, hans: str) -> bool:
     """The net's verdict: True = ignore (his own words, or clearly no words). In doubt it is the person: a speech-to-text
     that failed or timed out (ok False) must never throw a real interruption away (A on #65)."""
@@ -69,7 +84,12 @@ def dom(hort: "str | None", ok: bool, hans: str) -> bool:
         return False
     if any(l in (hort or "").lower() for l in LUDD):
         return True  # what it writes of noise
-    return ar_eko(hort, hans)
+    if ar_eko(hort, hans):
+        return True
+    # A real interruption over his reply is a stop word or a sentence. One or two odd words ('Fåla.') are what the
+    # local STT writes of his own voice coming back (Kontoret 2026-10-12 live test): not allowed to cut him.
+    h = ord_(hort)
+    return len(h) < LAGST_ORD and not any(w in STOPPORD for w in h)
 
 
 class Svar:
@@ -90,7 +110,36 @@ class Svar:
     def text(self) -> str:
         return " ".join(self.tidigare + [self.nu])
 
+    def nu_ord(self) -> int:
+        return len(ord_(self.nu))
+
 
 def i_svans(idle_sedan: float, nu: "float | None" = None) -> bool:
     """`idle_sedan` is when the phase last turned idle (monotonic); False when it never has."""
     return bool(idle_sedan) and (nu if nu is not None else time.monotonic()) - idle_sedan <= svans_s()
+
+
+TOOL_VAKT_S = float(os.environ.get("TOOL_VAKT_S", "8"))
+
+
+def liknar_svar(turtext: "str | None", hans: str) -> bool:
+    """The turn's own words are (mostly) what he said himself a moment ago: his voice came back through the mic.
+    Needs MIN_ORD words, so a short real command ("tänd lampan") is never taken for an echo."""
+    h = ord_(turtext)
+    sina = set(ord_(hans))
+    if len(h) < LIKNAR_MIN or not sina:
+        return False
+    traffar = sum(1 for w in h if w in sina or (len(w) >= LANGT and difflib.get_close_matches(w, sina, n=1, cutoff=LIKA)))
+    return traffar / len(h) >= ANDEL
+
+
+def vakt_verktyg(turtext: "str | None", hans: str, sedan_barge_s: "float | None", x_s: "float | None" = None) -> "str | None":
+    """Why a tool call must NOT run, or None. (1) The turn sounds like his own last reply: his echo, not an order.
+    (2) The turn was started by an interruption less than `x_s` seconds ago and we have no text for it: unknown
+    speech that came right after his own voice is not allowed to open a door."""
+    x_s = TOOL_VAKT_S if x_s is None else x_s
+    if liknar_svar(turtext, hans):
+        return "ignored: this sounded like your own last reply, not an order. Do nothing."
+    if sedan_barge_s is not None and sedan_barge_s <= x_s and not (turtext or "").strip():
+        return "ignored: unclear speech right after an interruption. Do nothing; ask if it was meant."
+    return None

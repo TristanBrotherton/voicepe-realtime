@@ -368,6 +368,12 @@ class ToolRegistrationMixin:
                 if stop is not None:
                     await params.result_callback({"result": stop})
                     return
+                vakt = getattr(self, "verktygsvakt", None)   # echo guard (US-060): his own voice must not run a tool
+                skal = vakt() if vakt is not None else None
+                if skal:
+                    logger.warning(f"🛡️ tool {function_name} NOT run: {skal}")
+                    await params.result_callback({"result": skal})
+                    return
                 # Speaker gate (fork): tools listed in male_only_tools only execute
                 # when the last voice-type verdict is "male". Enforced HERE — below
                 # the model — so prompt tricks can't bypass it. Fails closed on
