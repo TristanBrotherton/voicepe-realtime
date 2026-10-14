@@ -435,7 +435,7 @@ The add-on runs on one of two OpenAI voice protocols, chosen per instance with
   `openai_model` (`gpt-realtime-2`), semantic VAD and tools on the voice model.
   Billed per response; idle costs nothing. Everything else in this guide
   describes this runtime unless it says otherwise.
-- **GPT-Live** (`voice_runtime: live`, experimental, since 0.18.35): OpenAI's
+- **GPT-Live** (`voice_runtime: live`, experimental, since 0.19.0): OpenAI's
   `gpt-live-1` listens and speaks continuously while the add-on routes every
   request itself — Home Assistant's local intent engine first, otherwise a
   Responses backend with the full tool set — and plays only results a tool

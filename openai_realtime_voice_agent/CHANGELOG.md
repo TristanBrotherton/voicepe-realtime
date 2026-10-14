@@ -2,7 +2,7 @@
 
 All notable changes to this add-on. Newest first.
 
-## 0.18.35 (fork)
+## 0.19.0 (fork)
 
 ### Added: an experimental GPT-Live voice runtime (opt-in)
 
@@ -10,7 +10,7 @@ Nothing changes for existing installs: `voice_runtime` defaults to the
 Realtime runtime. Setting `voice_runtime: live` (with
 `live_acknowledge_gaps`) runs the device on OpenAI's GPT-Live voice instead.
 See DOCS section 12, `docs/configuration.md` for every `live_*` option, and
-`docs/releases/0.18.35.md` for the release notes.
+`docs/releases/0.19.0.md` for the release notes.
 
 - **Router mode (`live_router`, on by default inside Live).** The add-on, not
   the voice model, decides and runs every tool. Home Assistant's own intent
