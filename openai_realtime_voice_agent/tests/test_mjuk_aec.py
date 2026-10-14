@@ -232,3 +232,83 @@ def test_a_word_of_the_persons_in_the_window_does_not_hide_that_the_canceller_wo
     _matt(aec, 40, -12.0, -12.0)                  # the person's first word: loud in, loud out
     _matt(aec, 60, -25.0, -55.0)
     assert aec.erle(0.0, 2.0, 80, 150) >= 29.0    # as an energy sum this was 4 dB
+
+
+def _sen_ref(folj, monkeypatch, sen_s=0.55):
+    """The echo comes `sen_s` before the reference says it was played (the reference lags it by sen_s - 0.15 s). The
+    reference is sent 1 s ahead of what the mic hears, as live."""
+    monkeypatch.setenv("AEC_FOLJ", "1" if folj else "0")
+    monkeypatch.setenv("SOFT_TAL_DB", "0")
+    ref = _tal(14.0)
+    s = int(sen_s * RATE)
+    mic = np.concatenate([_eko(ref)[s:], np.zeros(s, np.int16)])
+    klock = [0.0]
+    aec = MjukAec(klocka=lambda: klock[0])
+    steg, fore = 320, RATE
+    for i in range(0, fore, steg):
+        aec.ref(ref[i:i + steg].tobytes(), RATE, i / RATE)
+    ut = []
+    for i in range(0, len(ref) - fore - steg, steg):
+        klock[0] = i / RATE
+        aec.ref(ref[i + fore:i + fore + steg].tobytes(), RATE, (i + fore) / RATE)
+        ut.append(aec.process(mic[i:i + steg].tobytes(), (i + steg) / RATE))
+    ut = np.frombuffer(b"".join(ut), dtype=np.int16)
+    a, b = 8 * RATE, 12 * RATE
+    return _db(mic[a:b]) - _db(ut[a - FRAME * 3:b - FRAME * 3]), aec
+
+
+def test_a_reference_that_lags_his_echo_is_found_and_moved(monkeypatch):
+    """Kontoret 2026-10-14 08:07: after the playback stuttered, the reference sat 0.49 s after the echo for the rest of
+    the session and the canceller took 0-3 dB. The tracker finds the echo and moves the reference so it leads again."""
+    utan, _ = _sen_ref(False, monkeypatch)
+    med, aec = _sen_ref(True, monkeypatch)
+    assert utan < 6, f"the test does not reproduce the fault: {utan:.1f} dB without the tracker"
+    assert med >= 12, f"with the tracker only {med:.1f} dB"
+    assert 0.5 <= aec.skift_s <= 0.65, f"moved {aec.skift_s:.3f} s"
+
+
+def test_the_tracker_leaves_a_reference_that_already_leads_alone(monkeypatch):
+    monkeypatch.setenv("SOFT_TAL_DB", "0")
+    _, aec = _sen_ref(True, monkeypatch, sen_s=0.0)
+    assert aec.skift_s == 0.0
+
+
+def test_an_earlier_move_that_now_leads_too_far_is_taken_back(monkeypatch):
+    """The canceller is kept per device across sessions: a move made for one stuttering reply must not stay when the next
+    session's echo is where it should be (it would then lead by the move plus its own 150 ms)."""
+    monkeypatch.setenv("SOFT_TAL_DB", "0")
+    monkeypatch.setenv("AEC_FOLJ", "1")
+    aec = MjukAec(klocka=lambda: 0.0)
+    aec.skift_s = 0.64
+    ref = _tal(5.0)
+    mic = np.concatenate([np.zeros(int(0.79 * RATE), np.int16), _eko(ref, tap_ms=(0, 40, 90))])[:len(ref)]   # echo 0.79 s after
+    for i in range(0, len(ref) - FRAME, FRAME):
+        aec._folj(mic[i:i + FRAME], ref[i:i + FRAME])
+    assert abs(aec.skift_s) < 0.05, f"still moved {aec.skift_s:.3f} s"
+
+
+def _skattningar(monkeypatch, lags):
+    """Feed the tracker frames while eko_lag answers from `lags`, one per estimate (an estimate every second)."""
+    import app.mjuk_aec as mj
+    monkeypatch.setenv("AEC_FOLJ", "1")
+    svar = list(lags)
+    monkeypatch.setattr(mj, "eko_lag", lambda mic, ref: svar.pop(0) if svar else None)
+    aec = MjukAec(klocka=lambda: 0.0)
+    ram = np.ones(FRAME, np.int16)
+    for _ in range(int((len(lags) + 1) * RATE / FRAME)):
+        aec._folj(ram, ram)
+    return aec
+
+
+def test_one_estimate_that_says_the_reference_lags_does_not_move_it(monkeypatch):
+    """One estimate is not trusted: a single one at -0.45 s amid normal echo leaves the reference where it is."""
+    assert _skattningar(monkeypatch, [0.15, -0.45, 0.15, 0.15]).skift_s == 0.0
+
+
+def test_two_estimates_that_disagree_do_not_move_it(monkeypatch):
+    assert _skattningar(monkeypatch, [-0.45, -0.30, 0.15]).skift_s == 0.0
+
+
+def test_two_estimates_in_a_row_that_agree_move_it(monkeypatch):
+    aec = _skattningar(monkeypatch, [-0.45, -0.46])
+    assert abs(aec.skift_s - (0.15 + 0.46)) < 1e-9, aec.skift_s

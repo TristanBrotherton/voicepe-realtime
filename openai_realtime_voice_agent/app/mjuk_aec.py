@@ -45,6 +45,18 @@ NIVA_HOGA = 12                # ...with at least 0.12 s of it loud
 NIVA_OVER_EKO_DB = float(os.environ.get("NIVA_OVER_EKO_DB", "-2"))   # ...over his echo's loudest frames (95th percentile) plus this
 NIVA_HAL_S = 0.03             # a hole this long in what was sent is a break (shorter ones the canceller rides out)
 NIVA_SVAR_S = 2.0             # ...and not in the first seconds of a reply, or after a break in it
+# Echo tracker (AEC_FOLJ, on by default with SOFT_AEC): every FOLJ_S / 2, over the last FOLJ_S, find where his echo sits in the mic against the
+# reference, and when it sits BEFORE it (less than FOLJ_MIN_S behind) twice in a row, move the reference so it leads by
+# FOLJ_MAL_S. A reference that leads AEC3 finds itself; only an earlier move that now leads by more than FOLJ_MAX_S is
+# taken back (the canceller is kept per device across sessions). One estimate alone is not trusted (replayed
+# over a whole morning with one canceller, single estimates at +0.7..+0.9 s from similar replies sent it astray). Kontoret
+# 2026-10-14 08:07: after the playback stuttered (a dozen underruns in 4 s) the reference sat 0.49 s AFTER the echo for the
+# rest of the session; AEC3 cannot work on a reference that lags, took 0-3 dB, and his own voice reached the engine at
+# -21..-24 dBFS (16 of 26 cuts with nobody speaking). Replayed: 0.5-2 dB -> 7-19 dB on 11 of 11 such recordings,
+# the 15 good ones untouched.
+FOLJ_S = 2.0
+FOLJ_MIN_S, FOLJ_MAX_S, FOLJ_MAL_S, FOLJ_SAMMA_S = 0.03, 0.6, 0.15, 0.04
+FOLJ_SKARPA = 8.0             # the correlation peak over its mean: below this his voice is not clearly in the mic
 
 
 def soft_aec_paa() -> bool:
@@ -53,6 +65,21 @@ def soft_aec_paa() -> bool:
 
 def aec_spara_paa() -> bool:
     return os.environ.get("AEC_SPARA", "0") == "1"
+
+
+def eko_lag(mic: np.ndarray, ref: np.ndarray) -> Optional[float]:
+    """Seconds his echo in `mic` sits after `ref` (negative: the echo comes BEFORE the reference), searched from 0.6 s
+    before to 1.0 s after; None when the reference is quiet or the peak is not clear (his voice is not in the mic)."""
+    if np.sqrt(np.mean(ref * ref)) < 100 or np.sqrt(np.mean(mic * mic)) < 30:
+        return None
+    n = 1 << int(np.ceil(np.log2(len(mic) + len(ref))))
+    c = np.fft.irfft(np.fft.rfft(mic, n) * np.conj(np.fft.rfft(ref, n)), n)      # c[k] = sum mic[i + k] * ref[i]
+    w = np.abs(np.concatenate([c[-int(0.6 * RATE):], c[:int(1.0 * RATE)]]))       # lags -0.6 .. +1.0 s
+    k = int(np.argmax(w))
+    if w[k] / (w.mean() + 1e-9) < FOLJ_SKARPA:
+        return None
+    return (k - int(0.6 * RATE)) / RATE
+
 
 
 class MjukAec:
@@ -91,6 +118,11 @@ class MjukAec:
         self.mic_n = 0                            # samples of this stretch so far
         self.agc_db = 0.0                 # the gain now
         self.golv_db = -50.0              # noise floor estimate (slow minimum of the frame levels)
+        self.folj = os.environ.get("AEC_FOLJ", "1") == "1"
+        self.skift_s = 0.0                # the reference is read this much later than its timeline says (the tracker)
+        self.folj_mic: List[np.ndarray] = []
+        self.folj_ref: List[np.ndarray] = []
+        self.folj_forra: Optional[float] = None   # the last estimate that said the reference lags
 
     def _agc(self, ram: np.ndarray) -> np.ndarray:
         """Gain one 10 ms frame (int16). Up only when the frame is speech-like, else hold and drift back to 0 dB."""
@@ -278,7 +310,9 @@ class MjukAec:
                 ram = a[i:i + FRAME]
                 refr = None
                 if aktiv and (self.aec_pa or self.spara):
-                    refr = self._ref_ram(t - (tot - i) / RATE)
+                    refr = self._ref_ram(t - (tot - i) / RATE + self.skift_s)
+                    if self.folj and self.aec_pa:
+                        self._folj(ram, refr)
                 if self.spara and refr is not None:
                     self.spar_mic.append(ram.copy())
                     self.spar_ref.append(refr)
@@ -309,6 +343,30 @@ class MjukAec:
         except Exception as e:
             self._fel(e)
             return pcm
+
+    def _folj(self, ram: np.ndarray, refr: np.ndarray) -> None:
+        """The echo tracker: collect FOLJ_S of mic and reference, then move the reference if the echo is not where AEC3
+        can find it (it needs the reference to lead)."""
+        self.folj_mic.append(ram.copy())
+        self.folj_ref.append(refr)
+        if len(self.folj_mic) * FRAME < FOLJ_S * RATE:
+            return
+        mic = np.concatenate(self.folj_mic).astype(np.float64)
+        ref = np.concatenate(self.folj_ref).astype(np.float64)
+        halv = len(self.folj_mic) // 2           # a sliding window: an estimate every FOLJ_S / 2
+        self.folj_mic, self.folj_ref = self.folj_mic[halv:], self.folj_ref[halv:]
+        lag = eko_lag(mic, ref)
+        if lag is None or FOLJ_MIN_S <= lag <= FOLJ_MAX_S or (lag > FOLJ_MAX_S and self.skift_s <= 0):
+            self.folj_forra = None          # where AEC3 finds it; too far ahead only undoes an earlier move
+            return
+        if self.folj_forra is None or abs(lag - self.folj_forra) > FOLJ_SAMMA_S:
+            self.folj_forra = lag           # once is not enough
+            return
+        self.folj_forra = None
+        self.folj_mic, self.folj_ref = [], []     # what was collected was read at the old place
+        self.skift_s += FOLJ_MAL_S - lag
+        logger.info(f"🎯 echo canceller: his echo sat {lag * 1000:+.0f} ms behind the reference; reference moved "
+                        f"{(FOLJ_MAL_S - lag) * 1000:+.0f} ms (total {self.skift_s * 1000:+.0f} ms)")
 
     def _spara_flush(self, aktiv: bool) -> None:
         """AEC_SPARA=1: the raw mic (left) and the reference as the canceller saw it (right), 16 kHz stereo wav, one
