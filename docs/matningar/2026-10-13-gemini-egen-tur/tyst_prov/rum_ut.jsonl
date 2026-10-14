@@ -1,0 +1,4 @@
+{"fil": "ut_ikvall.pcm", "start": "HIGH", "turer": [32.84, 36.94, 58.33, 61.85], "hort": [[32.64, "¿Qué?"], [36.83, "¿Qué?"], [57.96, "ho"], [61.67, "Sí."]], "sa": "Hur kan jag hjälpa?Hur kan jag hjälpa?Hej, jag lyssnar.Jag lyssnar här.", "ut_s": 6.340041666666667, "langd": 66.0}
+{"fil": "ut_ns3.pcm", "start": "HIGH", "turer": [32.77, 36.77, 58.07, 61.55], "hort": [[32.63, "¿Qué?"], [36.55, "¿Qué?"], [57.96, "¿Qué?"], [61.52, "¿Qué"]], "sa": "Jag förstår inte.Jag förstår inte.Jag förstår inte.Jag förstår inte.", "ut_s": 5.130041666666669, "langd": 66.0}
+{"fil": "ut_ikvall.pcm", "start": "LOW", "turer": [], "hort": [], "sa": "", "ut_s": 0.0, "langd": 66.0}
+{"fil": "ut_ns3.pcm", "start": "LOW", "turer": [], "hort": [], "sa": "", "ut_s": 0.0, "langd": 66.0}

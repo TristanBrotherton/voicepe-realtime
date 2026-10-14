@@ -31,6 +31,20 @@ SPRAKLAS = (
     "\n\nSPRÅK: Svara ALLTID på svenska, från första ordet. Det du hör kan vara brus, musik eller ett annat "
     "språk före det riktiga talet; det ändrar aldrig svarsspråket. Börja aldrig ett svar på ett annat språk."
 )
+# Over his reply the engine cuts him on any voice, a "ja" too (Kontoret 2026-10-14: "ja" cut him and he asked "...det?").
+# Telling a back-channel from an interruption is a matter of words, not of sound, so the words decide (raawr US-060 AC-8).
+AVBROTT = (
+    "\n\nAVBROTT: Blir du avbruten av bara ett medhåll ('ja', 'mm', 'okej', 'precis', 'aha'), fortsätt där du var, "
+    "utan att kommentera det. Blir du avbruten av bara 'vänta' eller 'stopp', säg ingenting och vänta. "
+    "Annars svarar du på det som sades."
+)
+
+
+def avbrott_for(rum: str) -> str:
+    """AVBROTT only in a room where the engine runs the turns: elsewhere the mic is shut while he speaks, and a lone
+    'ja' after a finished reply must not make him go on (B on voicepe #74, 2026-10-14)."""
+    from app import eko_vakt
+    return AVBROTT if eko_vakt.egen_tur(rum) else ""
 
 # How long a quiet ends the user's turn (Silero, locally; Gemini and xAI). 1200 ms
 # before 0.27.12. Measured with a pause inside a sentence (tools/paustest.py): 800 ms
@@ -767,11 +781,12 @@ class Application:
         probe = getattr(connection, "speaker_probe", None)
         return probe.name_for(probe.gate_speaker()) if probe else None
     
-    def provider_options(self, provider: str):
+    def provider_options(self, provider: str, rum: str = ""):
         """The knobs for one engine, from the add-on options.
 
         Args:
             provider: "openai" or "gemini".
+            rum: the device's room; AVBROTT only goes to a room where the engine runs the turns.
 
         Returns:
             A ProviderOptions. The instructions are the same for both engines,
@@ -779,7 +794,7 @@ class Application:
         """
         from app.providers import GEMINI, OPENAI_LIVE, XAI, ProviderOptions
 
-        instructions = self._instructions()
+        instructions = self._instructions(rum)
         if provider == OPENAI_LIVE:
             return ProviderOptions(
                 api_key=self.openai_api_key,
@@ -854,12 +869,16 @@ class Application:
         self.instructions = text
         logger.info(f"📜 Björn-kärnan: källa={kalla} ({len(text)} tecken)")
 
-    def _instructions(self) -> str:
+    def _instruktionskalla(self, rum: str):
+        """What Gemini renders on every (re)connect: the instruction for this device's room (AVBROTT per room)."""
+        return lambda: self._instructions(rum)
+
+    def _instructions(self, rum: str = "") -> str:
         """The system instruction, Idag block last (the time is rendered now)."""
         # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
         # jokes included (owner 2026-10-02 23:07). The slow tools' descriptions
         # carry it instead (early_ack.with_ack_hint, 0.25.6).
-        return self.instructions + SPRAKLAS + memory_instructions() + self.idag.block()
+        return self.instructions + SPRAKLAS + avbrott_for(rum) + memory_instructions() + self.idag.block()
 
     async def _idag_loop(self) -> None:
         """Keep the Idag block fresh: refetch, then let Gemini reconnect when quiet.
@@ -1019,7 +1038,8 @@ class Application:
             # transport's declared mic rate and the actually-built session
             # across two different engines.
             provider = connection.provider
-            options = self.provider_options(provider)
+            rum = getattr(connection, "device_id", "") or ""
+            options = self.provider_options(provider, rum)
             if not options.api_key:
                 logger.error(f"❌ no API key configured for {provider}")
             logger.info(
@@ -1032,11 +1052,12 @@ class Application:
                     await asyncio.wait_for(self.idag.refresh(), 3.0)
                 except Exception as e:
                     logger.warning(f"⚠️ Idag: no weather/calendar for this session ({e!r})")
-                options = self.provider_options(provider)
+                options = self.provider_options(provider, rum)
+            options.rum = rum
             service = build_service(provider, options, all_tools)
             if provider == GEMINI:
                 # Rendered again on every (re)connect: a fresh time and block.
-                service.instructions_provider = self._instructions
+                service.instructions_provider = self._instruktionskalla(rum)
             service.speaker_probe = None
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
@@ -1664,6 +1685,8 @@ class Application:
             c = self.websocket_handler.resolve_device(body["rum"])
             if c is None or c.task is None or c.maskin is None:
                 return JSONResponse({"error": "okand_enhet"})
+            if getattr(c, "recovery", None) is not None:
+                c.recovery._last_wake = time.monotonic()   # this stands in for the wake word (see tur_utan_vackning)
             await c.maskin.phase("listening", "fraga-prov")
             if c.serializer is not None:  # only the question reaches the pipeline: mixed frame by frame with the live mic it is no speech
                 c.serializer.suppress_inbound_until = time.monotonic() + len(pcm) / 32000 + 0.9
@@ -1673,6 +1696,39 @@ class Application:
                 await c.task.queue_frame(InputAudioRawFrame(audio=chunk, sample_rate=16000, num_channels=1))
                 await asyncio.sleep(0.02)
             return JSONResponse({"ok": True, "s": round(len(pcm) / 32000, 1)})
+
+        @web_app.post("/glapp-prov")
+        async def glapp_prov(request: Request):
+            """Test only (EKO_PROV=1, loopback): hold his reply audio for `ms` once, so the device's speaker runs dry
+            mid-reply. For measuring that the device reports it ("underrun") and that nothing cuts him off then."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            if os.environ.get("EKO_PROV", "0") != "1":
+                return JSONResponse({"error": "eko_prov_off"}, status_code=404)
+            body = await request.json()
+            c = self.websocket_handler.resolve_device(body["rum"])
+            if c is None or c.transport is None:
+                return JSONResponse({"error": "okand_enhet"})
+            c.transport.output().prov_glapp_s = min(2.0, max(0.0, float(body.get("ms", 200)) / 1000))
+            return JSONResponse({"ok": True})
+
+        @web_app.post("/rost-prov")
+        async def rost_prov(request: Request):
+            """Test only (EKO_PROV=1, loopback): add a recorded voice (16 kHz mono pcm) to the device's live mic, as if a
+            person spoke in the room while he replies. The echo is the real one; the canceller, the cut and the device
+            are the real chain. For measuring the time from a voice to his silence without a person in the room."""
+            if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+                return JSONResponse({"error": "loopback_only"}, status_code=403)
+            if os.environ.get("EKO_PROV", "0") != "1":
+                return JSONResponse({"error": "eko_prov_off"}, status_code=404)
+            import base64
+            body = await request.json()
+            c = self.websocket_handler.resolve_device(body["rum"])
+            if c is None or c.serializer is None:
+                return JSONResponse({"error": "okand_enhet"})
+            c.serializer.prov_rost_t = 0.0
+            c.serializer.prov_rost = base64.b64decode(body["pcm_b64"])
+            return JSONResponse({"ok": True})
 
         @web_app.post("/svar-prov")
         async def svar_prov(request: Request):

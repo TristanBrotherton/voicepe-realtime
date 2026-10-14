@@ -24,7 +24,7 @@ from google.genai.types import (
     StartSensitivity,
     ThinkingConfig,
 )
-from pipecat.frames.frames import OutputAudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.services.google.gemini_live.llm import (
     GeminiLiveLLMService,
     GeminiModalities,
@@ -190,6 +190,10 @@ def _resolve_language(language: str) -> Language:
             f"⚠️ Unknown Gemini language {language!r}; falling back to {FALLBACK_LANGUAGE}"
         )
         return FALLBACK_LANGUAGE
+
+
+egen_tur = _eko.egen_tur
+AVBROTT_UTAN_TAL_S = 1.2   # the engine said "interrupted" and the local detector heard no speech for this long: back to thinking
 
 
 def _build_vad_params(options) -> GeminiVADParams:
@@ -406,7 +410,9 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         """With local turns: send audio only inside an activity we opened."""
         turns = self._turns
         if turns is None:
-            return await super()._send_user_audio(frame)
+            if self._fas_vad is None:
+                return await super()._send_user_audio(frame)
+            return await self._egen_tur_ljud(frame)
         event = turns.feed(frame.audio)
         if self.eko_vakt is not None and await self._eko_kandidat(frame, event):
             return
@@ -452,6 +458,14 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             # Bana 0 holds this turn; keep collecting until it decides. Speech
             # that resumes during the decision belongs to the same turn.
             held.append(frame)
+            if self._vantar and event == "start":
+                # The turn that cut him off was only "vänta" (fortsatt_tur): this is the person going on. The engine
+                # gets it all as one turn; everything else is told that speech has begun, as at any turn start.
+                self._vantar = False
+                self._avgjord = False
+                await self.push_frame(UserStartedSpeakingFrame())
+                if self.on_user_turn_start is not None:
+                    self.on_user_turn_start()
             if event == "preend" and self.on_user_turn_pre_end is not None:
                 self.on_user_turn_pre_end()
             if event == "end":
@@ -486,6 +500,56 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             await self.push_frame(UserStoppedSpeakingFrame())
             await self._end_activity()
 
+    # GEMINI_EGEN_TUR=1 (see egen_tur). _fas_vad is a local detector used ONLY to tell the device "listening"/"thinking"
+    # (its follow-up window closes unless it hears "listening" in time); it decides nothing about the turn.
+    _fas_vad: Optional[LocalTurns] = None
+    _fas_talar = False
+    _avbrott_t = 0.0         # when the engine cut him on something the local detector does not (yet) call speech
+    slapp_ljud = None        # set by the handler: False = nobody woke him and no reply is recent: the room is not sent
+    svarar = None            # set by the handler: True while his reply is playing
+    on_motor_avbrott = None  # called (plain) when the engine says it was interrupted
+
+    async def _egen_tur_ljud(self, frame):
+        if self.slapp_ljud is not None and not self.slapp_ljud():
+            return
+        event = self._fas_vad.feed(frame.audio)
+        if getattr(self, "sover", False):
+            # The engine was put to sleep and somebody speaks (a follow-up; the wake word wakes it by itself): wake it
+            # at the first speech and send what was said meanwhile (kitchen 2026-10-09: a turn into a sleeping engine).
+            self._keep_preroll(frame)
+            if event != "start" or not await self._vaken_for_tur():
+                return
+            frame = type(frame)(audio=self._take_preroll(), sample_rate=frame.sample_rate, num_channels=frame.num_channels)
+        if event == "start":
+            self._avbrott_t = 0.0   # the local detector hears the speech too: its own "end" closes it
+        if event == "start" and not (self.svarar is not None and self.svarar()):
+            # Over his own reply only the engine may say that somebody spoke (_motor_avbrott).
+            self._fas_talar = True
+            await self.push_frame(UserStartedSpeakingFrame())
+        elif self._fas_talar and (event == "end" or (
+                self._avbrott_t and not getattr(self._fas_vad, "_speaking", False)
+                and time.monotonic() - self._avbrott_t > AVBROTT_UTAN_TAL_S)):
+            # The speech ended -- or the engine cut him on a sound the local detector never took for speech (a thump):
+            # then no "end" is coming, and the device would stay in "listening" (B on #74).
+            self._fas_talar = False
+            self._avbrott_t = 0.0
+            self._tider_start()
+            await self.push_frame(UserStoppedSpeakingFrame())
+        await super()._send_user_audio(frame)
+
+    async def _motor_avbrott(self) -> None:
+        """serverContent.interrupted: the engine heard speech over its reply and stopped. pipecat 0.0.97 does nothing
+        with that message, so the reply's queued audio (the engine sends about four times faster than it is played)
+        would play on. Drop it here, and tell the device: "listening" makes it flush its own buffer."""
+        logger.info("🔊 interrupted by the engine: it heard speech over his reply")
+        if self.on_motor_avbrott is not None:
+            self.on_motor_avbrott()
+        await self._handle_interruption()
+        await self.push_frame(InterruptionFrame())
+        self._fas_talar = True
+        self._avbrott_t = 0.0 if getattr(self._fas_vad, "_speaking", False) else time.monotonic()
+        await self.push_frame(UserStartedSpeakingFrame())
+
     # Full duplex, layer 2 (US-060, D-22). eko_vakt(): True while he replies or just after. eko_dom(pcm): True = the
     # speech heard is his own words. Both are set by the handler when BARGE_IN=1; None = this does nothing.
     eko_vakt = None
@@ -514,7 +578,7 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         turns = self._turns
         kand = self._kandidat
         nu = time.monotonic()
-        if self.niva_person is not None and nu - self._niva_sist > 2.0 and self.niva_person():
+        if self.niva_person is not None and not self._vantar and nu - self._niva_sist > 2.0 and self.niva_person():
             # Loud over a canceller that works: a person, now. No waiting for the turn detector or the text.
             self._niva_sist = nu
             if kand is None:
@@ -531,8 +595,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             return True
         if kand is None:
             # _niva_slut: the turn is already open, on level; the detector's late "start" is the same speech.
-            if event != "start" or self._niva_slut or not self.eko_vakt():
-                return False
+            if event != "start" or self._niva_slut or self._vantar or not self.eko_vakt():
+                return False  # _vantar: the turn is held open after "vänta"; this is the person going on
             pre = self._take_preroll()
             self._kandidat = [type(frame)(audio=pre, sample_rate=frame.sample_rate, num_channels=frame.num_channels), frame]
             self._kandidat_fore = len(pre)
@@ -686,12 +750,24 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         if self._turn_end_task is None or self._turn_end_task.done():
             self._turn_end_task = asyncio.get_running_loop().create_task(self._run_turn_end())
 
+    _vantar = False  # the held turn only cut him off ("vänta"): it stays held, and what the person says next joins it
+
+    def fortsatt_tur(self) -> bool:
+        """The turn just ended asked for nothing ("vänta"): do not answer it, keep it, and let the person go on. What
+        is said next is added to the same turn, which then ends and is decided as usual. True = it is being held."""
+        if not getattr(self, "_held", None) or self._turns is None:
+            return False
+        self._vantar = True
+        self._tidigt = False
+        self._turns.reset()
+        return True
+
     async def _run_turn_end(self) -> None:
         try:
             await self.on_user_turn_end()
         finally:
             # A hook that died without deciding must not strand the turn.
-            if getattr(self, "_held", None):
+            if getattr(self, "_held", None) and not self._vantar:
                 await self.answer_turn()
 
     async def _vaken_for_tur(self) -> bool:
@@ -780,6 +856,7 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             logger.info("🧽 open Gemini activity abandoned (device dropped the input)")
         forts, self._forts = getattr(self, "_forts", None), None
         self._held = None
+        self._vantar = False
         self._turn_rescue = None
         self._activity_open = False
         # A continuation being collected (see _fortsatt) is not the dropped turn: the reset below makes the
@@ -907,6 +984,20 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         self._preroll = bytearray()
         if self._turns is not None:
             self._turns.reset()
+        if self._fas_vad is not None:
+            self._fas_vad.reset()
+            self._fas_talar = False
+            ta_emot = session.receive
+
+            def receive():
+                async def lyssna():
+                    async for m in ta_emot():
+                        if m.server_content and m.server_content.interrupted:
+                            await self._motor_avbrott()
+                        yield m
+                return lyssna()
+
+            session.receive = receive
         await super()._handle_session_ready(session)
 
     async def end_audio_stream(self, keep_speech: bool = False) -> None:
@@ -1079,7 +1170,7 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
     if search:
         gemini_tools.append({"google_search": {}})
     language = _resolve_language(options.language or "sv-SE")
-    turns = LocalTurns.create(int(options.gemini_turn_silence_ms), pre_ms=PRE_END_MS)
+    turns = None if egen_tur(options.rum) else LocalTurns.create(int(options.gemini_turn_silence_ms), pre_ms=PRE_END_MS)
     vad = GeminiVADParams(disabled=True) if turns else _build_vad_params(options)
     proactivity, affective, http_options = _native_audio_features(options, model)
     native = NATIVE_AUDIO_MODEL_MARKER in model
@@ -1128,6 +1219,8 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
         http_options=http_options,
     )
     service._turns = turns
+    if egen_tur(options.rum):
+        service._fas_vad = LocalTurns.create(int(options.gemini_turn_silence_ms) or 800)
     if drop_language:
         logger.info(
             f"🌍 {model} refuses an explicit '{language}' — sending no language code "

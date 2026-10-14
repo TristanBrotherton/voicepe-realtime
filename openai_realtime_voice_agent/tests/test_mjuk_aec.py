@@ -195,7 +195,8 @@ def test_mic_packets_that_arrive_in_clumps_do_not_move_the_reference():
 
 
 def _matt(aec, n, mic, ren, ref=-18.0, t0=0.0):
-    aec.matt += [(t0 + (len(aec.matt) + 1) * 0.01, mic, ren, ref) for _ in range(n)]
+    k = len(aec.matt)
+    aec.matt += [(t0 + (k + i + 1) * 0.01, mic, ren, ref) for i in range(n)]
 
 
 def test_louder_than_his_own_echo_over_a_working_canceller_is_a_person():
@@ -232,6 +233,62 @@ def test_a_word_of_the_persons_in_the_window_does_not_hide_that_the_canceller_wo
     _matt(aec, 40, -12.0, -12.0)                  # the person's first word: loud in, loud out
     _matt(aec, 60, -25.0, -55.0)
     assert aec.erle(0.0, 2.0, 80, 150) >= 29.0    # as an energy sum this was 4 dB
+
+
+def test_a_device_that_reports_underruns_lets_a_normal_voice_through_but_not_right_after_a_break():
+    """Kontoret 2026-10-13 16:21: Henrik spoke over him for six seconds at -22 to -30 dBFS, 25-35 dB over what the
+    canceller left, and nothing cut him: the floor was his whole echo, because a playback break could not be told."""
+    def laget(stod, ren_nu, bruten_for_s=None):
+        aec = MjukAec(klocka=lambda: 0.0)
+        aec.svar_start = -10.0
+        aec.underrun_stod = stod
+        _matt(aec, 300, -25.0, -57.0)             # 3 s of his echo, 32 dB taken off
+        if bruten_for_s is not None:
+            aec.underrun(aec.matt[-1][0] - bruten_for_s)
+        _matt(aec, 20, -24.0, ren_nu)             # then 0.2 s of this out of the canceller
+        return aec
+
+    assert laget(False, -27.0).person(-36.0) is False              # no reports: not louder than his echo, it may be him
+    assert laget(True, -27.0).person(-36.0) is True                # reports: 30 dB over what the canceller leaves
+    assert laget(True, -27.0, bruten_for_s=1.5).person(-36.0) is False   # the playback broke 1.5 s ago
+    assert laget(True, -27.0, bruten_for_s=3.5).person(-36.0) is True    # and has had time to be found again
+    assert laget(True, -45.0).person(-36.0) is False               # under the fixed floor
+
+
+def _svar_vid(t0, sek=6.0, steg_s=0.02):
+    """One reply that starts at clock time t0 (not 0: a reply starts after silence), through the canceller."""
+    ref = _tal(sek); mic = _eko(ref); klock = [t0]; aec = MjukAec(klocka=lambda: klock[0]); ut = []; steg = int(steg_s * RATE)
+    for i in range(0, len(ref) - steg, steg):
+        t = t0 + i / RATE
+        klock[0] = t
+        aec.ref(ref[i:i + steg].tobytes(), RATE, t)
+        klock[0] = t + steg_s
+        ut.append(aec.process(mic[i:i + steg].tobytes(), t + steg_s))
+    return np.frombuffer(b"".join(ut), dtype=np.int16)
+
+
+def test_nothing_is_passed_on_until_the_canceller_has_locked_on_the_reply(monkeypatch):
+    """SOFT_AEC_REST=2: the first two seconds of a reply are silence to the engine, then what the canceller left."""
+    monkeypatch.setenv("SOFT_AEC_REST", "2")
+    ut = _svar_vid(100.0)
+    assert not ut[int(0.1 * RATE):int(1.9 * RATE)].any()        # shut: his own voice at the start goes nowhere
+    assert ut[int(3.0 * RATE):int(5.0 * RATE)].any()            # open again
+    monkeypatch.setenv("SOFT_AEC_REST", "0")
+    assert _svar_vid(100.0)[int(0.1 * RATE):int(1.9 * RATE)].any()   # off: as before
+
+
+def test_the_noise_suppressor_is_only_on_by_flag(monkeypatch):
+    assert MjukAec().ap.ns_enabled() is False
+    monkeypatch.setenv("SOFT_AEC_NS", "3")
+    assert MjukAec().ap.ns_enabled() is True
+
+
+def test_in_a_room_where_the_engine_runs_the_turns_the_mic_is_not_amplified(monkeypatch):
+    monkeypatch.setenv("GEMINI_EGEN_TUR", "kontoret")
+    MjukAec._per_enhet.clear()
+    assert MjukAec.for_enhet("kontoret").agc_max_db == 0.0
+    assert MjukAec.for_enhet("koket").agc_max_db > 0.0
+    MjukAec._per_enhet.clear()
 
 
 def _sen_ref(folj, monkeypatch, sen_s=0.55):
@@ -312,3 +369,8 @@ def test_two_estimates_that_disagree_do_not_move_it(monkeypatch):
 def test_two_estimates_in_a_row_that_agree_move_it(monkeypatch):
     aec = _skattningar(monkeypatch, [-0.45, -0.46])
     assert abs(aec.skift_s - (0.15 + 0.46)) < 1e-9, aec.skift_s
+
+
+def test_a_normal_estimate_between_two_lagging_ones_starts_the_count_over(monkeypatch):
+    """B on #77: an estimate where AEC3 finds the echo itself clears the one waiting; two lagging ones must be in a row."""
+    assert _skattningar(monkeypatch, [-0.45, 0.15, -0.46]).skift_s == 0.0

@@ -871,7 +871,7 @@ async def test_a_decision_that_ends_in_the_middle_of_the_continuation_hands_it_t
     assert len(avgjorde) == 3
 
 
-@pytest.mark.parametrize("text", ["Nej.", "Nej tack!", "Det var allt.", "tack", "Nä, tack"])
+@pytest.mark.parametrize("text", ["Nej.", "Nej tack!", "Det var allt.", "tack", "Nä, tack", "Tack, det var allt.", "Tack, det räcker"])
 def test_ar_nej_hela_turen(text):
     assert bana0.ar_nej(text)
 

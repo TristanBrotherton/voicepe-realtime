@@ -11,6 +11,7 @@ is a rule that protects one engine.
 """
 import asyncio
 import json
+import inspect
 import logging
 import os
 import time
@@ -370,6 +371,8 @@ class ToolRegistrationMixin:
                     return
                 vakt = getattr(self, "verktygsvakt", None)   # echo guard (US-060): his own voice must not run a tool
                 skal = vakt() if vakt is not None else None
+                if inspect.isawaitable(skal):   # GEMINI_EGEN_TUR: the guard may wait a moment for the turn's text
+                    skal = await skal
                 if skal:
                     logger.warning(f"🛡️ tool {function_name} NOT run: {skal}")
                     await params.result_callback({"result": skal})

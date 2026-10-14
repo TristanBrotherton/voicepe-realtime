@@ -366,7 +366,9 @@ def ur_ledtraden(text: Optional[str]) -> bool:
 # A whole turn that only says "no, that is all": the session closes at once, like "stopp" (Henrik 2026-10-11).
 _NEJ = {"nej", "nä", "nej tack", "nä tack", "tack", "tack så mycket", "tack tack", "det var allt", "det var det",
         "det var allt tack", "nej det var allt", "nej tack det var allt", "nej det var det", "nej tack det är bra",
-        "det är bra", "det är bra tack", "nej det är bra", "inget mer", "nej inget mer"}
+        "det är bra", "det är bra tack", "nej det är bra", "inget mer", "nej inget mer",
+        # the words of US-060 AC-9 ("tack, det var allt") were not here: the session stayed open on them (offline 2026-10-13)
+        "tack det var allt", "tack det var det", "tack det är bra", "tack det räcker", "det räcker"}
 
 
 def ar_nej(text: Optional[str]) -> bool:

@@ -1,0 +1,126 @@
+2026-10-13 19:27:48,521 - app.providers.gemini_live - INFO - 🎚️ Gemini turn detection: start=StartSensitivity.START_SENSITIVITY_HIGH end=EndSensitivity.END_SENSITIVITY_HIGH prefix=300ms silence=800ms
+2026-10-13 19:27:48,851 - app.websocket_handler - INFO - ✅ Pipeline built for kontoret
+2026-10-13 19:28:22,014 - app.session_state - INFO - 🧭 kontoret: IDLE -> LISTENING (listening: fraga-prov)
+2026-10-13 19:28:22,917 - app.providers.sovlage - INFO - ☁️ connected to the cloud engine on wake (0.6s) [moln 8790d0]
+2026-10-13 19:28:22,959 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:22,960 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:26,957 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:28:28,628 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:28:28,771 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:28:28,774 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:29,569 - app.transcript_logger - INFO - 🗣️ user: en riktigt lång historia om en räv som bor i skogenNo.
+2026-10-13 19:28:29,573 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:30,298 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:28:30,345 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=63304)
+2026-10-13 19:28:32,910 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:28:35,021 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:35,889 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:28:46,799 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:52,013 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:28:52,592 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:28:54,349 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:01,463 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:10,171 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:10,580 - app.transcript_logger - INFO - 🗣️ user: Ho fatto il pane ripieno.
+2026-10-13 19:29:10,580 - app.transcript_logger - INFO - 🗣️ user: Berätta en riktigt lång historia om en räv som bor i skogen.
+2026-10-13 19:29:10,584 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:10,927 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:11,389 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:11,460 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:29:14,884 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:29:16,654 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:18,659 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:29:22,466 - app.session_state - INFO - 🧭 kontoret: SPEAKING -> LISTENING (listening: fraga-prov)
+2026-10-13 19:29:22,701 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:29:22,864 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:27,439 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:27,821 - app.transcript_logger - INFO - 🗣️ user: provare gli orecchiniBerätta en riktigt lång historia om en räv som bor i skogen.
+2026-10-13 19:29:27,826 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:28,159 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:29:28,162 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:28,286 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:28,626 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:30,261 - app.transcript_logger - INFO - 🗣️ user: Claro.
+2026-10-13 19:29:30,271 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:30,284 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:29:33,150 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:29:33,416 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:34,317 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:36,521 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:29:39,062 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:29:39,920 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:43,078 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:29:43,231 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:29:43,234 - app.providers.gemini_live - INFO - 💬 Björn sa: då.
+2026-10-13 19:29:43,239 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:43,940 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:44,070 - app.transcript_logger - INFO - 🗣️ user: 没enfermeira senhoraSí.
+2026-10-13 19:29:44,081 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:44,891 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:29:45,933 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:29:47,534 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:30:02,547 - app.phase_emitter - WARNING - ⚠️ thinking-watchdog: no model activity for 15s and no tool in flight — forcing idle to unstick the device
+2026-10-13 19:30:02,547 - app.phase_emitter - WARNING - 📞 forcing phase idle (thinking-watchdog)
+2026-10-13 19:30:02,547 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:31:45,145 - app.mjuk_aec - INFO - 🎙️ AEC_SPARA_ALLT: writing mic, reference and output to /data/aec_spara/allt_20261013_193145.pcm (clock 1033669.914 = 1791919905.145)
+2026-10-13 19:31:45,246 - app.mjuk_aec - INFO - 🎙️ AEC_SPARA_ALLT: writing mic, reference and output to /data/aec_spara/allt_20261013_193145.pcm (clock 1033670.016 = 1791919905.246)
+2026-10-13 19:31:46,242 - app.providers.gemini_live - INFO - 🎚️ Gemini turn detection: LOCAL (Silero, end after 800ms silence) → activityStart/activityEnd
+2026-10-13 19:31:46,468 - app.websocket_handler - INFO - ✅ Pipeline built for koket
+2026-10-13 19:31:46,666 - app.providers.gemini_live - INFO - 🎚️ Gemini turn detection: start=StartSensitivity.START_SENSITIVITY_HIGH end=EndSensitivity.END_SENSITIVITY_HIGH prefix=300ms silence=800ms
+2026-10-13 19:31:46,956 - app.websocket_handler - INFO - ✅ Pipeline built for kontoret
+2026-10-13 19:31:54,744 - app.session_state - INFO - 🧭 kontoret: IDLE -> LISTENING (listening: fraga-prov)
+2026-10-13 19:31:55,595 - app.providers.sovlage - INFO - ☁️ connected to the cloud engine on wake (0.5s) [moln 86df70]
+2026-10-13 19:31:55,636 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:31:55,637 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:31:59,676 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:32:01,218 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:06,762 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:32:07,759 - app.transcript_logger - INFO - 🗣️ user: en riktigt lång historia om en räv som bor i skogen¿Qué?
+2026-10-13 19:32:07,765 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:08,236 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:11,225 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:32:11,227 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:12,408 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:12,452 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=285413)
+2026-10-13 19:32:15,199 - app.session_state - INFO - 🧭 kontoret: SPEAKING -> LISTENING (listening: fraga-prov)
+2026-10-13 19:32:15,401 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:32:15,403 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:15,523 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:20,198 - app.phase_emitter - INFO - 📞 phase -> thinking
+2026-10-13 19:32:20,326 - app.transcript_logger - INFO - 🗣️ user: ¿Qué tiempoBerätta en riktigt lång historia om en räv som bor i skogen.
+2026-10-13 19:32:20,333 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:20,978 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:21,028 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=293984)
+2026-10-13 19:32:26,709 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:32:27,421 - app.transcript_logger - INFO - 🗣️ user: ¿Qué?
+2026-10-13 19:32:27,429 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:27,462 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:30,513 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:32:30,521 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:31,359 - app.transcript_logger - INFO - 🗣️ user: ¿Qué?
+2026-10-13 19:32:31,368 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:31,574 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:31,617 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=304578)
+2026-10-13 19:32:36,389 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:32:52,846 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:55,404 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:32:55,407 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:56,473 - app.transcript_logger - INFO - 🗣️ user: hoSí.
+2026-10-13 19:32:56,502 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:32:56,584 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:32:56,627 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=329588)
+2026-10-13 19:33:02,421 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:33:04,883 - app.transcript_logger - INFO - 🗣️ user: ¿Qué?
+2026-10-13 19:33:04,887 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:33:04,976 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:33:07,674 - app.providers.gemini_live - INFO - 🔊 interrupted by the engine: it heard speech over his reply
+2026-10-13 19:33:07,676 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:33:08,482 - app.transcript_logger - INFO - 🗣️ user: ¿Qué?
+2026-10-13 19:33:08,486 - app.phase_emitter - INFO - 📞 phase -> listening
+2026-10-13 19:33:08,692 - app.phase_emitter - INFO - 📞 phase -> replying
+2026-10-13 19:33:08,739 - app.raw_audio_serializer - INFO - ⏱ device: underrun, the speaker ran dry mid-reply (device ms=341697)
+2026-10-13 19:33:13,323 - app.phase_emitter - INFO - 📞 phase -> idle
+2026-10-13 19:38:50,507 - app.providers.gemini_live - INFO - 🎚️ Gemini turn detection: LOCAL (Silero, end after 800ms silence) → activityStart/activityEnd
+2026-10-13 19:38:50,667 - app.websocket_handler - INFO - ✅ Pipeline built for koket
+2026-10-13 19:38:51,143 - app.providers.gemini_live - INFO - 🎚️ Gemini turn detection: LOCAL (Silero, end after 800ms silence) → activityStart/activityEnd
+2026-10-13 19:38:51,312 - app.websocket_handler - INFO - ✅ Pipeline built for kontoret

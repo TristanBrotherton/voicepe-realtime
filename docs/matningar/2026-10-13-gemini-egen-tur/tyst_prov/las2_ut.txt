@@ -1,0 +1,31 @@
+A-varm-lag 10 svar, självavbrott: 0 []
+A-kall-lag 10 svar, självavbrott: 0 []
+G-A 8 svar, självavbrott: 1 [('G-A-kall-165909', '¿Qué?')]
+    B-vanlig1-lag henrik stopp 0.28 'cantik banget' | ' lägga tillbaka den i boet.\n\nFågelns föräldrar kvittradeSangat cantik!'
+    B-vanlig2-lag henrik stopp None '' | 'n grotta, rullade ihop sig på en bädd av mjuk mossa, och somnade gott,'
+    B-vanlig3-lag henrik stopp None '' | 'k glänta och tittade upp på de tindrande stjärnorna tills han somnade.'
+    B-bestamd-lag henrik stopp None '' | 'rma grotta och somnade gott, drömmande om nästa dags äventyr i skogen.'
+    B-mening-lag henrik stopp 0.28 'Mei weiß dort ist bei Ötztal.' | 'shington, D.C., allerdings weiß ich nicht genau, wo du dich befindest.'
+    B-hjalp-lag syntetisk stopp 0.27 'gel' | 'bär och fiska i den klara bäcken. En dag hittade han en hemlig grotta.'
+    B-tand-lag syntetisk stopp 0.25 'turned' | 'mlades för att höra hans goda historier och sjunga sånger tillsammans.'
+    B-nej-lag syntetisk stopp 0.22 'Nei.' | 't. Det var doften av den legendariska honungsblomman,Okej, jag slutar.'
+    B-klockan-lag syntetisk stopp 0.23 'Vad är klockan?' | 'r och mossa, och hans största passion i livet var attKlockan är 18.51.'
+    B-fel-lag syntetisk stopp 0.48 'Nej, det var inte det jag menade.' | 'litet hummande som komJag förstår. Vad ville du ha hjälp med istället?'
+B- 10 försök, avbruten före rösten: 0 aldrig avbruten: 3 median 0.27 tider: [0.22, 0.23, 0.25, 0.27, 0.28, 0.28, 0.48]
+    D-mm-0-lag syntetisk stopp 0.22 '' | ' tillbaka den till den sura grävlingen, vilket gjorde dem till vänner.'
+    D-ja-0-lag syntetisk stopp 0.24 'yo' | 'a sin omgivning. En dag hittade han en glänta full med glittrande bär.'
+    D-okej-0-lag syntetisk stopp 0.25 'Okay.' | 'n. Han bestämde sig för att gå ut och leta efter den sötaste honungen.'
+    D-precis-0-lag syntetisk stopp 0.25 'precis' | 'ag hittade han en glittrande bäck som ledde honom till en gömd glänta.'
+D- 4 försök, avbruten före rösten: 0 aldrig avbruten: 0 median 0.245 tider: [0.22, 0.24, 0.25, 0.25]
+    G-B-vanlig1 henrik stopp 0.26 'anta' | ' dag hittade han en magisk glänta med bär som glittrade som små solar.'
+    G-B-vanlig2 henrik stopp 0.42 '¿Qué tal?' | 'ten, modig fjäril. FjärilenHola, Henrik. Estoy aquí si necesitas algo.'
+    G-B-vanlig3 henrik stopp 0.22 'de' | 'id himlen och solen sipprade ner genom lövverket som små guldstrimmor.'
+    G-B-bestamd henrik stopp None '' | 'llbaka till sitt ide, nöjd med ännu en dag i skogen, och somnade gott.'
+    G-B-mening henrik stopp 0.27 'Vi var i stort sett på huset.' | 'ftenDet är normal status i hemmet och alla system fungerar som de ska.'
+    G-B-hjalp syntetisk stopp 0.23 'viel' | 'od inte vad du menade. Vill du att jag fortsätter på sagan om Barnaby?'
+    G-B-tand syntetisk stopp 0.21 'canned' | 'ång och sträckte långsamt på sig innan han klev ut ur sitt mysiga ide.'
+    G-B-nej syntetisk stopp 0.19 'Nei.' | ' litet bi och såg väldigt bedrövat ut.Okej, vad vill du göra istället?'
+    G-B-klockan syntetisk stopp 0.23 'Vad är klockan?' | 'an börja dagen med att leta efter något gott att äta.Klockan är 18:51.'
+    G-B-fel syntetisk stopp 0.24 'nei Det var inte det jag menade.' | ' Varje morgonJag ber om ursäkt. Vad vill du att jag ska göra istället?'
+G-B 10 försök, avbruten före rösten: 0 aldrig avbruten: 1 median 0.23 tider: [0.19, 0.21, 0.22, 0.23, 0.23, 0.24, 0.26, 0.27, 0.42]
+52 klara av 58 | min: 15.6

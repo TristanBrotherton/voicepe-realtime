@@ -43,7 +43,9 @@ ERLE_MIN_RAMAR = 30           # fewer frames than this (0.3 s) is no measurement
 NIVA_FONSTER = 20             # person(): the last 0.2 s...
 NIVA_HOGA = 12                # ...with at least 0.12 s of it loud
 NIVA_OVER_EKO_DB = float(os.environ.get("NIVA_OVER_EKO_DB", "-2"))   # ...over his echo's loudest frames (95th percentile) plus this
+NIVA_OVER_REST_DB = float(os.environ.get("NIVA_OVER_REST_DB", "8"))   # ...or, with a device that reports underruns: over what the canceller leaves of them plus this
 NIVA_HAL_S = 0.03             # a hole this long in what was sent is a break (shorter ones the canceller rides out)
+NIVA_UNDERRUN_S = 3.0          # ...and this long after the device said its playback broke (42 simulated breaks: 2-3 false cuts at 2 s, 0 at 3 s)
 NIVA_SVAR_S = 2.0             # ...and not in the first seconds of a reply, or after a break in it
 # Echo tracker (AEC_FOLJ, on by default with SOFT_AEC): every FOLJ_S / 2, over the last FOLJ_S, find where his echo sits in the mic against the
 # reference, and when it sits BEFORE it (less than FOLJ_MIN_S behind) twice in a row, move the reference so it leads by
@@ -67,6 +69,9 @@ def aec_spara_paa() -> bool:
     return os.environ.get("AEC_SPARA", "0") == "1"
 
 
+ALLT_MAX_S = 900.0
+
+
 def eko_lag(mic: np.ndarray, ref: np.ndarray) -> Optional[float]:
     """Seconds his echo in `mic` sits after `ref` (negative: the echo comes BEFORE the reference), searched from 0.6 s
     before to 1.0 s after; None when the reference is quiet or the peak is not clear (his voice is not in the mic)."""
@@ -81,7 +86,6 @@ def eko_lag(mic: np.ndarray, ref: np.ndarray) -> Optional[float]:
     return (k - int(0.6 * RATE)) / RATE
 
 
-
 class MjukAec:
     def __init__(self, klocka: Callable[[], float] = time.monotonic) -> None:
         self.klocka = klocka
@@ -89,7 +93,12 @@ class MjukAec:
         if soft_aec_paa():
             from aec_audio_processing import AudioProcessor
 
-            self.ap = AudioProcessor(enable_aec=True, enable_ns=False, enable_agc=False, enable_vad=False)
+            # SOFT_AEC_NS=0..3: WebRTC's noise suppressor after the canceller. Offline on the replies of 2026-10-13 (one
+            # canceller for the evening, as live): what is left of his voice after the first 2 s of a reply goes from
+            # median -58 to -79 dBFS at level 3, and Henrik's voice over the reply keeps its level (4 of 4 clips).
+            ns = os.environ.get("SOFT_AEC_NS", "")
+            self.ap = AudioProcessor(enable_aec=True, enable_ns=ns in ("0", "1", "2", "3"), ns_level=int(ns) if ns in ("0", "1", "2", "3") else 0,
+                                     enable_agc=False, enable_vad=False)
             self.ap.set_stream_format(RATE, 1)
             self.ap.set_reverse_stream_format(RATE, 1)
             self.ap.set_stream_delay(0)
@@ -112,6 +121,29 @@ class MjukAec:
         self.tal_db = float(os.environ.get("SOFT_TAL_DB", "0"))
         self.matt: List[Tuple[float, float, float, float]] = []   # (frame end, mic dBFS, cleaned dBFS, ref dBFS), last 4 s
         self.svar_start = -1e9   # when what is sent to the speaker last began, or broke (a hole, a hold on the device)
+        self.underrun_stod = False   # the device's firmware reports underruns (play_stamp carries "ur": 1)
+        # SOFT_AEC_REST=<seconds> (0 = off): nothing is passed on while the canceller has not locked on this reply --
+        # its first seconds, and after a hole or an underrun (svar_start). The echo's delay differs from reply to reply
+        # (102-137 ms measured), so the canceller finds it anew every time, and until it has his own voice gets through:
+        # over -40 dBFS in the first 2 s of 9 of 11 replies (up to -16), in 2 of 11 after that (20-30 ms at -37).
+        # ponytail: a hard gate, so nobody can cut him off in the first seconds of a reply; let through what is louder
+        # than his own echo (as person() does) if that turns out to matter.
+        try:
+            self.rest_s = max(0.0, float(os.environ.get("SOFT_AEC_REST", "0")))
+        except ValueError:
+            self.rest_s = 0.0
+        # Test only (AEC_SPARA_ALLT=1): everything, not only the replies -- mic, reference and what is passed on, three
+        # int16 channels at 16 kHz in one raw file, at most ALLT_MAX_S. To see afterwards what the engine was given.
+        self.allt = None
+        self.allt_kvar = 0
+        if os.environ.get("AEC_SPARA_ALLT", "0") == "1":
+            try:
+                os.makedirs(self.spar_katalog, exist_ok=True)
+                self.allt = open(os.path.join(self.spar_katalog, f"allt_{time.strftime('%Y%m%d_%H%M%S')}_{id(self) % 10000}.pcm"), "wb")
+                self.allt_kvar = int(ALLT_MAX_S * RATE / FRAME)
+                logger.info(f"🎙️ AEC_SPARA_ALLT: writing mic, reference and output to {self.allt.name} (clock {self.klocka():.3f} = {time.time():.3f})")
+            except Exception as e:
+                logger.warning(f"⚠️ AEC_SPARA_ALLT: no file ({e!r})")
         self.matt_max = 400
         self.mic_sist: Optional[float] = None     # when the last mic packet came
         self.mic_ankare: Optional[float] = None   # our clock at sample 0 of this stretch of the mic stream
@@ -153,6 +185,9 @@ class MjukAec:
         a = cls._per_enhet[enhet]
         if a is not None:
             a.rest = np.zeros(0, dtype=np.int16)
+            from app import eko_vakt
+            if eko_vakt.egen_tur(enhet):
+                a.agc_max_db = 0.0   # the engine runs the turns in this room: it gets the room as it is
         return a
 
     @classmethod
@@ -225,7 +260,13 @@ class MjukAec:
         # Henrik's second "vänta" was taken for echo).
         return float(np.median([m - r for m, r in ramar]))
 
-    def person(self, niva_db: float, tillit_db: float = 20.0, over_db: Optional[float] = None) -> bool:
+    def underrun(self, t: Optional[float] = None) -> None:
+        """The device says its speaker ran out of audio mid-reply (firmware "underrun"): what it plays from here on
+        comes later than the reference says, and the canceller needs a moment to find it again."""
+        self.svar_start = (self.klocka() if t is None else t) + NIVA_UNDERRUN_S - NIVA_SVAR_S
+
+    def person(self, niva_db: float, tillit_db: float = 20.0, over_db: Optional[float] = None,
+               rest_db: Optional[float] = None) -> bool:
         """A person is talking over him, right now, told by the level alone: at least NIVA_HOGA of the last NIVA_FONSTER
         frames out of the canceller are louder than his own echo gets in the mic (its 95th percentile over the last
         seconds, plus `over_db`), and never under `niva_db`. The canceller must have been working just before (the
@@ -251,11 +292,19 @@ class MjukAec:
                     if t1 - 4.0 <= t <= t1 and ref > ERLE_REF_DB and mic > ERLE_MIC_DB and mic - ren >= 10.0]
             if len(fore) < 80:
                 return False
-            golv = max(niva_db, float(np.percentile(fore, 95)) + (NIVA_OVER_EKO_DB if over_db is None else over_db))
-            if sum(1 for _, _, ren, _ in m[-NIVA_FONSTER:] if ren > golv) < NIVA_HOGA:
-                return False
             e = self.erle(t1 - 4.0, t1, 80, 150)
-            return e is not None and e >= tillit_db
+            if e is None or e < tillit_db:
+                return False
+            topp = float(np.percentile(fore, 95))
+            if self.underrun_stod and over_db is None:
+                # The device says when its playback breaks (underrun -> svar_start), so a slip is known by its cause
+                # and the floor need not be his whole echo: it is what the canceller leaves of his loudest frames
+                # right now, plus a margin. A canceller at 30 dB leaves the fixed floor; one still finding its place
+                # after a break (20-25 dB) gets a higher one.
+                golv = max(niva_db, topp - e + (NIVA_OVER_REST_DB if rest_db is None else rest_db))
+            else:
+                golv = max(niva_db, topp + (NIVA_OVER_EKO_DB if over_db is None else over_db))
+            return sum(1 for _, _, ren, _ in m[-NIVA_FONSTER:] if ren > golv) >= NIVA_HOGA
         except Exception as e:
             self._fel(e)
             return False
@@ -328,13 +377,21 @@ class MjukAec:
                     self.matt.append((slut, self._db(ram), self._db(renad), self._db(refr)))
                     if len(self.matt) > self.matt_max:
                         del self.matt[:-self.matt_max]
-                    if self.tal_db:
+                    if self.rest_s and slut - self.svar_start < self.rest_s:
+                        ren = bytes(len(ren))
+                    elif self.tal_db:
                         ren = np.clip(renad.astype(np.float32) * 10 ** (self.tal_db / 20), -32768, 32767).astype(np.int16).tobytes()
                 else:
                     ren = ram.tobytes()
                     if self.agc_max_db > 0:
                         ren = self._agc(np.frombuffer(ren, dtype=np.int16)).tobytes()
                 ut.append(ren)
+                if self.allt is not None and self.allt_kvar > 0:
+                    self.allt_kvar -= 1
+                    self.allt.write(np.stack([ram, refr if refr is not None else np.zeros(FRAME, np.int16),
+                                              np.frombuffer(ren, dtype=np.int16)], axis=1).astype(np.int16).tobytes())
+                    if self.allt_kvar % 100 == 0:
+                        self.allt.flush()
                 i += FRAME
             if self.spara:
                 self._spara_flush(aktiv)

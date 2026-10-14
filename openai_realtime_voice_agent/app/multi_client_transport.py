@@ -127,7 +127,12 @@ class StadigUtTransport(FastAPIWebsocketOutputTransport):
     with holes at moments only the device knows cannot be cancelled. Here the schedule is kept (a late frame is followed
     by early ones) and the first STADIG_LEAD_MS go out at once, so the speaker plays one unbroken stream."""
 
+    prov_glapp_s = 0.0   # test only (/glapp-prov): hold the next audio frame this long, once
+
     async def _write_audio_sleep(self):
+        if self.prov_glapp_s:
+            s, self.prov_glapp_s = self.prov_glapp_s, 0.0
+            await asyncio.sleep(s)
         if not stadig_takt():
             return await super()._write_audio_sleep()
         now = time.monotonic()

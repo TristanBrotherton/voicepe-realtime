@@ -86,6 +86,7 @@ class ProviderOptions:
     # (2026-10-02); 1200 ms lets him breathe. Separate from the knob above,
     # which is Google's own VAD and only used when local detection is off.
     gemini_turn_silence_ms: int = 800  # main.TURN_SILENCE_MS
+    rum: str = ""  # the device this session is for (GEMINI_EGEN_TUR can name rooms)
     # xAI: "local" (default since 0.25.3) = the same local Silero turn end as
     # Gemini, with xai_turn_silence_ms; "server" = xAI's server_vad, which
     # ended turns 5-13 s late in a room with music (2026-10-02).

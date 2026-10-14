@@ -1,0 +1,526 @@
+[
+ {
+  "id": "A-varm-150122-lag",
+  "typ": "over",
+  "pcm": "A-varm-150122",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-varm-150543-lag",
+  "typ": "over",
+  "pcm": "A-varm-150543",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-varm-150543",
+  "typ": "over",
+  "pcm": "G-A-varm-150543",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-varm-150605-lag",
+  "typ": "over",
+  "pcm": "A-varm-150605",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-varm-150605",
+  "typ": "over",
+  "pcm": "G-A-varm-150605",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-varm-150626-lag",
+  "typ": "over",
+  "pcm": "A-varm-150626",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-varm-151403-lag",
+  "typ": "over",
+  "pcm": "A-varm-151403",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-varm-151403",
+  "typ": "over",
+  "pcm": "G-A-varm-151403",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-varm-165830-lag",
+  "typ": "over",
+  "pcm": "A-varm-165830",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-varm-165830",
+  "typ": "over",
+  "pcm": "G-A-varm-165830",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-varm-165909-lag",
+  "typ": "over",
+  "pcm": "A-varm-165909",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-varm-165909",
+  "typ": "over",
+  "pcm": "G-A-varm-165909",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-varm-150917-lag",
+  "typ": "over",
+  "pcm": "A-varm-150917",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-varm-150839-lag",
+  "typ": "over",
+  "pcm": "A-varm-150839",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-varm-170712-lag",
+  "typ": "over",
+  "pcm": "A-varm-170712",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-150122-lag",
+  "typ": "over",
+  "pcm": "A-kall-150122",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-150543-lag",
+  "typ": "over",
+  "pcm": "A-kall-150543",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-150605-lag",
+  "typ": "over",
+  "pcm": "A-kall-150605",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-150626-lag",
+  "typ": "over",
+  "pcm": "A-kall-150626",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-151403-lag",
+  "typ": "over",
+  "pcm": "A-kall-151403",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-165830-lag",
+  "typ": "over",
+  "pcm": "A-kall-165830",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-165909-lag",
+  "typ": "over",
+  "pcm": "A-kall-165909",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-kall-165909",
+  "typ": "over",
+  "pcm": "G-A-kall-165909",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-kall-150917-lag",
+  "typ": "over",
+  "pcm": "A-kall-150917",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "A-kall-150839-lag",
+  "typ": "over",
+  "pcm": "A-kall-150839",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-kall-150839",
+  "typ": "over",
+  "pcm": "G-A-kall-150839",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "A-kall-170712-lag",
+  "typ": "over",
+  "pcm": "A-kall-170712",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "lag"
+ },
+ {
+  "id": "G-A-kall-170712",
+  "typ": "over",
+  "pcm": "G-A-kall-170712",
+  "rost_t": null,
+  "kalla": "eko",
+  "aad": "idag"
+ },
+ {
+  "id": "B-vanlig1-lag",
+  "typ": "over",
+  "pcm": "B-vanlig1",
+  "rost_t": 3.0,
+  "rost_s": 1.11,
+  "kalla": "henrik",
+  "eko": "150122",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-vanlig1",
+  "typ": "over",
+  "pcm": "G-B-vanlig1",
+  "rost_t": 3.0,
+  "rost_s": 1.11,
+  "kalla": "henrik",
+  "eko": "150122",
+  "aad": "idag"
+ },
+ {
+  "id": "B-vanlig2-lag",
+  "typ": "over",
+  "pcm": "B-vanlig2",
+  "rost_t": 3.0,
+  "rost_s": 0.78,
+  "kalla": "henrik",
+  "eko": "150543",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-vanlig2",
+  "typ": "over",
+  "pcm": "G-B-vanlig2",
+  "rost_t": 3.0,
+  "rost_s": 0.78,
+  "kalla": "henrik",
+  "eko": "150543",
+  "aad": "idag"
+ },
+ {
+  "id": "B-vanlig3-lag",
+  "typ": "over",
+  "pcm": "B-vanlig3",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150605",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-vanlig3",
+  "typ": "over",
+  "pcm": "G-B-vanlig3",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150605",
+  "aad": "idag"
+ },
+ {
+  "id": "B-bestamd-lag",
+  "typ": "over",
+  "pcm": "B-bestamd",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150626",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-bestamd",
+  "typ": "over",
+  "pcm": "G-B-bestamd",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150626",
+  "aad": "idag"
+ },
+ {
+  "id": "B-mening-lag",
+  "typ": "over",
+  "pcm": "B-mening",
+  "rost_t": 3.0,
+  "rost_s": 1.85,
+  "kalla": "henrik",
+  "eko": "151403",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-mening",
+  "typ": "over",
+  "pcm": "G-B-mening",
+  "rost_t": 3.0,
+  "rost_s": 1.85,
+  "kalla": "henrik",
+  "eko": "151403",
+  "aad": "idag"
+ },
+ {
+  "id": "B-hjalp-lag",
+  "typ": "over",
+  "pcm": "B-hjalp",
+  "rost_t": 3.0,
+  "rost_s": 0.7120625,
+  "kalla": "syntetisk",
+  "eko": "165830",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-hjalp",
+  "typ": "over",
+  "pcm": "G-B-hjalp",
+  "rost_t": 3.0,
+  "rost_s": 0.7120625,
+  "kalla": "syntetisk",
+  "eko": "165830",
+  "aad": "idag"
+ },
+ {
+  "id": "B-tand-lag",
+  "typ": "over",
+  "pcm": "B-tand",
+  "rost_t": 3.0,
+  "rost_s": 0.5765,
+  "kalla": "syntetisk",
+  "eko": "165909",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-tand",
+  "typ": "over",
+  "pcm": "G-B-tand",
+  "rost_t": 3.0,
+  "rost_s": 0.5765,
+  "kalla": "syntetisk",
+  "eko": "165909",
+  "aad": "idag"
+ },
+ {
+  "id": "B-nej-lag",
+  "typ": "over",
+  "pcm": "B-nej",
+  "rost_t": 3.0,
+  "rost_s": 0.5218125,
+  "kalla": "syntetisk",
+  "eko": "150122",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-nej",
+  "typ": "over",
+  "pcm": "G-B-nej",
+  "rost_t": 3.0,
+  "rost_s": 0.5218125,
+  "kalla": "syntetisk",
+  "eko": "150122",
+  "aad": "idag"
+ },
+ {
+  "id": "B-klockan-lag",
+  "typ": "over",
+  "pcm": "B-klockan",
+  "rost_t": 3.0,
+  "rost_s": 0.9230625,
+  "kalla": "syntetisk",
+  "eko": "150543",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-klockan",
+  "typ": "over",
+  "pcm": "G-B-klockan",
+  "rost_t": 3.0,
+  "rost_s": 0.9230625,
+  "kalla": "syntetisk",
+  "eko": "150543",
+  "aad": "idag"
+ },
+ {
+  "id": "B-fel-lag",
+  "typ": "over",
+  "pcm": "B-fel",
+  "rost_t": 3.0,
+  "rost_s": 2.1578125,
+  "kalla": "syntetisk",
+  "eko": "150605",
+  "aad": "lag"
+ },
+ {
+  "id": "G-B-fel",
+  "typ": "over",
+  "pcm": "G-B-fel",
+  "rost_t": 3.0,
+  "rost_s": 2.1578125,
+  "kalla": "syntetisk",
+  "eko": "150605",
+  "aad": "idag"
+ },
+ {
+  "id": "D-mm-0-lag",
+  "typ": "over",
+  "pcm": "D-mm-0",
+  "rost_t": 3.0,
+  "rost_s": 0.3490625,
+  "kalla": "syntetisk",
+  "eko": "150626",
+  "aad": "lag"
+ },
+ {
+  "id": "D-ja-0-lag",
+  "typ": "over",
+  "pcm": "D-ja-0",
+  "rost_t": 3.0,
+  "rost_s": 0.4800625,
+  "kalla": "syntetisk",
+  "eko": "151403",
+  "aad": "lag"
+ },
+ {
+  "id": "D-okej-0-lag",
+  "typ": "over",
+  "pcm": "D-okej-0",
+  "rost_t": 3.0,
+  "rost_s": 0.586,
+  "kalla": "syntetisk",
+  "eko": "165830",
+  "aad": "lag"
+ },
+ {
+  "id": "D-precis-0-lag",
+  "typ": "over",
+  "pcm": "D-precis-0",
+  "rost_t": 3.0,
+  "rost_s": 0.7881875,
+  "kalla": "syntetisk",
+  "eko": "165909",
+  "aad": "lag"
+ },
+ {
+  "id": "D-aha-0-lag",
+  "typ": "over",
+  "pcm": "D-aha-0",
+  "rost_t": 3.0,
+  "rost_s": 0.516375,
+  "kalla": "syntetisk",
+  "eko": "150122",
+  "aad": "lag"
+ },
+ {
+  "id": "D-mm-1-lag",
+  "typ": "over",
+  "pcm": "D-mm-1",
+  "rost_t": 3.0,
+  "rost_s": 0.3490625,
+  "kalla": "syntetisk",
+  "eko": "150543",
+  "aad": "lag"
+ },
+ {
+  "id": "D-ja-1-lag",
+  "typ": "over",
+  "pcm": "D-ja-1",
+  "rost_t": 3.0,
+  "rost_s": 0.4800625,
+  "kalla": "syntetisk",
+  "eko": "150605",
+  "aad": "lag"
+ },
+ {
+  "id": "D-okej-1-lag",
+  "typ": "over",
+  "pcm": "D-okej-1",
+  "rost_t": 3.0,
+  "rost_s": 0.586,
+  "kalla": "syntetisk",
+  "eko": "150626",
+  "aad": "lag"
+ },
+ {
+  "id": "D-precis-1-lag",
+  "typ": "over",
+  "pcm": "D-precis-1",
+  "rost_t": 3.0,
+  "rost_s": 0.7881875,
+  "kalla": "syntetisk",
+  "eko": "151403",
+  "aad": "lag"
+ },
+ {
+  "id": "D-aha-1-lag",
+  "typ": "over",
+  "pcm": "D-aha-1",
+  "rost_t": 3.0,
+  "rost_s": 0.516375,
+  "kalla": "syntetisk",
+  "eko": "165830",
+  "aad": "lag"
+ }
+]

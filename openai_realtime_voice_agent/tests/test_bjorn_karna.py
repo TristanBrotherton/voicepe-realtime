@@ -126,6 +126,7 @@ async def test_sessionen_far_texten_och_sprakladset_sist_och_loggen_sager_kallan
         await app._uppdatera_karna()
     assert app.instructions == SJAL
     assert app._instructions().startswith(SJAL + SPRAKLAS)  # the language lock follows the text, as before
+    assert "fortsätt där du var" not in app._instructions()  # AVBROTT is per room (_instructions(rum))
     assert any("källa=hämtad" in r.getMessage() for r in caplog.records)
 
 
@@ -168,3 +169,33 @@ async def test_bjorn_karna_av_hoppar_over_hamtningen(monkeypatch):
     monkeypatch.setenv("BJORN_KARNA", "av")
     assert (await Karna("MILJÖ").text()) == ("MILJÖ", "miljö")
     assert sedda == []
+
+
+def test_avbrott_bara_i_rum_dar_motorn_tar_turerna(monkeypatch):
+    """US-060 AC-8: a bare back-channel does not end his reply -- but only where the engine runs the turns. In the
+    kitchen the mic is shut while he speaks, and a lone 'ja' must not make him go on (B on voicepe #74)."""
+    from app.main import avbrott_for
+    monkeypatch.setenv("GEMINI_EGEN_TUR", "kontoret")
+    assert "fortsätt där du var" in avbrott_for("kontoret")
+    assert avbrott_for("koket") == ""
+    monkeypatch.setenv("GEMINI_EGEN_TUR", "0")
+    assert avbrott_for("kontoret") == ""
+
+
+def test_avbrott_nar_gemini_vid_varje_uppkoppling(monkeypatch):
+    """What Gemini is actually given: gemini_live._connect renders instructions_provider on every connect, the first
+    too, so AVBROTT has to be in _instructions(rum) itself (B, F2 on voicepe #74: it was only in options.instructions)."""
+    from tests.test_provider_selection import _bare_app
+    from app.providers import GEMINI, build_service
+    from test_gemini_main_engine import NATIVE, _connect_config
+    from test_gemini_provider import OPENAI_SHAPE, _options
+    monkeypatch.setenv("GEMINI_EGEN_TUR", "kontoret")
+    app = _bare_app("gemini")
+    for rum, med in (("kontoret", True), ("koket", False)):
+        o = _options(model=NATIVE)
+        o.instructions = app.provider_options(GEMINI, rum).instructions
+        service = build_service(GEMINI, o, OPENAI_SHAPE)
+        service.instructions_provider = app._instruktionskalla(rum)   # what main.py wires
+        assert ("fortsätt där du var" in _connect_config(service).system_instruction) is med, rum
+        service._session = None   # a reconnect renders it again
+        assert ("fortsätt där du var" in _connect_config(service).system_instruction) is med, rum

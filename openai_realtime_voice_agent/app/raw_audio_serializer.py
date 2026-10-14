@@ -222,10 +222,18 @@ class RawAudioSerializer(FrameSerializer):
                 logger.info(f"⏱ device: audio burst rx_ms={data.get('rx_ms')} play_ms={data.get('play_ms')} "
                             f"(rx->play {int(data.get('play_ms', 0)) - int(data.get('rx_ms', 0))} ms), "
                             f"first {data.get('first_bytes')} B")
+                if self.aec is not None and data.get("ur"):
+                    self.aec.underrun_stod = True   # this firmware says when its playback breaks (see "underrun" below)
                 if self.aec is not None:   # the device held the burst this long (jitter buffer): the echo comes that much later
                     self.aec.spelstart((int(data.get("play_ms", 0)) - int(data.get("rx_ms", 0))) / 1000.0)
                 if self.eko_stamp is not None:
                     self.eko_stamp.append(("play", time.monotonic(), self.eko_pos() if self.eko_pos else None, data))
+            elif isinstance(data, dict) and data.get("type") == "underrun":
+                # The speaker ran out of audio while he was replying (US-060): what it plays next comes later than the
+                # reference says, so for a moment the echo canceller lets him through. A loud sound then is not a person.
+                logger.info(f"⏱ device: underrun, the speaker ran dry mid-reply (device ms={data.get('ms')})")
+                if self.aec is not None:
+                    self.aec.underrun()
             elif isinstance(data, dict) and data.get("type") == "flush":
                 # A follow-up window timed out mid-stream: drop any uncommitted
                 # partial utterance at the cut-off so a later wake can't complete
@@ -337,6 +345,19 @@ class RawAudioSerializer(FrameSerializer):
             self.eko_mat(message)
             return None  # measuring: nothing else may hear the mic (the engine would answer its own voice)
 
+        if self.prov_rost:
+            # Test only (/rost-prov): a recorded voice added to the live mic, sample by sample, as if someone spoke in
+            # the room while he replies. Everything after this point is the real chain.
+            import numpy as _np
+            n = len(message) // 2
+            bit, self.prov_rost = self.prov_rost[:n * 2], self.prov_rost[n * 2:]
+            if not self.prov_rost_t:
+                self.prov_rost_t = time.monotonic()
+                logger.info("🧪 rost-prov: the recorded voice starts in the mic now")
+            a = _np.frombuffer(message[:n * 2], dtype=_np.int16).astype(_np.int32)
+            a[:len(bit) // 2] += _np.frombuffer(bit, dtype=_np.int16)
+            message = _np.clip(a, -32768, 32767).astype(_np.int16).tobytes()
+
         if self.aec is not None:  # the mic with his own voice taken out (SOFT_AEC=1)
             message = self.aec.process(message)
             if not message:
@@ -409,6 +430,8 @@ class RawAudioSerializer(FrameSerializer):
         self._samla_tur = False
         return pcm
 
+    prov_rost = b""       # test only: 16 kHz mono PCM16 still to be added to the mic
+    prov_rost_t = 0.0
     _tysta_tills = 0.0
     _svar_sek = 0.0
     _svar_sist = 0.0

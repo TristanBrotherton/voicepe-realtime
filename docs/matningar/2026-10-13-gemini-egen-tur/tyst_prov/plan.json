@@ -1,0 +1,682 @@
+[
+ {
+  "id": "A-varm-150122",
+  "typ": "over",
+  "pcm": "A-varm-150122",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-150543",
+  "typ": "over",
+  "pcm": "A-varm-150543",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-150605",
+  "typ": "over",
+  "pcm": "A-varm-150605",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-150626",
+  "typ": "over",
+  "pcm": "A-varm-150626",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-151403",
+  "typ": "over",
+  "pcm": "A-varm-151403",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-165830",
+  "typ": "over",
+  "pcm": "A-varm-165830",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-165909",
+  "typ": "over",
+  "pcm": "A-varm-165909",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-150917",
+  "typ": "over",
+  "pcm": "A-varm-150917",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-150839",
+  "typ": "over",
+  "pcm": "A-varm-150839",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-varm-170712",
+  "typ": "over",
+  "pcm": "A-varm-170712",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150122",
+  "typ": "over",
+  "pcm": "A-kall-150122",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150543",
+  "typ": "over",
+  "pcm": "A-kall-150543",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150605",
+  "typ": "over",
+  "pcm": "A-kall-150605",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150626",
+  "typ": "over",
+  "pcm": "A-kall-150626",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-151403",
+  "typ": "over",
+  "pcm": "A-kall-151403",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-165830",
+  "typ": "over",
+  "pcm": "A-kall-165830",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-165909",
+  "typ": "over",
+  "pcm": "A-kall-165909",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150917",
+  "typ": "over",
+  "pcm": "A-kall-150917",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-150839",
+  "typ": "over",
+  "pcm": "A-kall-150839",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "A-kall-170712",
+  "typ": "over",
+  "pcm": "A-kall-170712",
+  "rost_t": null,
+  "kalla": "eko"
+ },
+ {
+  "id": "B-vanlig1",
+  "typ": "over",
+  "pcm": "B-vanlig1",
+  "rost_t": 3.0,
+  "rost_s": 1.11,
+  "kalla": "henrik",
+  "eko": "150122"
+ },
+ {
+  "id": "B-vanlig2",
+  "typ": "over",
+  "pcm": "B-vanlig2",
+  "rost_t": 3.0,
+  "rost_s": 0.78,
+  "kalla": "henrik",
+  "eko": "150543"
+ },
+ {
+  "id": "B-vanlig3",
+  "typ": "over",
+  "pcm": "B-vanlig3",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150605"
+ },
+ {
+  "id": "B-bestamd",
+  "typ": "over",
+  "pcm": "B-bestamd",
+  "rost_t": 3.0,
+  "rost_s": 0.69,
+  "kalla": "henrik",
+  "eko": "150626"
+ },
+ {
+  "id": "B-mening",
+  "typ": "over",
+  "pcm": "B-mening",
+  "rost_t": 3.0,
+  "rost_s": 1.85,
+  "kalla": "henrik",
+  "eko": "151403"
+ },
+ {
+  "id": "B-hjalp",
+  "typ": "over",
+  "pcm": "B-hjalp",
+  "rost_t": 3.0,
+  "rost_s": 0.7120625,
+  "kalla": "syntetisk",
+  "eko": "165830"
+ },
+ {
+  "id": "B-tand",
+  "typ": "over",
+  "pcm": "B-tand",
+  "rost_t": 3.0,
+  "rost_s": 0.5765,
+  "kalla": "syntetisk",
+  "eko": "165909"
+ },
+ {
+  "id": "B-nej",
+  "typ": "over",
+  "pcm": "B-nej",
+  "rost_t": 3.0,
+  "rost_s": 0.5218125,
+  "kalla": "syntetisk",
+  "eko": "150122"
+ },
+ {
+  "id": "B-klockan",
+  "typ": "over",
+  "pcm": "B-klockan",
+  "rost_t": 3.0,
+  "rost_s": 0.9230625,
+  "kalla": "syntetisk",
+  "eko": "150543"
+ },
+ {
+  "id": "B-fel",
+  "typ": "over",
+  "pcm": "B-fel",
+  "rost_t": 3.0,
+  "rost_s": 2.1578125,
+  "kalla": "syntetisk",
+  "eko": "150605"
+ },
+ {
+  "id": "D-mm-0",
+  "typ": "over",
+  "pcm": "D-mm-0",
+  "rost_t": 3.0,
+  "rost_s": 0.3490625,
+  "kalla": "syntetisk",
+  "eko": "150626"
+ },
+ {
+  "id": "D-ja-0",
+  "typ": "over",
+  "pcm": "D-ja-0",
+  "rost_t": 3.0,
+  "rost_s": 0.4800625,
+  "kalla": "syntetisk",
+  "eko": "151403"
+ },
+ {
+  "id": "D-okej-0",
+  "typ": "over",
+  "pcm": "D-okej-0",
+  "rost_t": 3.0,
+  "rost_s": 0.586,
+  "kalla": "syntetisk",
+  "eko": "165830"
+ },
+ {
+  "id": "D-precis-0",
+  "typ": "over",
+  "pcm": "D-precis-0",
+  "rost_t": 3.0,
+  "rost_s": 0.7881875,
+  "kalla": "syntetisk",
+  "eko": "165909"
+ },
+ {
+  "id": "D-aha-0",
+  "typ": "over",
+  "pcm": "D-aha-0",
+  "rost_t": 3.0,
+  "rost_s": 0.516375,
+  "kalla": "syntetisk",
+  "eko": "150122"
+ },
+ {
+  "id": "D-mm-1",
+  "typ": "over",
+  "pcm": "D-mm-1",
+  "rost_t": 3.0,
+  "rost_s": 0.3490625,
+  "kalla": "syntetisk",
+  "eko": "150543"
+ },
+ {
+  "id": "D-ja-1",
+  "typ": "over",
+  "pcm": "D-ja-1",
+  "rost_t": 3.0,
+  "rost_s": 0.4800625,
+  "kalla": "syntetisk",
+  "eko": "150605"
+ },
+ {
+  "id": "D-okej-1",
+  "typ": "over",
+  "pcm": "D-okej-1",
+  "rost_t": 3.0,
+  "rost_s": 0.586,
+  "kalla": "syntetisk",
+  "eko": "150626"
+ },
+ {
+  "id": "D-precis-1",
+  "typ": "over",
+  "pcm": "D-precis-1",
+  "rost_t": 3.0,
+  "rost_s": 0.7881875,
+  "kalla": "syntetisk",
+  "eko": "151403"
+ },
+ {
+  "id": "D-aha-1",
+  "typ": "over",
+  "pcm": "D-aha-1",
+  "rost_t": 3.0,
+  "rost_s": 0.516375,
+  "kalla": "syntetisk",
+  "eko": "165830"
+ },
+ {
+  "id": "C-henrik1-forval",
+  "typ": "fraga",
+  "pcm": "C-henrik1",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "forval"
+ },
+ {
+  "id": "C-henrik1-idag",
+  "typ": "fraga",
+  "pcm": "C-henrik1",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "idag"
+ },
+ {
+  "id": "C-henrik1-talig",
+  "typ": "fraga",
+  "pcm": "C-henrik1",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "talig"
+ },
+ {
+  "id": "C-henrik2-forval",
+  "typ": "fraga",
+  "pcm": "C-henrik2",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "forval"
+ },
+ {
+  "id": "C-henrik2-idag",
+  "typ": "fraga",
+  "pcm": "C-henrik2",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "idag"
+ },
+ {
+  "id": "C-henrik2-talig",
+  "typ": "fraga",
+  "pcm": "C-henrik2",
+  "paus": [
+   0.92,
+   2.11
+  ],
+  "slut": 3.05,
+  "kalla": "henrik",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn1-forval",
+  "typ": "fraga",
+  "pcm": "C-syn1",
+  "paus": [
+   1.29,
+   2.51
+  ],
+  "slut": 3.903125,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn1-idag",
+  "typ": "fraga",
+  "pcm": "C-syn1",
+  "paus": [
+   1.29,
+   2.51
+  ],
+  "slut": 3.903125,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn1-talig",
+  "typ": "fraga",
+  "pcm": "C-syn1",
+  "paus": [
+   1.29,
+   2.51
+  ],
+  "slut": 3.903125,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn2-forval",
+  "typ": "fraga",
+  "pcm": "C-syn2",
+  "paus": [
+   0.95,
+   2.19
+  ],
+  "slut": 3.6173125,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn2-idag",
+  "typ": "fraga",
+  "pcm": "C-syn2",
+  "paus": [
+   0.95,
+   2.19
+  ],
+  "slut": 3.6173125,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn2-talig",
+  "typ": "fraga",
+  "pcm": "C-syn2",
+  "paus": [
+   0.95,
+   2.19
+  ],
+  "slut": 3.6173125,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn3-forval",
+  "typ": "fraga",
+  "pcm": "C-syn3",
+  "paus": [
+   1.53,
+   2.75
+  ],
+  "slut": 4.1821875,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn3-idag",
+  "typ": "fraga",
+  "pcm": "C-syn3",
+  "paus": [
+   1.53,
+   2.75
+  ],
+  "slut": 4.1821875,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn3-talig",
+  "typ": "fraga",
+  "pcm": "C-syn3",
+  "paus": [
+   1.53,
+   2.75
+  ],
+  "slut": 4.1821875,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn4-forval",
+  "typ": "fraga",
+  "pcm": "C-syn4",
+  "paus": [
+   0.75,
+   1.96
+  ],
+  "slut": 3.7809375,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn4-idag",
+  "typ": "fraga",
+  "pcm": "C-syn4",
+  "paus": [
+   0.75,
+   1.96
+  ],
+  "slut": 3.7809375,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn4-talig",
+  "typ": "fraga",
+  "pcm": "C-syn4",
+  "paus": [
+   0.75,
+   1.96
+  ],
+  "slut": 3.7809375,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn5-forval",
+  "typ": "fraga",
+  "pcm": "C-syn5",
+  "paus": [
+   1.18,
+   2.39
+  ],
+  "slut": 3.6609375,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn5-idag",
+  "typ": "fraga",
+  "pcm": "C-syn5",
+  "paus": [
+   1.18,
+   2.39
+  ],
+  "slut": 3.6609375,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn5-talig",
+  "typ": "fraga",
+  "pcm": "C-syn5",
+  "paus": [
+   1.18,
+   2.39
+  ],
+  "slut": 3.6609375,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn6-forval",
+  "typ": "fraga",
+  "pcm": "C-syn6",
+  "paus": [
+   1.1,
+   2.34
+  ],
+  "slut": 3.6841875,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn6-idag",
+  "typ": "fraga",
+  "pcm": "C-syn6",
+  "paus": [
+   1.1,
+   2.34
+  ],
+  "slut": 3.6841875,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn6-talig",
+  "typ": "fraga",
+  "pcm": "C-syn6",
+  "paus": [
+   1.1,
+   2.34
+  ],
+  "slut": 3.6841875,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn7-forval",
+  "typ": "fraga",
+  "pcm": "C-syn7",
+  "paus": [
+   0.77,
+   2.05
+  ],
+  "slut": 3.7775625,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn7-idag",
+  "typ": "fraga",
+  "pcm": "C-syn7",
+  "paus": [
+   0.77,
+   2.05
+  ],
+  "slut": 3.7775625,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn7-talig",
+  "typ": "fraga",
+  "pcm": "C-syn7",
+  "paus": [
+   0.77,
+   2.05
+  ],
+  "slut": 3.7775625,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ },
+ {
+  "id": "C-syn8-forval",
+  "typ": "fraga",
+  "pcm": "C-syn8",
+  "paus": [
+   1.44,
+   2.7
+  ],
+  "slut": 3.5359375,
+  "kalla": "syntetisk",
+  "aad": "forval"
+ },
+ {
+  "id": "C-syn8-idag",
+  "typ": "fraga",
+  "pcm": "C-syn8",
+  "paus": [
+   1.44,
+   2.7
+  ],
+  "slut": 3.5359375,
+  "kalla": "syntetisk",
+  "aad": "idag"
+ },
+ {
+  "id": "C-syn8-talig",
+  "typ": "fraga",
+  "pcm": "C-syn8",
+  "paus": [
+   1.44,
+   2.7
+  ],
+  "slut": 3.5359375,
+  "kalla": "syntetisk",
+  "aad": "talig"
+ }
+]

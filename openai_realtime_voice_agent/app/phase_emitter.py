@@ -372,6 +372,46 @@ class PhaseEmitter(FrameProcessor):
         self._on_dangling_stop = on_dangling
         self._on_real_speech = on_real_speech
 
+    _hall = False        # the person cut him off and has the floor: the device is kept in `listening`
+    _hall_task = None
+    _dampa_till = 0.0    # until then what the engine still says of the reply that was cut is muted: no `replying`
+
+    async def hall_lyssnar(self, sek: float, vid_tyst=None, dampa_s: float = 90.0) -> None:
+        """He was cut off by a word that asks for nothing yet ("vänta"): keep the device in `listening`, its mic open,
+        for `sek`, so the person can go on ("... berätta om huset i stället"). No thinking / replying / idle reaches
+        the device meanwhile. Nothing more said in `sek`: `vid_tyst()` is awaited and the device goes idle, which
+        closes its mic. Henrik 2026-10-13: "om jag säger vänta så ska den inte stänga av mikrofonen, vänta betyder att
+        jag vill ha ett annat svar eller gå i en annan riktning"."""
+        self._cancel_pending_idle()
+        self._cancel_watchdog()
+        self._slapp_hall()
+        self._hall = True
+        self._dampa_till = time.monotonic() + dampa_s
+        await self._emit("listening")
+
+        async def _vanta_ut():
+            try:
+                await asyncio.sleep(sek)
+            except asyncio.CancelledError:
+                return
+            self._hall_task = None
+            if not self._hall:
+                return
+            self._hall = False
+            if vid_tyst is not None:
+                try:
+                    await vid_tyst()
+                except Exception as e:
+                    logger.warning(f"⚠️ ending the wait after an interruption failed: {e!r}")
+            await self.force_idle("he was cut off and nothing more was said")
+        self._hall_task = asyncio.create_task(_vanta_ut())
+
+    def _slapp_hall(self) -> None:
+        self._hall = False
+        if self._hall_task is not None:
+            self._hall_task.cancel()
+            self._hall_task = None
+
     async def force_idle(self, reason: str = "") -> None:
         """Declare the current turn dead and put the device in idle.
 
@@ -402,6 +442,8 @@ class PhaseEmitter(FrameProcessor):
         # UserStartedSpeaking never coincides with queued TTS).
         if value == self._current and value != "listening":
             return
+        if self._hall and value != "listening":
+            return  # he was cut off and the person has the floor (hall_lyssnar)
         if value == "idle":
             self.idle_since = time.monotonic()
             self._liveness.turn_over()
@@ -531,6 +573,8 @@ class PhaseEmitter(FrameProcessor):
         if isinstance(frame, UserStartedSpeakingFrame):
             # Liveness stamp for the wedge watchdog: the server VAD is alive.
             self.last_vad_mono = time.monotonic()
+            self._slapp_hall()      # the person goes on: a normal turn from here
+            self._dampa_till = 0.0
             self._suppress_thinking = False
             # A new user turn ends any reply that was still open, whether the
             # engine got round to saying so or not. Without this a reply that
@@ -575,6 +619,10 @@ class PhaseEmitter(FrameProcessor):
             else:
                 await self._emit("thinking")
                 self._arm_watchdog()
+        elif isinstance(frame, BotStartedSpeakingFrame) and self._dampa_till and time.monotonic() < self._dampa_till:
+            # The tail of the reply the person cut off: it is muted on its way out (tysta_svar), so to the room and to
+            # the device he is not replying.
+            logger.info("📞 'replying' not sent — what he says now is the muted tail of the reply that was cut off")
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._liveness.bot_started()
             self._suppress_thinking = False
@@ -584,6 +632,13 @@ class PhaseEmitter(FrameProcessor):
             await self._emit("replying")
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self.note_engine_turn_complete()
+        elif isinstance(frame, BotStoppedSpeakingFrame) and self._current == "listening":
+            # He stopped because the person cut him off, and the person's turn is still open. An idle now would reach
+            # the device in `listening`, and the device closes its mic on that (set_phase_: "closing orphaned mic gate"):
+            # Kontoret 2026-10-13 18:59, idle 1.15 s after the cut, in the middle of what was being said. The end of
+            # the person's turn decides what comes next, not the end of his.
+            self._liveness.bot_stopped()
+            self._cancel_pending_idle()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._liveness.bot_stopped()
             # Don't go idle immediately — TTS comes in segments. Only emit idle

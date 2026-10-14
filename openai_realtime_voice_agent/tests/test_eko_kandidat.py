@@ -163,3 +163,34 @@ async def test_the_detector_takes_over_the_end_of_a_turn_opened_on_level():
     service.on_user_turn_end = lambda: asyncio.sleep(0)
     await _mata(service, 2)
     assert barge == [1] and service._niva_slut == 0.0      # the detector said "start": its own "end" ends the turn
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_was_only_vanta_is_kept_and_what_is_said_next_joins_it():
+    """Henrik 2026-10-13: "vänta" means he wants another answer, so the mic stays open and he goes on talking."""
+    avgjort = []
+
+    async def tur_slut():
+        avgjort.append(len(service._held))
+        if len(avgjort) == 1:
+            assert service.fortsatt_tur() is True       # the first decision: it was only "vänta", keep the turn
+        else:
+            service._held = None                        # the second: the whole turn is answered
+
+    async def dom(pcm, rate):
+        return False
+    service, turns, sent, pushed, starter, barge = _bygg(["start", None, None, "end", None, None, "start", None, "end", None],
+                                                         lambda: True, dom)
+    service.on_user_turn_end = tur_slut
+    svarade = []
+
+    async def answer_turn():
+        svarade.append(1)
+    service.answer_turn = answer_turn
+    await _mata(service, 6)                             # "vänta" cuts him and ends
+    assert avgjort and svarade == []                    # decided once, and NOT answered: the turn is kept
+    n, startade = len(service._held), len(starter)
+    await _mata(service, 4)                             # the person goes on, and stops
+    assert len(avgjort) == 2 and avgjort[1] > n         # the same turn, longer, decided again
+    assert len(starter) == startade + 1                 # and everything was told that speech began again
+    assert sum(isinstance(f, UserStartedSpeakingFrame) for f in pushed) == 2
