@@ -46,8 +46,11 @@ class SpeakerProbe:
         self._buf = bytearray()
         self._capturing = False
         self._classifying = False
+        self._capture_gen = 0
         self.current_label: str = "unknown"     # male / female / uncertain / unknown
         self.current_f0: float = 0.0
+        self.current_name: Optional[str] = None
+        self.current_method: str = ""
         self._verdict_at: float = 0.0
         # async callback(label, name_or_None, f0) — set by websocket_handler
         self.on_verdict: Optional[Callable[[str, Optional[str], float], Awaitable[None]]] = None
@@ -69,17 +72,33 @@ class SpeakerProbe:
             return "unknown"
         return self.current_label
 
+    def progress_name(self) -> Optional[str]:
+        """A name only for a fresh, enrolled voiceprint match this wake."""
+        if self.gate_speaker() not in ("male", "female", "match"):
+            return None
+        if self.current_method != "voiceprint":
+            return None
+        return self.current_name
+
     def start_capture(self) -> None:
         """Called on every device wake: begin a fresh capture window."""
         if not self.enabled:
             return
+        # A name is valid only for the current wake.  Keeping the previous
+        # verdict alive for up to VERDICT_TTL_SECONDS could personalize a new
+        # speaker's acknowledgement with the wrong household member.
+        self.current_label = "unknown"
+        self.current_f0 = 0.0
+        self.current_name = None
+        self.current_method = ""
+        self._verdict_at = 0.0
         self._buf = bytearray()
         self._capturing = True
         # Finalize a partial capture if the session ends before the window
         # fills (observed: short false wakes left no capture at all).
         try:
             loop = asyncio.get_running_loop()
-            gen = self._capture_gen = getattr(self, "_capture_gen", 0) + 1
+            gen = self._capture_gen = self._capture_gen + 1
             def _later():
                 if self._capturing and gen == self._capture_gen:
                     self.finalize_partial()
@@ -101,7 +120,7 @@ class SpeakerProbe:
         data = bytes(self._buf)
         self._buf = bytearray()
         try:
-            asyncio.get_running_loop().create_task(self._classify(data))
+            asyncio.get_running_loop().create_task(self._classify(data, self._capture_gen))
         except RuntimeError:
             self._classifying = False
 
@@ -116,7 +135,7 @@ class SpeakerProbe:
             data = bytes(self._buf[:CAPTURE_BYTES])
             self._buf = bytearray()
             try:
-                asyncio.get_running_loop().create_task(self._classify(data))
+                asyncio.get_running_loop().create_task(self._classify(data, self._capture_gen))
             except RuntimeError:
                 # no running loop (shouldn't happen in the transport path)
                 self._classifying = False
@@ -152,14 +171,19 @@ class SpeakerProbe:
             return level, name if level == "uncertain" else None, score, "voiceprint"
         return label, self.name_for(label), f0, "pitch"
 
-    async def _classify(self, data: bytes) -> None:
+    async def _classify(self, data: bytes, generation: Optional[int] = None) -> None:
         try:
             # Post-wake audio archiving lives in wake_events.WakeAudioCapture
             # (explicit capture modes, device/turn-scoped names, label-safe
             # retention); this probe only classifies.
             label, name, metric, method = await asyncio.to_thread(self._identify, data)
+            if generation is not None and generation != self._capture_gen:
+                logger.info("🗣️ discarding stale speaker verdict from an earlier wake")
+                return
             self.current_label = label
             self.current_f0 = metric
+            self.current_name = name
+            self.current_method = method
             self._verdict_at = time.monotonic()
             logger.info(
                 f"🗣️ speaker probe [{method}]: {label}"

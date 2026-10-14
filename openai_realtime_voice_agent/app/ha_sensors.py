@@ -286,6 +286,35 @@ class SensorPublisher:
             "last_response_cost": round(cost, 5), **detail,
         })
 
+    def live_session_cost(self, snapshot: dict) -> None:
+        """Publish GPT-Live voice spend so a dashboard can watch it.
+
+        Unlike :meth:`usage`, this is not an estimate of a response: GPT-Live
+        bills per connected session second at a published rate, so these are
+        the session-minutes actually bought and what they cost. Delegated
+        backend tokens are billed separately and are not included.
+
+        Fire-and-forget (``post_nowait``) because it is called from a session
+        close, on the path that is also releasing the device's audio.
+        """
+        spend = snapshot.get("spend") or {}
+        self._post(f"sensor.voicepe_{_INST}_live_session_cost_today", spend.get("usd", 0.0), {
+            "friendly_name": f"Voice PE {_INST} GPT-Live session cost",
+            "unit_of_measurement": "$",
+            "session_minutes": spend.get("session_minutes", 0.0),
+            "sessions": spend.get("sessions_in_window", 0),
+            "cap_session_minutes": spend.get("cap_session_minutes"),
+            "cap_usd": spend.get("cap_usd"),
+            "remaining_session_seconds": spend.get("remaining_session_seconds"),
+            "usd_per_session_minute": spend.get("usd_per_session_minute"),
+            "window_hours": spend.get("window_hours"),
+            "state": snapshot.get("state"),
+            "opens": snapshot.get("opens"),
+            "refusals": snapshot.get("refusals"),
+            "closes": snapshot.get("closes"),
+            "note": "voice session time only; delegated backend tokens are billed separately",
+        })
+
     async def voice_prints(self):
         """Publish enrolled voice prints so users can SEE enrollment worked."""
         import glob

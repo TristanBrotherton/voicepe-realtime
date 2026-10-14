@@ -95,5 +95,31 @@ class TestOutputLeadBuffer(unittest.IsolatedAsyncioTestCase):
         )
 
 
+
+class PromptsGetALeadBurst(unittest.TestCase):
+    """A cold device dropped the start of the "One moment." clip: it was paced
+    at real time from its first byte, with no lead (Kitchen, 0.18.32)."""
+
+    def test_silence_then_a_burst_then_pacing(self):
+        from app.output_lead_buffer import PROMPT_LEAD_IN_SILENCE_MS, prompt_send_plan
+        pcm = b"\x01\x00" * 24000  # 1 s of audio
+        plan = prompt_send_plan(pcm, lead_ms=600)
+        sent = b"".join(data for data, _ in plan)
+        silence = 48 * PROMPT_LEAD_IN_SILENCE_MS
+        self.assertEqual(sent[:silence], b"\x00" * silence, "the prompt starts on silence")
+        self.assertEqual(sent[silence:], pcm, "every prompt byte is sent, in order")
+        burst = sum(len(d) for d, s in plan if s == 0.0)
+        self.assertEqual(burst, 48 * 600, "the first 600 ms go out at once")
+        self.assertTrue(all(s > 0 for _, s in plan[len([p for p in plan if p[1] == 0.0]):]),
+                        "after the burst the rest is paced")
+
+    def test_no_lead_still_sends_everything_paced(self):
+        from app.output_lead_buffer import prompt_send_plan
+        pcm = b"\x01\x00" * 4800
+        plan = prompt_send_plan(pcm, lead_ms=0, lead_in_silence_ms=0)
+        self.assertEqual(b"".join(d for d, _ in plan), pcm)
+        self.assertTrue(all(s > 0 for _, s in plan))
+
+
 if __name__ == "__main__":
     unittest.main()

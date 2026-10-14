@@ -4,7 +4,7 @@ import asyncio
 import typing
 
 from loguru import logger
-from pipecat.frames.frames import EndFrame
+from pipecat.frames.frames import EndFrame, OutputTransportMessageFrame, TTSAudioRawFrame
 from starlette.websockets import WebSocket, WebSocketState
 
 from pipecat.transports.websocket.fastapi import (
@@ -108,6 +108,28 @@ class MixedFastAPIWebsocketInputTransport(FastAPIWebsocketInputTransport):
         await self.push_frame(EndFrame())
 
 
+class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
+    """Pipecat 0.0.97: flush partial PCM before an ordered Live batch fence.
+
+    Pipecat buffers sub-chunk tails across ordinary message frames. Without
+    this pinned-version adapter an end marker could precede its final samples.
+    No padding or PCM modification; Realtime frames are unaffected.
+    """
+
+    async def _handle_frame(self, frame):
+        if (isinstance(frame, OutputTransportMessageFrame)
+                and isinstance(frame.message, dict)
+                and frame.message.get('type') == 'output_batch_end'):
+            sender = self._media_senders.get(frame.transport_destination)
+            if sender is not None and sender._audio_buffer:
+                tail = TTSAudioRawFrame(bytes(sender._audio_buffer),
+                    sample_rate=sender.sample_rate, num_channels=self._params.audio_out_channels)
+                tail.transport_destination = frame.transport_destination
+                sender._audio_buffer.clear()
+                await sender._audio_queue.put(tail)
+        await super()._handle_frame(frame)
+
+
 class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
     """A per-connection transport whose client speaks both frame types.
 
@@ -140,7 +162,7 @@ class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
         self._input = MixedFastAPIWebsocketInputTransport(
             self, self._client, self._params, name=self._input_name
         )
-        self._output = FastAPIWebsocketOutputTransport(
+        self._output = BatchFastAPIWebsocketOutputTransport(
             self, self._client, self._params, name=self._output_name
         )
 

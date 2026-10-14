@@ -2,6 +2,75 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.18.35 (fork)
+
+### Added: an experimental GPT-Live voice runtime (opt-in)
+
+Nothing changes for existing installs: `voice_runtime` defaults to the
+Realtime runtime. Setting `voice_runtime: live` (with
+`live_acknowledge_gaps`) runs the device on OpenAI's GPT-Live voice instead.
+See DOCS section 12 and `docs/configuration.md` for every `live_*` option.
+
+- **Router mode (`live_router`, on by default inside Live).** The add-on, not
+  the voice model, decides and runs every tool. Home Assistant's own intent
+  engine is tried first (recognition only, safe device domains only); anything
+  else goes to a Responses backend called directly with the full tool set.
+  The voice speaks only results a tool verified; a success claim with no tool
+  behind it is never played.
+- **The backend knows the home.** Home Assistant's MCP `Assist` overview of
+  exposed entities, plus the floor and area registries (with aliases), sits in
+  the backend's cached prefix and is refreshed every 5 minutes and at wakes.
+  Loose wording ("upstairs bedroom", "the kitchen") is matched to real names.
+- **Room context from the satellite.** "Turn on the lights" acts on the room
+  of the satellite that heard it, found from its network address and Home
+  Assistant's device registry. A room Home Assistant fills in on its own is
+  not trusted: the request is re-asked with the satellite's room, or handed
+  to the backend.
+- **Optional: expose new entities automatically (`live_auto_expose`, off by
+  default).** Controllable entities Assist cannot see yet are exposed;
+  helpers and scripts only when they are on a dashboard; locks never.
+- **A parsed command is never ignored.** When Home Assistant recognised a
+  command, the backend is told what it heard, and a "no request" verdict
+  becomes a spoken "I couldn't tell which device you meant" instead of
+  silence.
+- **Confirmation for risky actions is unchanged:** locks, garages, gates,
+  doors and alarms still need a spoken yes, and a state question never runs
+  a control tool, including a yes/no question about a device whose name
+  holds a household word ("Is quick heat downstairs on?"). What Home
+  Assistant's parser heard reaches the backend as a hint, never as an
+  instruction.
+- **Long tasks.** A request that needs a slow tool (the OpenClaw agent, a web
+  search) becomes a background task after a few seconds: the voice says so,
+  the conversation can go on, and the answer is delivered when it lands (in
+  the session, as an announcement, or through the OpenClaw bridge). House
+  commands are not promoted at the short budget; they get up to 8 s first.
+- **Cost controls.** GPT-Live bills per connected second, so a session opens
+  only on a wake and closes after idle, follow-up and hard bounds. Daily
+  session-minute and dollar caps refuse new sessions
+  (`live_max_session_minutes_per_day`, `live_max_usd_per_day`); backend tokens
+  count against the same cap.
+- **Fast paths.** Plain chat can skip the pre-result hold
+  (`live_fast_chat_model`); clock questions and person-location questions go
+  straight to the matching tool; an optional household snapshot
+  (`live_context_entities`) gives the backend current states.
+- **Acknowledgements.** The voice may say only a closed set of waiting
+  phrases before a result; a short fallback clip covers silence after 1.2 s.
+  Clips start on a short silence with a lead burst, like replies, so a cold
+  device no longer drops their first syllable. Once the clip has played, the
+  voice's own acknowledgement is not played as a second one.
+
+### Fixed (both runtimes)
+
+- Action-gate and tool-result handling: a confirmation is bound to the exact
+  prompt that asked for it; placeholder tool arguments are dropped before a
+  call; tool outcomes are classified before anything is spoken.
+
+### Tests
+
+- About 1,030 unit tests (the CI floor is now 1,000), including the router, household directory, room
+  context, cost controls and long tasks, and a privacy check that keeps
+  fixtures fictional.
+
 ## 0.17.3 (fork)
 
 - **Fixed: exact named covers failing when the model supplies the wrong Home

@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.17.3"
+version: "0.18.35"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -246,9 +246,68 @@ schema:
   device_allowlist: str?
   confirm_tools: str?
   slow_tools: str?
+  ack_silent_tools: str?
   tts_voice: str?
   mcp_persistent_session: bool?
   web_search_timeout_s: "int(5,120)?"
+  # --- 🧪 Voice runtime (GPT-Live canary) ---
+  # Optional WITHOUT defaults on purpose: Home Assistant merges new option
+  # defaults into existing installs on update, so a default of "live" here
+  # would silently migrate every install. Unset = realtime (legacy). The
+  # fresh-install default flips to live only after the canary is proven.
+  voice_runtime: "list(realtime|live)?"
+  live_model: str?
+  live_backend_model: str?
+  live_reasoning_effort: "list(none|minimal|low|medium|high)?"
+  live_service_tier: "list(auto|default|flex|priority)?"
+  live_backend_instructions: str?
+  live_acknowledge_gaps: bool?
+  live_audio_capture_ms: "int(0,60000)?"
+  # Canary-gated: stream only post-backend final replies. Unset/false keeps
+  # complete-reply buffering and the prior safety contract.
+  live_stream_replies: bool?
+  # Router mode (default on when unset): the add-on routes every request
+  # itself and the voice speaks only verified results. false = the older
+  # Responses delegation, where the voice decides when to delegate.
+  live_router: bool?
+  # Router mode: entity ids whose states the backend gets as a short
+  # snapshot at each wake (best effort, 0.8 s, never waited for). Unset = off.
+  live_context_entities: str?
+  live_auto_expose: bool?
+  # Fast chat classifier model (router mode). Unset = the measured default
+  # (gpt-5.4-nano); an empty string or "off" disables the fast chat path.
+  live_fast_chat_model: str?
+  # Developer test-rig experiments (hidden, optional, off by default); see
+  # app/experiment_overrides.py. Cannot change any cost bound.
+  experiment_mode: bool?
+  experiment_overrides: str?
+  # --- 🧺 Long tasks (router mode; all optional, code defaults in app/live_tasks.py) ---
+  openclaw_callback_url: str?
+  live_task_promote_s: "float(1,60)?"
+  live_task_hold_session_s: "float(0,300)?"
+  live_task_delivery: str?
+  live_task_deferred_delivery: str?
+  live_task_quiet_hours: str?
+  live_task_imessage_to: str?
+  live_task_imessage_after_idle_s: "float(0,86400)?"
+  live_task_progress_every_s: "float(5,300)?"
+  live_task_progress_max: "int(0,10)?"
+  live_task_result_ttl_s: "float(30,86400)?"
+  live_task_deferred_max_s: "float(60,604800)?"
+  # --- 💵 GPT-Live cost safety ---
+  # GPT-Live bills $0.05 per CONNECTED session minute, billed per second, and
+  # idle time inside an open session counts. Sessions are therefore on demand:
+  # opened by a wake, closed by these bounds (app/live_session_gate.py). The
+  # last two are a hard cutoff — once either is reached, turns are refused
+  # until the 24h window rolls (app/live_cost.py). Optional without defaults
+  # like the rest of the Live block; the code's defaults are the safe ones.
+  live_idle_close_s: "float(2,120)?"
+  live_followup_s: "float(0,120)?"
+  live_rewake_grace_s: "float(0,30)?"
+  live_max_silent_s: "float(5,300)?"
+  live_max_session_s: "float(30,3300)?"
+  live_max_session_minutes_per_day: "float(0,1440)?"
+  live_max_usd_per_day: "float(0,100)?"
   # --- 🔍 Debug ---
   enable_recording: bool
 # No `image:` key -> Home Assistant builds the add-on locally from the

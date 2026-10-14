@@ -63,6 +63,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     StartFrame,
     EndFrame,
+    OutputTransportMessageFrame,
 )
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,21 @@ class OutputLeadBuffer(FrameProcessor):
             await self.push_frame(frame, direction)
             return
 
+        # An ordered marker the DEVICE associates with the PCM in front of it
+        # (Live's `output_batch_end`).
+        # It must never overtake audio this processor is holding. A reply shorter
+        # than lead_ms is still held when the service pushes its marker, and
+        # letting the marker through first made the device see a marker claiming
+        # more bytes than had arrived: it then either never confirms the drain —
+        # so a short reply can never complete its turn — or confirms before the
+        # audio has played, which is false delivery evidence. Flushing here
+        # costs nothing: the marker only ever follows the whole segment.
+        if isinstance(frame, OutputTransportMessageFrame):
+            if self._held:
+                await self._flush(direction)
+            await self.push_frame(frame, direction)
+            return
+
         # End of a speaking segment (or session): release any held lead so a
         # reply shorter than lead_ms is never swallowed. BotStoppedSpeakingFrame
         # can fire several times per reply; flushing held audio on it is safe
@@ -261,3 +277,39 @@ class OutputLeadBuffer(FrameProcessor):
             return
 
         await self.push_frame(frame, direction)
+
+
+# ---------------------------------------------------------------------------
+# Out-of-band prompts (the fallback acknowledgement, progress cues)
+# ---------------------------------------------------------------------------
+
+# Silence ahead of a prompt: the device's output chain wakes on it, so the
+# start-up loss falls on silence instead of the first syllable.
+PROMPT_LEAD_IN_SILENCE_MS = 200
+PROMPT_CHUNK_BYTES = 4800  # 100 ms of 24 kHz mono PCM16
+PROMPT_PACE_S = 0.09
+
+
+def prompt_send_plan(pcm: bytes, lead_ms: int, chunk: int = PROMPT_CHUNK_BYTES,
+                     pace_s: float = PROMPT_PACE_S,
+                     lead_in_silence_ms: int = PROMPT_LEAD_IN_SILENCE_MS):
+    """How to send a cached prompt: ``[(bytes, sleep_after_s), ...]``.
+
+    A prompt used to be paced at real time from its first byte, so a cold
+    device (idle since the last reply) lost the start of "One moment." to the
+    resampler cold start that ``OutputLeadBuffer`` fixes for replies. Now the
+    prompt is preceded by a short silence and its first ``lead_ms`` (lead-in
+    included) go out as one burst, exactly like a reply's lead; the rest is
+    paced so the device's queue never holds more than the lead.
+    """
+    audio = b"\x00" * (48 * max(0, lead_in_silence_ms)) + (pcm or b"")
+    lead_bytes = 48 * max(0, lead_ms)
+    lead_bytes -= lead_bytes % 2
+    plan = []
+    if lead_bytes:
+        head, audio = audio[:lead_bytes], audio[lead_bytes:]
+        for i in range(0, len(head), chunk):
+            plan.append((head[i:i + chunk], 0.0))
+    for i in range(0, len(audio), chunk):
+        plan.append((audio[i:i + chunk], pace_s))
+    return plan

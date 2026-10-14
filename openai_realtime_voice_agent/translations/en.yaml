@@ -51,10 +51,13 @@ configuration:
       most natural. A running conversation keeps its voice — restart the
       add-on after changing this. For an unlisted voice pick "custom" and
       enable "Show unused optional configuration options" at the bottom.
+      GPT-Live also has regional voices; vesper is its natural British
+      masculine voice.
   openai_voice_custom:
     name: "🗣️ Model & voice · Voice (custom)"
     description: >-
-      Only used when Voice is set to "custom". Any valid OpenAI voice name.
+      Only used when Voice is set to "custom". Any valid OpenAI voice API
+      name. For GPT-Live, use vesper for its natural British masculine voice.
       (Hidden by default.)
   openai_speed:
     name: "🗣️ Model & voice · Speaking speed"
@@ -344,6 +347,15 @@ configuration:
     description: >-
       Optional. Default web_search,ask_openclaw. Any tool whose measured
       median exceeds 1.2 s also qualifies automatically.
+  ack_silent_tools:
+    name: "💬 Conversation · Tools that never get a spoken acknowledgement"
+    description: >-
+      Optional comma-separated tool names that must never trigger the
+      "One moment." acknowledgement, whatever their measured median says.
+      Default GetDateTime,GetLiveContext,get_items,HassCancelAllTimers — fast
+      local reads with no dead air to fill. This matters because the
+      acknowledgement plays out of the device's speaker, and the device's own
+      wake word can hear it.
   tts_voice:
     name: "💬 Conversation · Announcement voice"
     description: >-
@@ -360,6 +372,210 @@ configuration:
       Optional (default 20). A search that takes longer is stopped and the
       assistant says so.
 
+  # --- 🧪 Voice runtime (GPT-Live canary; hidden, optional) ---
+  voice_runtime:
+    name: "🧪 Voice runtime · Runtime (realtime or live)"
+    description: >-
+      Which OpenAI voice protocol to use. Unset or "realtime" keeps the
+      OpenAI Realtime API every install has used so far (openai_model,
+      openai_voice, VAD options). "live" switches this instance to GPT-Live
+      (gpt-live-1): full-duplex speech with tools running on a delegated
+      Responses backend. Experimental — see the GPT-Live section in the
+      documentation before enabling, then restart the add-on.
+  live_model:
+    name: "🧪 Voice runtime · Live model"
+    description: >-
+      The GPT-Live voice model, used only when the runtime is "live".
+      Default gpt-live-1.
+  live_backend_model:
+    name: "🧪 Voice runtime · Live backend model"
+    description: >-
+      The Responses model that reasons and calls tools for GPT-Live. Default
+      gpt-6-luna (fast, cheap); gpt-6-sol for harder tasks.
+  live_reasoning_effort:
+    name: "🧪 Voice runtime · Live backend reasoning effort"
+    description: >-
+      Reasoning effort of the backend model. Lower is faster; default low.
+  live_service_tier:
+    name: "🧪 Voice runtime · Live backend service tier"
+    description: >-
+      Responses service tier for delegated requests (auto, default, flex,
+      priority). Unset = your project's default.
+  live_backend_instructions:
+    name: "🧪 Voice runtime · Live backend instructions"
+    description: >-
+      Optional prompt for the backend model (task rules, tool procedures).
+      Empty = the built-in backend prompt. The conversation style stays in
+      "Assistant personality".
+  live_acknowledge_gaps:
+    name: "🧪 Voice runtime · Accept GPT-Live parity gaps"
+    description: >-
+      GPT-Live cannot yet provide every Realtime feature (the add-on log
+      prints the parity report at startup; today: no per-response cost
+      sensor). The live runtime refuses to start until this is on, so a
+      canary never loses a feature silently.
+  live_audio_capture_ms:
+    name: "🧪 Voice runtime · Keep raw reply audio for diagnosis (ms)"
+    description: >-
+      Only for diagnosing a garbled GPT-Live reply. Holds this many
+      milliseconds of the raw model output in memory so its waveform can be
+      inspected; it is the assistant's voice, so leave it at 0 unless you are
+      investigating. The format checks a garbled-reply report needs (sample
+      rate, byte alignment, levels, chunk and gap counters, a hash) are always
+      written to the log and need no capture.
+  live_stream_replies:
+    name: "🧪 Voice runtime · Stream final replies"
+    description: >-
+      Optional canary (default off). Starts playing a verified post-tool final
+      answer as its audio arrives instead of waiting for the whole reply and
+      trailing silence. Pre-tool speech, tool-free answers and confirmation
+      questions remain fully buffered for safety.
+  live_router:
+    name: "🧪 Voice runtime · Router mode"
+    description: >-
+      Optional (default on). The add-on routes every request itself (Home
+      Assistant's local commands first, otherwise its own backend with every
+      tool), and the voice acknowledges and then speaks only results a tool
+      verified. Set to off for the older mode in which the voice decides when
+      to hand a request to the backend.
+  live_auto_expose:
+    name: "🧪 Voice runtime · Expose new entities to Assist"
+    description: >-
+      Optional (default off). Router mode only. When on, the add-on exposes
+      to Assist every enabled, visible entity in a controllable domain that
+      Assist cannot see yet, every 5 minutes, so new devices are voice
+      controllable without exposing them by hand. Helpers and scripts are
+      exposed only when they appear on a dashboard; locks never. An entity
+      you un-exposed on purpose stays un-exposed. Exposure applies to every
+      Assist conversation agent, not only this add-on.
+  live_context_entities:
+    name: "🧪 Voice runtime · Household snapshot entities"
+    description: >-
+      Optional (default empty = off). Router mode only. Entity ids, separated
+      by commas, e.g. lock.front_door, cover.garage_door,
+      sensor.outdoor_temperature (at most 30). Their states are read from Home
+      Assistant at each wake, in parallel with the session opening, and given
+      to the backend as a short snapshot (at most 1,500 characters). Skipped
+      if Home Assistant does not answer within 0.8 seconds; never delays a
+      reply.
+  live_fast_chat_model:
+    name: "🧪 Voice runtime · Fast chat model"
+    description: >-
+      Optional (default on, gpt-5.4-nano). In router mode a tiny tool-less
+      classifier lets plain chat skip the wait for the backend's verdict; only
+      a chat verdict acts, never a request. Leave empty or set to off to
+      disable it.
+  openclaw_callback_url:
+    name: "🧺 Long tasks · Callback URL"
+    description: >-
+      Optional. Sent to the agent bridge as callback_url so a long task can report back with POST /task-result.
+  live_task_promote_s:
+    name: "🧺 Long tasks · Soft budget"
+    description: >-
+      Optional (default 3.5 s). After this a routed request becomes a background task: the voice says it is still working and the conversation goes on.
+  live_task_hold_session_s:
+    name: "🧺 Long tasks · Session hold bound"
+    description: >-
+      Optional (default 90 s). Hard bound on how long a slow lookup may keep the open (billed) session; past it the session closes normally and the result arrives later.
+  live_task_delivery:
+    name: "🧺 Long tasks · Result routes"
+    description: >-
+      Optional (default session,reopen,announce,imessage). Order in which a finished lookup's result is delivered.
+  live_task_deferred_delivery:
+    name: "🧺 Long tasks · Deferred result routes"
+    description: >-
+      Optional (default session,announce,reopen,imessage). Order for a deferred result ("tell me when ...").
+  live_task_quiet_hours:
+    name: "🧺 Long tasks · Quiet hours"
+    description: >-
+      Optional, e.g. 22:00-07:00. No session is reopened and nothing is announced for a task result then; it waits until they end (or goes by text if one is configured).
+  live_task_imessage_to:
+    name: "🧺 Long tasks · Text destination"
+    description: >-
+      Optional. Destination alias known to the agent bridge for the text fallback.
+  live_task_imessage_after_idle_s:
+    name: "🧺 Long tasks · Text first after idle"
+    description: >-
+      Optional (default 0 = off). Send a text first when the device has been idle this long.
+  live_task_progress_every_s:
+    name: "🧺 Long tasks · Progress interval"
+    description: >-
+      Optional (default 25 s). How often the voice may say it is still working on a task, only while nobody is talking.
+  live_task_progress_max:
+    name: "🧺 Long tasks · Progress lines"
+    description: >-
+      Optional (default 3). At most this many progress lines per task.
+  live_task_result_ttl_s:
+    name: "🧺 Long tasks · Result lifetime"
+    description: >-
+      Optional (default 900 s). An undeliverable lookup result is dropped (and logged) after this.
+  live_task_deferred_max_s:
+    name: "🧺 Long tasks · Watch lifetime"
+    description: >-
+      Optional (default 86400 s). A deferred watch that never fires is forgotten after this.
+  experiment_mode:
+    name: "🧪 Test rig · Experiment mode"
+    description: >-
+      Developers only (default off). Lets the test rig try timing and model
+      variants without a rebuild. Never changes any cost limit.
+  experiment_overrides:
+    name: "🧪 Test rig · Experiment overrides"
+    description: >-
+      Developers only. JSON written by the test rig; leave empty. Ignored
+      unless experiment mode is on.
+
+  # --- 💵 GPT-Live cost safety (hidden, optional) ---
+  live_idle_close_s:
+    name: "💵 GPT-Live cost · Close after quiet (seconds)"
+    description: >-
+      Optional (default 10). GPT-Live charges $0.05 for every connected
+      session minute, billed per second, and time spent idle inside an open
+      session counts. So the session is opened by a wake and closed again
+      after this much quiet. Lower is cheaper; higher makes a slow follow-up
+      slightly faster.
+  live_followup_s:
+    name: "💵 GPT-Live cost · Keep the session for a follow-up (seconds)"
+    description: >-
+      Optional (default 8). How long the session is kept after a reply so a
+      follow-up question does not pay for a new connection. The device's own
+      follow-up window usually closes it sooner. 0 = close as soon as the
+      reply ends.
+  live_rewake_grace_s:
+    name: "💵 GPT-Live cost · Re-wake handshake grace (seconds)"
+    description: >-
+      Optional (default 0, maximum 30). After the device closes its follow-up
+      microphone, keep the ready billed session for this short extra window.
+      A new wake inside it reuses the session and skips a new handshake. 0
+      preserves immediate close and the lowest cost.
+  live_max_silent_s:
+    name: "💵 GPT-Live cost · Longest silent stretch (seconds)"
+    description: >-
+      Optional (default 45). Hard limit on how long a session may stay open
+      with nothing audible and nobody speaking — long enough for a slow
+      lookup, short enough that a stuck one cannot keep charging. This is the
+      backstop: GPT-Live sends continuous digital silence between replies, so
+      "the model is still talking" is never trusted on its own.
+  live_max_session_s:
+    name: "💵 GPT-Live cost · Maximum session length (seconds)"
+    description: >-
+      Optional (default 300 = $0.25). Absolute cap on one session, whatever
+      else is happening. A new wake simply opens a new session. Keep it below
+      3300 so it stays under OpenAI's own 60-minute limit.
+  live_max_session_minutes_per_day:
+    name: "💵 GPT-Live cost · Daily cap (session minutes)"
+    description: >-
+      Optional (default 60 session-minutes = $3.00/day, shared by every
+      device). A HARD cutoff: once reached, the assistant refuses turns and
+      says so out loud until the 24-hour window rolls. 0 disables this cap —
+      do not disable both caps.
+  live_max_usd_per_day:
+    name: "💵 GPT-Live cost · Daily cap (dollars)"
+    description: >-
+      Optional (default $3.00/day of voice time, shared by every device). A
+      HARD cutoff, enforced alongside the session-minute cap; whichever is
+      reached first stops new sessions. Covers GPT-Live session time only —
+      the delegated backend model's tokens are billed separately and are not
+      counted here. 0 disables this cap.
   # --- 🔍 Debug ---
   enable_recording:
     name: "🔍 Debug · Record audio"

@@ -86,6 +86,12 @@ def _as_list(value: Any) -> List[str]:
     return [str(value)]
 
 
+def _normalise_target_words(value: Any) -> str:
+    """Lower-case a spoken target while ignoring harmless articles."""
+    words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    return " ".join(word for word in words if word not in {"a", "an", "the"})
+
+
 @dataclass
 class EntityInfo:
     entity_id: str
@@ -112,14 +118,18 @@ class PendingAction:
     created: float
     user_turn_seq: int
     wake_seq: int
+    armed_user_turn_seq: Optional[int] = None
+    armed_source_audio_ms: Optional[float] = None
 
 
 class EntityDirectory:
     """Friendly name -> domain/device_class lookup over HA's state list (cached)."""
 
     def __init__(self, fetch_states: Optional[Callable[[], Awaitable[list]]] = None,
+                 fetch_area_entities: Optional[Callable[[str, str], Awaitable[list]]] = None,
                  ttl_s: float = 120.0, clock: Callable[[], float] = time.monotonic):
         self._fetch = fetch_states
+        self._fetch_area = fetch_area_entities
         self._ttl = ttl_s
         self._clock = clock
         self._entities: List[EntityInfo] = []
@@ -155,6 +165,20 @@ class EntityDirectory:
         if exact:
             return exact
         return [e for e in self._entities if needle in e.name.lower() or e.name.lower() in needle]
+
+    async def lookup_area(self, area: str, domain: str) -> List[EntityInfo]:
+        """Return entities HA itself assigns to an area, when that API is available."""
+        await self._refresh()
+        if self._fetch_area is None:
+            return []
+        try:
+            entity_ids = await self._fetch_area(area, domain)
+        except Exception as e:
+            logger.debug("area entity lookup failed for %s/%s: %r", area, domain, e)
+            return []
+        wanted = {str(entity_id) for entity_id in entity_ids or []}
+        return [entity for entity in self._entities
+                if entity.entity_id in wanted and entity.domain == domain]
 
 
 class ActionGate:
@@ -195,6 +219,60 @@ class ActionGate:
         name = str(args.get("name") or "").strip()
         if not canonical_name.startswith("Hass") or not name:
             return args
+
+        # Room voice assistants commonly hear "the light", "kitchen light",
+        # or a follow-up of just "main".  Home Assistant treats ``name`` and
+        # ``area`` as simultaneous constraints, so forwarding those generic
+        # words literally makes an otherwise unambiguous room command fail.
+        # Prefer the conventional exact ``<Area> Main`` entity when it exists.
+        # This remains conservative: no exact unique target means no rewrite.
+        areas = _as_list(args.get("area"))
+        domains = {domain.lower() for domain in _as_list(args.get("domain"))}
+        if len(areas) == 1 and (not domains or domains == {"light"}):
+            area = " ".join(areas[0].split())
+            spoken = _normalise_target_words(name)
+            area_words = _normalise_target_words(area)
+            generic = {
+                "light", "lights", "main", "main light", "main lights",
+                f"{area_words} light", f"{area_words} lights",
+                f"{area_words} main", f"{area_words} main light",
+                f"{area_words} main lights",
+            }
+            if spoken in generic:
+                room_entities = await self.directory.lookup_area(area, "light")
+                # Prefer ordinary primary-light names in a strict order. This
+                # ignores indicator rings and secondary named bulbs without
+                # hard-coding a household entity id. If a priority tier is
+                # ambiguous, fail closed and let HA/model ask for clarification.
+                priorities = (
+                    f"{area_words} main", f"{area_words} light", "main", "light"
+                )
+                selected = None
+                for preferred_name in priorities:
+                    matches = [entity for entity in room_entities
+                               if _normalise_target_words(entity.name) == preferred_name]
+                    if len(matches) == 1:
+                        selected = matches[0]
+                        break
+                    if len(matches) > 1:
+                        break
+                # Older Home Assistant installs may not expose area lookup.
+                # The conventional exact <Area> Main fallback is still safe.
+                if selected is None and not room_entities:
+                    preferred = await self.directory.lookup(f"{area} Main")
+                    preferred = [entity for entity in preferred if entity.domain == "light"]
+                    if len(preferred) == 1:
+                        selected = preferred[0]
+                if selected is not None:
+                    args["name"] = selected.name
+                    name = selected.name
+                    logger.info(
+                        "resolved generic room light target for %s: %r in %s -> %s",
+                        canonical_name,
+                        arguments.get("name"),
+                        area,
+                        name,
+                    )
 
         matches = await self.directory.lookup(name)
         if len(matches) != 1:
@@ -313,7 +391,8 @@ class ActionGate:
 
     def request(self, device_id: str, function_name: str, arguments: dict,
                 handler: Callable[..., Awaitable[Any]], summary: str,
-                user_turn_seq: int, wake_seq: int) -> PendingAction:
+                user_turn_seq: int, wake_seq: int,
+                require_prompt_boundary: bool = False) -> PendingAction:
         self._expire()
         for pending in self._pending.values():
             if (pending.device_id == device_id and pending.function_name == function_name
@@ -329,12 +408,14 @@ class ActionGate:
             created=self._clock(),
             user_turn_seq=user_turn_seq,
             wake_seq=wake_seq,
+            armed_user_turn_seq=None if require_prompt_boundary else user_turn_seq,
         )
         self._pending[pending.confirm_id] = pending
         logger.info(f"🔐 confirmation required on {device_id}: {summary} (id {pending.confirm_id})")
         return pending
 
-    def take(self, confirm_id: str, device_id: str, user_turn_seq: int, wake_seq: int):
+    def take(self, confirm_id: str, device_id: str, user_turn_seq: int, wake_seq: int,
+             affirmative: bool = True, reply_source_start_ms: Optional[float] = None):
         """Return (pending, None) when confirmation is valid, else (None, reason)."""
         self._expire()
         pending = self._pending.get(str(confirm_id or "").strip())
@@ -345,11 +426,42 @@ class ActionGate:
         if wake_seq != pending.wake_seq:
             self._pending.pop(pending.confirm_id, None)
             return None, "a new conversation started; the earlier request was cancelled"
-        if user_turn_seq <= pending.user_turn_seq:
+        if pending.armed_user_turn_seq is None:
+            return None, ("the confirmation question has not been spoken yet — ask it and wait "
+                          "for the user's reply before calling confirm_action")
+        if user_turn_seq <= pending.armed_user_turn_seq:
             return None, ("the user has not answered yet — ask the confirmation question and wait "
                           "for their reply before calling confirm_action")
+        if not affirmative:
+            return None, ("the user's latest utterance was not an explicit affirmative "
+                          "confirmation; do not perform the action")
+        if pending.armed_source_audio_ms is not None:
+            if (reply_source_start_ms is None or
+                    reply_source_start_ms <= pending.armed_source_audio_ms):
+                return None, ("the affirmative reply could not be proven to start after the "
+                              "spoken confirmation question; do not perform the action")
         self._pending.pop(pending.confirm_id, None)
         return pending, None
+
+    def fence_after_prompt(self, confirm_id: str, user_turn_seq: int,
+                           source_audio_ms: Optional[float] = None) -> None:
+        """Require a user utterance after the confirmation prompt was spoken."""
+        self._expire()
+        pending = self._pending.get(str(confirm_id or "").strip())
+        if pending is not None:
+            pending.user_turn_seq = max(pending.user_turn_seq, user_turn_seq)
+            pending.armed_user_turn_seq = user_turn_seq
+            pending.armed_source_audio_ms = source_audio_ms
+
+    def has_pending(self, device_id: str) -> bool:
+        """A confirmation question for this device is still outstanding."""
+        self._expire()
+        return any(p.device_id == device_id for p in self._pending.values())
+
+    def withdraw(self, confirm_id: str) -> None:
+        """Forget one held action: its question was overtaken, so no reply,
+        however it is armed, can confirm it any more."""
+        self._pending.pop(str(confirm_id or "").strip(), None)
 
     def cancel_device(self, device_id: str) -> None:
         for key in [k for k, p in self._pending.items() if p.device_id == device_id]:

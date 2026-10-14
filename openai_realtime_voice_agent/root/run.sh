@@ -118,11 +118,26 @@ export SLOW_TOOL_ACK
 export SPEAK_ERRORS
 export TTS_STYLE
 
+# live_fast_chat_model set to an empty string means off (has_value is false
+# for an empty string, so it is checked in the options file directly).
+if ! bashio::config.has_value "live_fast_chat_model" \
+        && jq -e '.live_fast_chat_model == ""' /data/options.json >/dev/null 2>&1; then
+    export LIVE_FAST_CHAT_MODEL="off"
+fi
+
 # Optional privacy/safety/tool tuning (hidden options): export only when set,
 # because bashio prints the literal string "null" for unset optionals.
 for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s \
-              guest_mode_entity device_allowlist confirm_tools slow_tools tts_voice \
-              mcp_persistent_session web_search_timeout_s; do
+              guest_mode_entity device_allowlist confirm_tools slow_tools \
+              ack_silent_tools tts_voice \
+              mcp_persistent_session web_search_timeout_s \
+              voice_runtime live_model live_backend_model live_reasoning_effort \
+              live_service_tier live_backend_instructions live_acknowledge_gaps \
+              live_audio_capture_ms live_stream_replies live_router live_fast_chat_model live_context_entities live_auto_expose \
+              live_idle_close_s live_followup_s live_rewake_grace_s live_max_silent_s live_max_session_s \
+              live_max_session_minutes_per_day live_max_usd_per_day \
+              experiment_mode experiment_overrides \
+              openclaw_callback_url live_task_promote_s live_task_hold_session_s live_task_delivery live_task_deferred_delivery live_task_quiet_hours live_task_imessage_to live_task_imessage_after_idle_s live_task_progress_every_s live_task_progress_max live_task_result_ttl_s live_task_deferred_max_s; do
     if bashio::config.has_value "${option}"; then
         value=$(bashio::config "${option}")
         case "${option}" in
@@ -133,9 +148,50 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
             device_allowlist) export DEVICE_ALLOWLIST="${value}" ;;
             confirm_tools) export CONFIRM_TOOLS="${value}" ;;
             slow_tools) export SLOW_TOOLS="${value}" ;;
+            ack_silent_tools) export ACK_SILENT_TOOLS="${value}" ;;
             tts_voice) export TTS_VOICE="${value}" ;;
             mcp_persistent_session) export MCP_PERSISTENT_SESSION="${value}" ;;
             web_search_timeout_s) export WEB_SEARCH_TIMEOUT_S="${value}" ;;
+            # GPT-Live canary runtime (unset = legacy Realtime; see DOCS.md).
+            voice_runtime) export VOICE_RUNTIME="${value}" ;;
+            live_model) export LIVE_MODEL="${value}" ;;
+            live_backend_model) export LIVE_BACKEND_MODEL="${value}" ;;
+            live_reasoning_effort) export LIVE_REASONING_EFFORT="${value}" ;;
+            live_service_tier) export LIVE_SERVICE_TIER="${value}" ;;
+            live_backend_instructions) export LIVE_BACKEND_INSTRUCTIONS="${value}" ;;
+            live_acknowledge_gaps) export LIVE_ACKNOWLEDGE_GAPS="${value}" ;;
+            live_audio_capture_ms) export LIVE_AUDIO_CAPTURE_MS="${value}" ;;
+            live_stream_replies) export LIVE_STREAM_REPLIES="${value}" ;;
+            live_router) export LIVE_ROUTER="${value}" ;;
+            live_context_entities) export LIVE_CONTEXT_ENTITIES="${value}" ;;
+            live_auto_expose) export AUTO_EXPOSE="${value}" ;;
+            live_fast_chat_model) export LIVE_FAST_CHAT_MODEL="${value}" ;;
+            # Developer test-rig experiments (app/experiment_overrides.py).
+            experiment_mode) export EXPERIMENT_MODE="${value}" ;;
+            experiment_overrides) export EXPERIMENT_OVERRIDES="${value}" ;;
+            # Long tasks (app/live_tasks.py); unset = the code's defaults.
+            openclaw_callback_url) export OPENCLAW_CALLBACK_URL="${value}" ;;
+            live_task_promote_s) export LIVE_TASK_PROMOTE_S="${value}" ;;
+            live_task_hold_session_s) export LIVE_TASK_HOLD_SESSION_S="${value}" ;;
+            live_task_delivery) export LIVE_TASK_DELIVERY="${value}" ;;
+            live_task_deferred_delivery) export LIVE_TASK_DEFERRED_DELIVERY="${value}" ;;
+            live_task_quiet_hours) export LIVE_TASK_QUIET_HOURS="${value}" ;;
+            live_task_imessage_to) export LIVE_TASK_IMESSAGE_TO="${value}" ;;
+            live_task_imessage_after_idle_s) export LIVE_TASK_IMESSAGE_AFTER_IDLE_S="${value}" ;;
+            live_task_progress_every_s) export LIVE_TASK_PROGRESS_EVERY_S="${value}" ;;
+            live_task_progress_max) export LIVE_TASK_PROGRESS_MAX="${value}" ;;
+            live_task_result_ttl_s) export LIVE_TASK_RESULT_TTL_S="${value}" ;;
+            live_task_deferred_max_s) export LIVE_TASK_DEFERRED_MAX_S="${value}" ;;
+            # GPT-Live cost safety: on-demand session lifetime + spend cutoff.
+            # GPT-Live bills per connected session second and idle time counts.
+            live_idle_close_s) export LIVE_IDLE_CLOSE_S="${value}" ;;
+            live_followup_s) export LIVE_FOLLOWUP_S="${value}" ;;
+            live_rewake_grace_s) export LIVE_REWAKE_GRACE_S="${value}" ;;
+            live_max_silent_s) export LIVE_MAX_SILENT_S="${value}" ;;
+            live_max_session_s) export LIVE_MAX_SESSION_S="${value}" ;;
+            live_max_session_minutes_per_day)
+                export LIVE_MAX_SESSION_MINUTES_PER_DAY="${value}" ;;
+            live_max_usd_per_day) export LIVE_MAX_USD_PER_DAY="${value}" ;;
         esac
     fi
 done

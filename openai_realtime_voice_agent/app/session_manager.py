@@ -138,24 +138,7 @@ class SessionManager:
         if cached_context:
             # Create a new context instance with the same messages
             # Use the constructor to properly copy messages and tools
-            cached_messages = cached_context.get_messages()
-            restore_messages = cached_messages.copy() if cached_messages else None
-            # Cap the restored history to the most-recent N messages so the
-            # per-turn token cost stays bounded (see __init__ docstring). Keep a
-            # leading system message if there is one, then the last N of the rest.
-            if restore_messages and self.max_restored_messages > 0 and \
-                    len(restore_messages) > self.max_restored_messages:
-                head = []
-                body = restore_messages
-                if isinstance(restore_messages[0], dict) and restore_messages[0].get("role") == "system":
-                    head = [restore_messages[0]]
-                    body = restore_messages[1:]
-                trimmed = head + body[-self.max_restored_messages:]
-                logger.info(
-                    f"✂️ Trimmed restored context for client {client_id}: "
-                    f"{len(restore_messages)} → {len(trimmed)} messages (cap {self.max_restored_messages})"
-                )
-                restore_messages = trimmed
+            restore_messages = self._trim_restored(client_id, cached_context.get_messages()) or None
             new_context = LLMContext(
                 messages=restore_messages,
                 tools=cached_context.tools if hasattr(cached_context, 'tools') else None,
@@ -167,6 +150,40 @@ class SessionManager:
             logger.info(f"🆕 Creating new empty context for client {client_id}")
             return LLMContext()
     
+    def _trim_restored(self, client_id: str, cached_messages) -> list:
+        """Cap restored history to the most-recent N messages (0 = unlimited).
+
+        Keeps a leading system message if there is one, then the last N of
+        the rest, so the per-turn token cost stays bounded (see __init__).
+        """
+        restore_messages = list(cached_messages) if cached_messages else []
+        if restore_messages and self.max_restored_messages > 0 and \
+                len(restore_messages) > self.max_restored_messages:
+            head = []
+            body = restore_messages
+            if isinstance(restore_messages[0], dict) and restore_messages[0].get("role") == "system":
+                head = [restore_messages[0]]
+                body = restore_messages[1:]
+            trimmed = head + body[-self.max_restored_messages:]
+            logger.info(
+                f"✂️ Trimmed restored context for client {client_id}: "
+                f"{len(restore_messages)} → {len(trimmed)} messages (cap {self.max_restored_messages})"
+            )
+            restore_messages = trimmed
+        return restore_messages
+
+    def restorable_messages(self, client_id: str) -> list:
+        """The (trimmed) cached messages a new session for client_id may start from.
+
+        Read-only: the cache entry stays in place for the context aggregator
+        built later for the same session. Runtimes that take history only at
+        session start (GPT-Live) use this to seed the session.
+        """
+        cached_context = self.get_cached_context(client_id)
+        if not cached_context:
+            return []
+        return self._trim_restored(client_id, cached_context.get_messages())
+
     def get_current_service(self, client_id: str) -> Optional[OpenAIRealtimeLLMService]:
         """Get current OpenAI service for a specific client.
         

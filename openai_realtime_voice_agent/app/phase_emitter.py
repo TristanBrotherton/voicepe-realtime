@@ -116,12 +116,19 @@ class PhaseEmitter(FrameProcessor):
     """Forwards phase transitions to the device as JSON text frames."""
 
     # Thinking watchdog: how long `thinking` may sit without any model
-    # activity before we declare the turn dead and force idle. Normal silent
-    # gaps (turn end -> first token, tool result -> next response) are 1-4 s,
-    # so 15 s has ample margin without leaving the user staring at a blinking
-    # LED for long. While a tool is in flight the watchdog waits with NO cap
-    # (see the module docstring — explicit user decision).
-    THINKING_TIMEOUT_S = 15.0
+    # activity before we declare the turn dead and force idle. It is the
+    # generic safety net, so it must fire strictly AFTER the silent-turn close
+    # (live_service.SILENT_RESPONSE_S, 14 s, the critical first-audio budget)
+    # plus SILENT_GRACE_S below: a genuinely silent turn then closes as
+    # `silent` with no follow-up window, and this net only catches a turn
+    # the service never resolved at all. candidate-v25 set the silent window
+    # to 14 s with this still at 15 s, so 14 + 3 = 17 s ran past the net and
+    # silent turns were force-idled as `error` with a bare idle, which opened
+    # the follow-up mic window after an accidental wake. ReplyResolutionBound
+    # in tests/test_live_retained_failures.py pins the ordering. While a tool
+    # is in flight the watchdog waits with NO cap (see the module docstring —
+    # explicit user decision).
+    THINKING_TIMEOUT_S = 20.0
     WATCHDOG_POLL_S = 1.0
     # How often to log that we're deliberately waiting on a running tool.
     INFLIGHT_LOG_EVERY_S = 30.0
@@ -182,6 +189,8 @@ class PhaseEmitter(FrameProcessor):
         self.on_turn_end = None
         self.on_bot_started = None
         self.on_bot_stopped = None
+        self.on_thinking = None
+        self.on_user_started = None
         self._bot_spoke_this_turn = False
 
     def note_wake(self) -> None:
@@ -390,6 +399,8 @@ class PhaseEmitter(FrameProcessor):
             self._cancel_pending_idle()
             self._cancel_watchdog()
             self._cancel_silent()
+            if self.on_user_started is not None:
+                self.on_user_started()
             await self._emit("listening")
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._cancel_pending_idle()
@@ -416,6 +427,8 @@ class PhaseEmitter(FrameProcessor):
             else:
                 await self._emit("thinking")
                 self._arm_watchdog()
+                if self.on_thinking is not None:
+                    self.on_thinking()
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._suppress_thinking = False
             self._cancel_pending_idle()

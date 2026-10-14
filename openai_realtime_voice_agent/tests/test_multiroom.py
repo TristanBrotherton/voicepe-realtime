@@ -21,6 +21,7 @@ class FakeLLM:
 
 class CapturingClient:
     payloads = []
+    response = {"answer": "done"}
 
     def __init__(self, timeout=None):
         pass
@@ -33,12 +34,13 @@ class CapturingClient:
 
     async def post(self, url, json=None):
         CapturingClient.payloads.append(json)
-        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"answer": "done"})
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: self.response)
 
 
 class TestEscalationRouting(unittest.IsolatedAsyncioTestCase):
     async def test_ask_names_the_requesting_device(self):
         CapturingClient.payloads = []
+        CapturingClient.response = {"answer": "done"}
         llm = FakeLLM()
         with patch.dict("os.environ", {"OPENCLAW_URL": "http://agent.invalid/ask", "INSTANCE_NAME": "home"}), \
              patch.object(openclaw_tool.httpx, "AsyncClient", CapturingClient):
@@ -49,10 +51,46 @@ class TestEscalationRouting(unittest.IsolatedAsyncioTestCase):
                 results.append(result)
 
             await llm.handlers["ask_openclaw"](SimpleNamespace(arguments={"question": "book a table"},
+                                                               tool_call_id="call-office-1",
                                                                result_callback=cb))
+        # The answer-only prefix and the per-request session key are covered
+        # by tests/test_openclaw_path.py; this test checks the routing fields.
+        sent = CapturingClient.payloads[0]
+        self.assertTrue(sent.pop("session_key").startswith("voicepe-office-call-office-1-"))
+        self.assertTrue(sent.pop("answer_only"))
+        self.assertEqual(sent["question"], openclaw_tool.answer_only_question("book a table"))
+        sent["question"] = "book a table"
         self.assertEqual(CapturingClient.payloads, [{"question": "book a table", "room": "home",
+                                                     "request_id": "call-office-1",
+                                                     "task_id": "call-office-1",
                                                      "device_id": "office"}])
         self.assertEqual(results, [{"answer": "done"}])
+
+    async def test_background_acceptance_explicitly_forbids_retry(self):
+        CapturingClient.payloads = []
+        CapturingClient.response = {
+            "answer": "(Still working on that — I'll tell you when it's ready.)",
+            "background": True,
+            "retry": False,
+        }
+        llm = FakeLLM()
+        with patch.dict("os.environ", {"OPENCLAW_URL": "http://agent.invalid/ask",
+                                      "INSTANCE_NAME": "workshop"}), \
+             patch.object(openclaw_tool.httpx, "AsyncClient", CapturingClient):
+            openclaw_tool.register_openclaw_tool(llm, device_id="office")
+            results = []
+
+            async def cb(result):
+                results.append(result)
+
+            await llm.handlers["ask_openclaw"](SimpleNamespace(
+                arguments={"question": "slow question"},
+                tool_call_id="call-background-1",
+                result_callback=cb,
+            ))
+        self.assertTrue(results[0]["background"])
+        self.assertFalse(results[0]["retry"])
+        self.assertIn("Do not call ask_openclaw again", results[0]["what_to_do"])
 
     def test_model_visible_descriptions_are_generic(self):
         text = json.dumps([openclaw_tool.get_openclaw_tool_definition(),

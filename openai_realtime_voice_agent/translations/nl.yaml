@@ -51,12 +51,14 @@ configuration:
       het natuurlijkst. Een lopend gesprek houdt zijn stem — herstart de
       add-on na het wijzigen. Voor een stem die er niet tussen staat: kies
       "custom" en zet onderaan "Toon ongebruikte optionele
-      configuratie-opties" aan.
+      configuratie-opties" aan. GPT-Live heeft ook regionale stemmen; vesper
+      is de natuurlijke Britse mannenstem.
   openai_voice_custom:
     name: "🗣️ Model & stem · Stem (custom)"
     description: >-
-      Alleen gebruikt als Stem op "custom" staat. Elke geldige
-      OpenAI-stemnaam. (Standaard verborgen.)
+      Alleen gebruikt als Stem op "custom" staat. Elke geldige OpenAI API-
+      stemnaam. Gebruik bij GPT-Live vesper voor de natuurlijke Britse
+      mannenstem. (Standaard verborgen.)
   openai_speed:
     name: "🗣️ Model & stem · Spreektempo"
     description: >-
@@ -227,6 +229,216 @@ configuration:
     description: >-
       Alleen bij server_vad. Hoe lang een stilte je vraag beëindigt
       (standaard 800). Verhoog als je wordt afgekapt bij een pauze.
+
+  # --- 🧪 Spraakruntime (GPT-Live canary; verborgen, optioneel) ---
+  voice_runtime:
+    name: "🧪 Spraakruntime · Runtime (realtime of live)"
+    description: >-
+      Welk OpenAI-spraakprotocol wordt gebruikt. Leeg of "realtime" houdt de
+      OpenAI Realtime API (openai_model, openai_voice, VAD-opties). "live"
+      schakelt deze instantie over op GPT-Live (gpt-live-1): full-duplex
+      spraak met tools op een gedelegeerd Responses-model. Experimenteel —
+      lees eerst de GPT-Live-sectie in de documentatie, herstart daarna.
+  live_model:
+    name: "🧪 Spraakruntime · Live-model"
+    description: >-
+      Het GPT-Live-spraakmodel, alleen gebruikt bij runtime "live".
+      Standaard gpt-live-1.
+  live_backend_model:
+    name: "🧪 Spraakruntime · Live-backendmodel"
+    description: >-
+      Het Responses-model dat redeneert en tools aanroept voor GPT-Live.
+      Standaard gpt-6-luna; gpt-6-sol voor moeilijkere taken.
+  live_reasoning_effort:
+    name: "🧪 Spraakruntime · Redeneerinspanning backend"
+    description: >-
+      Redeneerinspanning van het backendmodel. Lager is sneller; standaard low.
+  live_service_tier:
+    name: "🧪 Spraakruntime · Service-tier backend"
+    description: >-
+      Responses-service-tier voor gedelegeerde verzoeken (auto, default,
+      flex, priority). Leeg = projectstandaard.
+  live_backend_instructions:
+    name: "🧪 Spraakruntime · Backendinstructies"
+    description: >-
+      Optionele prompt voor het backendmodel (taakregels, toolprocedures).
+      Leeg = de ingebouwde backendprompt. De gespreksstijl blijft in
+      "Persoonlijkheid van de assistent".
+  live_acknowledge_gaps:
+    name: "🧪 Spraakruntime · GPT-Live-beperkingen accepteren"
+    description: >-
+      GPT-Live biedt nog niet elke Realtime-functie (het add-on-log toont
+      het pariteitsrapport bij het starten; nu: geen kostensensor per
+      antwoord). De live-runtime start pas als dit aan staat.
+  live_audio_capture_ms:
+    name: "🧪 Spraakruntime · Ruwe antwoordaudio bewaren voor diagnose (ms)"
+    description: >-
+      Alleen om een vervormd GPT-Live-antwoord te onderzoeken. Houdt zoveel
+      milliseconden ruwe modeluitvoer in het geheugen zodat de golfvorm
+      bekeken kan worden; dit is de stem van de assistent, dus laat het op 0
+      staan tenzij je onderzoek doet. De formaatcontroles die zo'n rapport
+      nodig heeft (samplefrequentie, byte-uitlijning, niveaus, chunk- en
+      gatentellers, een hash) staan altijd in het log.
+  live_stream_replies:
+    name: "🧪 Spraakruntime · Definitieve antwoorden streamen"
+    description: >-
+      Optionele canary (standaard uit). Speelt een geverifieerd definitief
+      antwoord na een tool af terwijl de audio binnenkomt, in plaats van op
+      het hele antwoord en de eindstilte te wachten. Spraak vóór tools,
+      antwoorden zonder tool en bevestigingsvragen blijven volledig gebufferd.
+  live_router:
+    name: "🧪 Spraakruntime · Routermodus"
+    description: >-
+      Optioneel (standaard aan). De add-on stuurt elk verzoek zelf door (eerst
+      de lokale opdrachten van Home Assistant, anders de eigen backend met
+      alle tools), en de stem bevestigt kort en spreekt daarna alleen
+      resultaten uit die een tool heeft bevestigd. Zet uit voor de oudere
+      modus waarin de stem zelf beslist wanneer de backend wordt ingeschakeld.
+  ack_silent_tools:
+    name: "💬 Gesprek · Tools die nooit een gesproken bevestiging krijgen"
+    description: >-
+      Optionele, door komma's gescheiden toolnamen die nooit de bevestiging
+      "Een moment." mogen activeren, ongeacht hun gemeten mediaan. Standaard
+      GetDateTime,GetLiveContext,get_items,HassCancelAllTimers: snelle lokale
+      leesacties zonder stilte om op te vullen.
+  live_auto_expose:
+    name: "🧪 Spraakruntime · Nieuwe entiteiten aan Assist tonen"
+    description: >-
+      Optioneel (standaard uit). Alleen in routermodus. Indien aan, stelt de
+      add-on elke 5 minuten elke ingeschakelde, zichtbare entiteit in een
+      bedienbaar domein die Assist nog niet ziet beschikbaar voor Assist.
+      Helpers en scripts alleen als ze op een dashboard staan; sloten nooit.
+      Een entiteit die je bewust verborgen hebt, blijft verborgen. Geldt voor
+      elke Assist-gespreksagent, niet alleen deze add-on.
+  live_context_entities:
+    name: "🧪 Spraakruntime · Entiteiten voor de huisstatus"
+    description: >-
+      Optioneel (standaard leeg = uit). Alleen in routermodus. Entiteit-id's,
+      gescheiden door komma's, bijvoorbeeld lock.front_door,
+      cover.garage_door, sensor.outdoor_temperature (maximaal 30). Hun status
+      wordt bij elke wake uit Home Assistant gelezen, tegelijk met het openen
+      van de sessie, en als korte momentopname (maximaal 1.500 tekens) aan de
+      backend gegeven. Overgeslagen als Home Assistant niet binnen 0,8
+      seconden antwoordt; vertraagt nooit een antwoord.
+  live_fast_chat_model:
+    name: "🧪 Spraakruntime · Model voor snelle chat"
+    description: >-
+      Optioneel (standaard aan, gpt-5.4-nano). In routermodus laat een kleine
+      classificatie zonder tools gewone chat het oordeel van de backend
+      overslaan; alleen een chatoordeel doet iets, nooit een verzoek. Laat
+      leeg of zet op off om het uit te schakelen.
+  openclaw_callback_url:
+    name: "🧺 Lange taken · Terugmeld-URL"
+    description: >-
+      Optioneel. Wordt als callback_url naar de agentbrug gestuurd, zodat een lange taak met POST /task-result kan terugmelden.
+  live_task_promote_s:
+    name: "🧺 Lange taken · Zacht budget"
+    description: >-
+      Optioneel (standaard 3,5 s). Daarna wordt een verzoek een achtergrondtaak: de stem zegt dat het nog bezig is en het gesprek gaat door.
+  live_task_hold_session_s:
+    name: "🧺 Lange taken · Sessiegrens"
+    description: >-
+      Optioneel (standaard 90 s). Harde grens voor hoe lang een trage opzoeking de open (betaalde) sessie mag vasthouden; daarna sluit de sessie gewoon en komt het resultaat later.
+  live_task_delivery:
+    name: "🧺 Lange taken · Resultaatroutes"
+    description: >-
+      Optioneel (standaard session,reopen,announce,imessage). Volgorde waarin het resultaat van een afgeronde opzoeking wordt bezorgd.
+  live_task_deferred_delivery:
+    name: "🧺 Lange taken · Routes voor uitgestelde resultaten"
+    description: >-
+      Optioneel (standaard session,announce,reopen,imessage). Volgorde voor een uitgesteld resultaat ("zeg het als ...").
+  live_task_quiet_hours:
+    name: "🧺 Lange taken · Stille uren"
+    description: >-
+      Optioneel, bijv. 22:00-07:00. Dan wordt voor een taakresultaat geen sessie heropend en niets omgeroepen; het wacht tot ze voorbij zijn (of gaat per bericht als dat is ingesteld).
+  live_task_imessage_to:
+    name: "🧺 Lange taken · Berichtbestemming"
+    description: >-
+      Optioneel. Bestemmingsalias die de agentbrug kent, voor het terugvallen op een bericht.
+  live_task_imessage_after_idle_s:
+    name: "🧺 Lange taken · Eerst bericht na inactiviteit"
+    description: >-
+      Optioneel (standaard 0 = uit). Eerst een bericht sturen als het apparaat zo lang inactief is.
+  live_task_progress_every_s:
+    name: "🧺 Lange taken · Voortgangsinterval"
+    description: >-
+      Optioneel (standaard 25 s). Hoe vaak de stem mag zeggen dat ze nog met een taak bezig is, alleen als niemand praat.
+  live_task_progress_max:
+    name: "🧺 Lange taken · Voortgangsregels"
+    description: >-
+      Optioneel (standaard 3). Hoogstens zoveel voortgangsregels per taak.
+  live_task_result_ttl_s:
+    name: "🧺 Lange taken · Levensduur resultaat"
+    description: >-
+      Optioneel (standaard 900 s). Een onbezorgbaar resultaat wordt hierna verwijderd (en gelogd).
+  live_task_deferred_max_s:
+    name: "🧺 Lange taken · Levensduur wachttaak"
+    description: >-
+      Optioneel (standaard 86400 s). Een uitgestelde wachttaak die nooit afgaat wordt hierna vergeten.
+  experiment_mode:
+    name: "🧪 Testopstelling · Experimentmodus"
+    description: >-
+      Alleen voor ontwikkelaars (standaard uit). Laat de testopstelling
+      timing- en modelvarianten proberen zonder nieuwe build. Verandert nooit
+      een kostenlimiet.
+  experiment_overrides:
+    name: "🧪 Testopstelling · Experimentinstellingen"
+    description: >-
+      Alleen voor ontwikkelaars. JSON van de testopstelling; laat leeg.
+      Genegeerd tenzij de experimentmodus aan staat.
+
+  # --- 💵 GPT-Live kosten (verborgen, optioneel) ---
+  live_idle_close_s:
+    name: "💵 GPT-Live kosten · Sluiten na stilte (seconden)"
+    description: >-
+      Optioneel (standaard 10). GPT-Live rekent $0,05 per verbonden
+      sessieminuut, per seconde afgerekend, en ook tijd waarin niets gebeurt
+      telt mee. De sessie wordt daarom door een wake geopend en na deze
+      stilte weer gesloten. Lager is goedkoper; hoger maakt een late
+      vervolgvraag iets sneller.
+  live_followup_s:
+    name: "💵 GPT-Live kosten · Sessie vasthouden voor vervolgvraag (seconden)"
+    description: >-
+      Optioneel (standaard 8). Hoe lang de sessie na een antwoord open blijft
+      zodat een vervolgvraag niet voor een nieuwe verbinding betaalt. Het
+      vervolgvenster van het apparaat sluit meestal eerder. 0 = direct na het
+      antwoord sluiten.
+  live_rewake_grace_s:
+    name: "💵 GPT-Live kosten · Respijt voor nieuwe wake (seconden)"
+    description: >-
+      Optioneel (standaard 0, maximaal 30). Houdt de betaalde, gereedstaande
+      sessie kort open nadat het apparaat het vervolgvenster sluit. Een nieuwe
+      wake binnen dit venster hergebruikt de sessie en slaat een nieuwe
+      handshake over. 0 sluit direct en kost het minst.
+  live_max_silent_s:
+    name: "💵 GPT-Live kosten · Langste stille periode (seconden)"
+    description: >-
+      Optioneel (standaard 45). Harde grens voor een sessie waarin niets
+      hoorbaar is en niemand spreekt — lang genoeg voor een trage opzoeking,
+      kort genoeg dat een vastgelopen sessie niet blijft kosten. GPT-Live
+      stuurt continu digitale stilte tussen antwoorden, dus "het model praat
+      nog" wordt nooit op zichzelf vertrouwd.
+  live_max_session_s:
+    name: "💵 GPT-Live kosten · Maximale sessieduur (seconden)"
+    description: >-
+      Optioneel (standaard 300 = $0,25). Absolute grens voor één sessie, wat
+      er ook gebeurt. Een nieuwe wake opent simpelweg een nieuwe sessie. Houd
+      het onder 3300 zodat het binnen de 60-minutengrens van OpenAI blijft.
+  live_max_session_minutes_per_day:
+    name: "💵 GPT-Live kosten · Daglimiet (sessieminuten)"
+    description: >-
+      Optioneel (standaard 60 sessieminuten = $3,00 per dag, gedeeld door
+      alle apparaten). Een HARDE grens: zodra die bereikt is weigert de
+      assistent gesprekken en zegt dat hardop, tot het venster van 24 uur
+      doorschuift. 0 schakelt deze grens uit — zet nooit beide grenzen uit.
+  live_max_usd_per_day:
+    name: "💵 GPT-Live kosten · Daglimiet (dollars)"
+    description: >-
+      Optioneel (standaard $3,00 per dag aan spreektijd, gedeeld door alle
+      apparaten). Een HARDE grens, naast de sessieminutengrens; wat het eerst
+      bereikt wordt stopt nieuwe sessies. Dit dekt alleen GPT-Live-sessietijd
+      — de tokens van het achterliggende model worden apart gefactureerd en
+      zijn hier niet meegerekend. 0 schakelt deze grens uit.
 
   # --- 🔍 Debug ---
   enable_recording:

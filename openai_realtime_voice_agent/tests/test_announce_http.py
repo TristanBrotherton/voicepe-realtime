@@ -112,6 +112,26 @@ class TestAnnounceHttp(AnnounceServerTestCase):
             self.assertEqual(response.status, 200)
         self.assertEqual(len(self.attempts[0][0]), announce_http.MAX_MESSAGE_CHARS)
 
+    async def test_similar_but_distinct_answers_are_both_announced(self):
+        async with self.post({"message": "No events tomorrow", "device_id": "office",
+                              "announcement_id": "calendar-tomorrow"}) as response:
+            self.assertEqual((await response.json())["status"], "announced")
+        async with self.post({"message": "No events Sunday", "device_id": "office",
+                              "announcement_id": "calendar-sunday"}) as response:
+            self.assertEqual((await response.json())["status"], "announced")
+        self.assertEqual(len(self.attempts), 2)
+
+    async def test_same_announcement_id_suppresses_rephrased_retry(self):
+        first = {"message": "The result is ready", "device_id": "office",
+                 "announcement_id": "request-123"}
+        retry = {"message": "Your result is now ready", "device_id": "office",
+                 "announcement_id": "request-123"}
+        async with self.post(first) as response:
+            self.assertEqual((await response.json())["status"], "announced")
+        async with self.post(retry) as response:
+            self.assertEqual((await response.json())["status"], "duplicate_suppressed")
+        self.assertEqual(len(self.attempts), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

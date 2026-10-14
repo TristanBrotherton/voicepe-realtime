@@ -8,7 +8,7 @@ import os
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, Frame
+from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, OutputTransportMessageFrame, Frame
 from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializerType
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,22 @@ WAKE_META_STRINGS = ("turn", "src", "model", "model_sha", "tier", "fw")
 WAKE_META_NUMBERS = ("cutoff", "cutoff_uint8", "window", "fire_age_ms", "v")
 MAX_TRIGGER_AUDIO_BYTES = 3 * 16000 * 2  # 3 s of 16 kHz mono PCM16
 MAX_TRIGGER_CHUNKS = 64
+
+# Wake sources the microphone produces. The firmware runs micro_wake_word
+# locally and reports `src` as `wake_word` or `button`; a missing `src` is an
+# older firmware's acoustic wake. Only these can be triggered by the device
+# hearing ITSELF — a button press is a human finger and is never suppressed.
+ACOUSTIC_WAKE_SOURCES = frozenset({"", "wake_word"})
+# Extra margin past the out-of-band audio suppression window before an
+# acoustic wake is trusted again. micro_wake_word scores a sliding window, so
+# a detection can be reported slightly after the audio that caused it has
+# finished playing through the speaker.
+SELF_WAKE_TAIL_S = 0.6
+# Quiet time on the mic stream after which the next frame counts as the device
+# opening its microphone for a new turn. The firmware streams continuously for
+# the duration of a turn (frames every few tens of ms), so anything above a
+# second is a new burst, not a hiccup.
+MIC_OPEN_GAP_S = 1.0
 
 
 def parse_wake_meta(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,12 +88,18 @@ class RawAudioSerializer(FrameSerializer):
         # playing, inbound mic audio is dropped so the assistant can't hear
         # and answer itself.
         self.suppress_inbound_until = 0.0
+        # Acoustic wakes dropped because they were our own announcement coming
+        # back through the microphone (see is_self_wake).
+        self.self_wakes_suppressed = 0
         self._last_button_mono = 0.0
         # Set on wake; cleared when we ack the first mic frame back to the
         # device (cancels its no-speech watchdog — audio is flowing).
         self._ack_pending = False
+        # Last inbound mic frame, for the mic-open backstop above.
+        self._last_audio_mono = 0.0
         self._on_activity = None
         self._on_output_audio = None
+        self.on_output_batch_end = None
         self.current_turn_id = ""
         self.wake_meta: Dict[str, Any] = {}
         self._trigger_chunks: Dict[str, list] = {}
@@ -113,6 +135,15 @@ class RawAudioSerializer(FrameSerializer):
     def set_first_audio_handler(self, handler):
         """Async no-arg callback fired on the first mic frame after a wake."""
         self._set("first_audio", handler)
+
+    def set_mic_open_handler(self, handler):
+        """Async no-arg callback fired when the device's mic starts streaming.
+
+        Unlike ``first_audio`` this does not depend on a wake frame having
+        arrived, so it is the backstop that opens an on-demand GPT-Live
+        session when a wake message is lost (see MIC_OPEN_GAP_S).
+        """
+        self._set("mic_open", handler)
 
     def set_enroll_stopped_handler(self, handler):
         """Async no-arg callback fired when the DEVICE ends enrollment."""
@@ -241,9 +272,39 @@ class RawAudioSerializer(FrameSerializer):
         meta = parse_wake_meta({"turn": data.get("turn")})
         return meta.get("turn", "")
 
+    def is_self_wake(self, data: Dict[str, Any]) -> bool:
+        """Did the device hear its OWN out-of-band speech and wake on it?
+
+        The echo guard for inbound *audio* (``suppress_inbound_until``) cannot
+        cover this: the wake word runs in firmware, so the detection arrives as
+        a JSON control frame that never passes through the audio path. On
+        2026-10-07 the Workshop device fetched the time correctly twice, heard
+        its own "One moment." acknowledgement, woke on it, and the resulting
+        new-wake/interrupt cancelled the answer it was about to speak.
+
+        Only an *acoustic* wake inside the out-of-band playback window plus a
+        short tail is dropped. A button press is a deliberate human action and
+        always gets through, as does ``{"type":"interrupt"}``, which is a
+        different control frame entirely — so stop and barge-in keep working
+        while the assistant is speaking its own reply (reply audio does not set
+        this window at all; only prompts and announcements do).
+        """
+        source = str(data.get("src") or "").strip().lower()
+        if source not in ACOUSTIC_WAKE_SOURCES:
+            return False
+        return time.monotonic() < self.suppress_inbound_until + SELF_WAKE_TAIL_S
+
     async def _handle_wake(self, data: Dict[str, Any]) -> None:
         # Sent by va_client on every wake. Marks a fresh turn boundary for the
         # dangling-VAD guard and anchors this turn's latency timeline.
+        if self.is_self_wake(data):
+            self.self_wakes_suppressed += 1
+            logger.warning(
+                "🔇 ignoring a wake the device heard from its own announcement "
+                f"(self-wake #{self.self_wakes_suppressed}); the turn in progress "
+                "is NOT cancelled"
+            )
+            return
         self._last_wake_mono = time.monotonic()
         self._reply_audio_since_wake = False
         self._ack_pending = True
@@ -330,6 +391,19 @@ class RawAudioSerializer(FrameSerializer):
             self._enrollment_recorder.feed(message)
             return None
 
+        # A burst of mic audio after a quiet gap means the device opened its
+        # microphone: it only streams during an active turn or an open
+        # follow-up window. That makes this the backstop for the on-demand
+        # GPT-Live session (app/live_session_gate.py) when the {"type":"wake"}
+        # frame itself never arrives — a dropped JSON message would otherwise
+        # cost the user the whole turn. Deliberately placed AFTER the
+        # announcement echo-guard and the enrollment branch, so neither our own
+        # speech nor an enrollment capture can open a billed session.
+        now = time.monotonic()
+        if now - self._last_audio_mono > MIC_OPEN_GAP_S:
+            await self._call("mic_open")
+        self._last_audio_mono = now
+
         for tap in self._audio_taps:
             tap.feed(message)
 
@@ -349,8 +423,13 @@ class RawAudioSerializer(FrameSerializer):
         if self._oob_done is not None:
             self._oob_done.set()
 
-    async def serialize(self, frame: Frame) -> bytes:
-        """Reply audio frames go out as raw PCM; nothing else is serialized."""
+    async def serialize(self, frame: Frame) -> bytes | str:
+        """Raw PCM plus ordered Live batch fences; other frames are ignored."""
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            if frame.message.get('type') == 'output_batch_end':
+                if self.on_output_batch_end is not None:
+                    self.on_output_batch_end(frame.message['output_batch_id'])
+                return json.dumps(frame.message)
         if isinstance(frame, OutputAudioRawFrame):
             if self._oob_done is not None and not self._oob_done.is_set():
                 try:

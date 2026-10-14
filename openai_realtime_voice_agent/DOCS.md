@@ -81,7 +81,7 @@ Configuration tab is grouped: **🔑 Basics → 🗣️ Model & voice → 💬 C
 | Option | Default | Note |
 |---|---|---|
 | `openai_model` | `gpt-realtime-2` | newest speech-to-speech model |
-| `openai_voice` | `marin` | `marin`/`cedar` are the newest voices |
+| `openai_voice` | `marin` | Realtime: `marin`/`cedar`; GPT-Live also has regional voices such as British masculine `vesper` |
 | `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language (the transcript is logged only with `log_transcripts`) |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
 | `follow_up_listen_seconds` | `8` | mic stays open this long so you can answer back |
@@ -201,6 +201,20 @@ by voice minutes later. Returns 503 when that device (or any device) is not
 connected, so callers can fall back to a text channel. Generate a long random
 token; the add-on runs on the host network, so the token is the lock.
 
+**Long tasks (router mode).** A request that takes longer than a moment
+becomes a background task: the voice says it is still working, the
+conversation goes on, and the result is spoken when it lands, never twice and
+never as done before it is. A slow lookup keeps the open session at most
+`live_task_hold_session_s` (90 s); after that the result comes by a short new
+session through the spend gate, an announcement, or a text
+(`live_task_delivery`). Set `openclaw_callback_url` so the bridge can report
+an accepted task back with `POST /task-result` (`{"task_id", "answer", "ok":
+true}`; a missing `ok` is treated as a failure). `live_task_quiet_hours`
+holds every task result from a reopened session or an announcement. A held
+action that needs a spoken yes is never asked from the background: the voice
+says it was not done and the user asks again. All `live_task_*` options are
+optional; see the configuration reference.
+
 The integration is agent-agnostic — any agent behind a small bridge works. Full
 contracts and examples:
 [Agent Integration](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/agent-integration.md).
@@ -229,6 +243,142 @@ The add-on log shows each turn: one `⏱️ turn` line with its timings (no word
 `📞 phase ->` (device state), tool calls, and `🔌 …reconnecting` / `✅ reconnected`
 on a connection recovery. With `log_transcripts` on it also shows `🗣️ user:` and
 `🤖 assistant:` lines. View it on the add-on **Log** tab.
+
+## 12. GPT-Live runtime (experimental)
+
+The add-on can run on either of two OpenAI voice protocols:
+
+- **Realtime** (default, `voice_runtime` unset): the OpenAI Realtime API with
+  `openai_model`, `openai_voice`, semantic VAD, and tools on the voice model.
+  Every install so far runs this; nothing changes unless you opt in.
+- **Live** (`voice_runtime: live`): OpenAI GPT-Live (`gpt-live-1`). The voice
+  model listens and speaks continuously and hands any work that needs tools
+  or reasoning to a delegated Responses backend (`live_backend_model`), which
+  calls the same Home Assistant, web search, timer, memory, enrollment,
+  confirmation and agent tools through the same safety gates.
+
+> ### ⚠️ GPT-Live costs money by the clock
+>
+> GPT-Live is **$0.05 per connected session minute, billed per second**, and
+> **idle time inside an open session is billed**. A session left open is
+> **$3.00/hour, $72/day, about $2,190/month — per device** — even if nobody
+> says a word. The delegated backend model's tokens, hosted tools and web
+> searches are billed **separately** on top of that.
+>
+> An always-connected session on two mostly-idle devices can bill **hundreds
+> of session-minutes (tens of dollars of voice charges) in a single day**,
+> before any backend call.
+>
+> Since 0.18.1 the session is **on demand**: nothing is connected while the
+> device is idle, a wake opens a session, and it closes again on a short
+> bounded timer. There are also **hard daily caps** (60 session-minutes /
+> $3.00 by default, shared by every device) after which turns are refused out
+> loud. Read the 💵 *GPT-Live cost safety* section of the configuration
+> reference before enabling Live, set the caps you are comfortable with, and
+> watch `sensor.voicepe_<instance>_live_session_cost_today`.
+
+To try it on one instance: set `voice_runtime: live` and
+`live_acknowledge_gaps: true` in the ⋮ → *Edit in YAML* view, restart, and
+read the startup log: it prints the GPT-Live settings, the cost model and the
+caps in force, the parity report and any Realtime-only options that are
+ignored. Set `voice_runtime` back to `realtime` (or remove it) and restart to
+roll back; the Realtime path is untouched by the switch.
+
+What differs under GPT-Live:
+
+- `openai_voice` must be a documented GPT-Live voice. Shared voices are
+  `marin` and `cedar`; Live additionally provides `quartz`, `ripple`, `vesper`,
+  `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`, `delta`
+  and `cinder`. The regional labels describe influence, not a hard language
+  restriction. The [official voice table](https://developers.openai.com/api/docs/guides/live-conversations#voice-options)
+  identifies `vesper` as a natural British masculine voice. Anything else
+  falls back to the server default with a warning.
+- Live-only voices are not in the Realtime dropdown. In the Configuration tab,
+  choose **Voice → custom**, reveal unused optional options, and set **Voice
+  (custom)** to the API name. For a British masculine voice, the YAML is:
+
+  ```yaml
+  openai_voice: custom
+  openai_voice_custom: vesper
+  voice_runtime: live
+  live_acknowledge_gaps: true
+  ```
+
+  Restart after changing the voice. GPT-Live fixes the voice at session start,
+  so an existing session cannot switch in place.
+- `turn_detection_type`, `vad_*`, `noise_reduction`, `openai_speed` and the
+  `transcription_*` options have no equivalent and are ignored. Transcripts
+  come from the Live session itself.
+- A device "stop" asks the model to yield and drops its remaining audio
+  locally; GPT-Live has no `response.cancel`, so backend work already started
+  still finishes.
+- `output_lead_buffer_ms` defaults to 600 instead of 0. GPT-Live delivers
+  reply audio at about real time, so unlike Realtime the device never builds
+  its own playback cushion and replies break up without one. This adds about
+  600 ms before the first word. Set the option explicitly to change it.
+- `live_stream_replies` is an off-by-default canary. When enabled, only a
+  verified post-backend final answer starts playing as its audio arrives.
+  Pre-tool speech, tool-free answers and confirmation questions keep the
+  complete-reply safety gate.
+- GPT-Live streams audio continuously, silence included, and has no
+  end-of-audio event. The add-on therefore sends the device *speech*: a pause
+  inside a reply is passed through untouched so the speaker never runs dry
+  mid-sentence, while a run of silence between replies is withheld. Without
+  that, the device would be told to start replying on silence and would spend
+  its playback cushion before the first word ever arrived.
+- Home Assistant actions are cleaned up before they are sent. GPT-Live's
+  backend fills in every optional parameter of a tool, using an empty string
+  or a zero where it has no value; Home Assistant rejects an empty target and
+  the action fails without doing anything. Those placeholders are removed
+  first, a failed action comes back to the model with what to try instead, and
+  after two failed attempts at one device in a single request the add-on stops
+  sending more and the assistant asks you which device you meant. A device
+  whose only name is empty is *not* cleaned up — removing it would widen the
+  action to everything — so that call is still rejected.
+- **The session only exists around a turn.** Startup connects nothing. A wake
+  opens a session (or, if the wake message is lost, the device's microphone
+  opening does); it closes after 10 s of quiet, 8 s after a reply with no
+  follow-up, immediately when you say stop or the device's follow-up window
+  times out, at 45 s with nothing audible, and at 300 s no matter what. It also
+  closes on disconnect, on a failed handshake, ahead of the server's own expiry
+  and on every error path, and it is never reopened while the house is quiet.
+  Your first words are not lost to the connection: audio that arrives while the
+  session is still opening is held locally (up to 5 s) and replayed in order.
+  `live_rewake_grace_s` can optionally keep that ready session for up to 30
+  billed seconds after the device's follow-up mic closes; a wake inside the
+  grace skips the next handshake. It defaults to 0 (immediate close).
+  All session bounds are tunable — see 💵 *GPT-Live cost safety* in the
+  configuration reference.
+- **Inaudible output never keeps a session open.** GPT-Live streams digital
+  silence between replies and has no end-of-audio event, so "the model is
+  speaking" cannot be trusted as a reason to keep paying. Only audible reply
+  audio and your own speech extend a session.
+- **There is a hard spend cutoff**, shared by every device and persisted across
+  restarts: 60 session-minutes or $3.00 of voice time in a rolling 24 hours by
+  default. At the cap the assistant says "I've reached today's voice usage
+  limit" instead of answering, and opens nothing. Raise, lower or disable the
+  caps with `live_max_session_minutes_per_day` and `live_max_usd_per_day`.
+- Live is billed per second of voice session plus backend tokens, so the
+  per-response cost sensor cannot be published for Live sessions. Instead
+  `sensor.voicepe_<instance>_live_session_cost_today` reports voice dollars,
+  session-minutes, sessions, both caps and the remaining allowance, and every
+  session close logs its duration, cost and reason. This is the parity gap
+  `live_acknowledge_gaps` accepts.
+
+If a GPT-Live reply sounds wrong, the log already has what is needed: each
+reply writes a `🔊 live output audio` line (how many audio chunks arrived and
+were forwarded, their total bytes, peak level, silence and suppression counts,
+any byte-alignment or decoding failures, how the silence was split between
+in-reply pauses kept and idle withheld, the delivery pace and a hash of the
+forwarded audio) and a `🔧 live function calls` line (how many tool calls were
+seen, dispatched, answered and continued, how many repeats were refused, and
+for each recent call its tool name, argument *names*, what the tool answered
+and any placeholder arguments that were dropped). Neither contains any
+transcript, any audio, or any argument value. Report the room, the time and
+those two lines. To check the protocol
+itself without involving a device or your home, run
+`python -m app.live_probe --speak "turn off the kitchen lights"` inside the
+add-on container: it opens a real Live session with harmless echo tools only.
 
 ## Known limitations
 

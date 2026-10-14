@@ -7,6 +7,10 @@
  *
  *   POST <secret path>  {"question": "...", "room": "kitchen", "device_id": "..."}
  *                       → {"answer": "..."}
+ *       Optional "session_key" ("voicepe-…", one per request, from the add-on)
+ *       names the OpenClaw session; "answer_only": true means the question
+ *       already carries the add-on's answer-only prefix (fewest lookups, 1-3
+ *       spoken sentences), so the THOROUGH-lookup line below is dropped.
  *       Runs one OpenClaw agent turn (fresh session per request). If the turn
  *       outlives ASK_TIMEOUT_MS, replies "still working" immediately, lets the
  *       turn finish, and POSTs the eventual answer to that room's announce
@@ -243,9 +247,24 @@ function localRecall(query) {
   return out;
 }
 
-function runAgent(question, room, deviceId = "") {
+// A caller-chosen session key is honoured only in the add-on's shape and never
+// for two runs at once (overlapping runs on one OpenClaw session queue).
+const SESSION_KEY_SHAPE = /^voicepe-[A-Za-z0-9_-]{1,112}$/;
+const activeSessionKeys = new Set();
+
+function chooseSessionKey(requested) {
+  const key = String(requested || "");
+  if (SESSION_KEY_SHAPE.test(key) && !activeSessionKeys.has(key)) return key;
+  return `voicepe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly = false) {
   return new Promise((resolve) => {
-    const sessionKey = `voicepe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionKey = chooseSessionKey(requestedKey);
+    activeSessionKeys.add(sessionKey);
+    const lookups = answerOnly ? "" :
+      "LOOKUPS: when asked for a person or fact, be THOROUGH before answering not-found — check " +
+      "memory files, then every source you would use for a direct request. ";
     const directive =
       "[Voice request — you are answering someone speaking to their voice assistant " +
       "out loud. For lookups and easily reversible tasks, act immediately using your " +
@@ -253,10 +272,8 @@ function runAgent(question, room, deviceId = "") {
       "reasonable assumption. For anything irreversible or security-sensitive " +
       "(unlocking or opening doors, garages or gates, disarming alarms, payments or " +
       "purchases, messaging someone new, deleting data) do NOT act: reply with one " +
-      "short question asking the user to confirm. LOOKUPS: " +
-      "when asked for a person or fact, be THOROUGH before answering not-found — check " +
-      "memory files, then every source you would use for a direct request. When you " +
-      "find such a fact, silently save it to a memory file (memory/<name>.md) so " +
+      "short question asking the user to confirm. " + lookups + "When you " +
+      "find a person or fact, silently save it to a memory file (memory/<name>.md) so " +
       "future recall is instant. If the task clearly needs minutes of work (research, " +
       "multi-step jobs), reply NOW that you will report back, then do the work and " +
       "report via the Voice PE announce endpoint (see your TOOLS.md). Otherwise reply " +
@@ -272,6 +289,7 @@ function runAgent(question, room, deviceId = "") {
     p.stdout.on("data", (d) => (out += d.toString()));
     p.stderr.on("data", (d) => (err += d.toString()));
     p.on("close", (code) => {
+      activeSessionKeys.delete(sessionKey);
       const text = out.trim();
       if (timedOut) {
         // The HTTP caller is long gone — deliver the answer to the room.
@@ -296,7 +314,7 @@ const server = createServer((req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
-    let question = "", recall = "", room = "", deviceId = "";
+    let question = "", recall = "", room = "", deviceId = "", sessionKey = "", answerOnly = false;
     let notificationDestination = "", notificationMessage = "", notificationMedia = "";
     try {
       const parsed = JSON.parse(body);
@@ -304,6 +322,8 @@ const server = createServer((req, res) => {
       recall = String(parsed?.recall || "").trim();
       room = String(parsed?.room || "").trim().toLowerCase();
       deviceId = cleanDeviceId(parsed?.device_id);
+      sessionKey = String(parsed?.session_key || "").trim();
+      answerOnly = parsed?.answer_only === true;
       notificationDestination = String(parsed?.notification_destination || "").trim();
       notificationMessage = String(parsed?.notification_message || "").trim();
       notificationMedia = String(parsed?.notification_media || "").trim();
@@ -334,7 +354,7 @@ const server = createServer((req, res) => {
       return;
     }
     console.log(`[bridge] question (${room || "?"}${deviceId ? `/${deviceId}` : ""}): ${describe(question)}`);
-    const answer = await runAgent(question, room, deviceId);
+    const answer = await runAgent(question, room, deviceId, sessionKey, answerOnly);
     console.log(`[bridge] answer: ${describe(answer)}`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ answer }));

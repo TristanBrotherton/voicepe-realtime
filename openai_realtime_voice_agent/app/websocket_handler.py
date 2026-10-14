@@ -23,7 +23,6 @@ from pipecat.frames.frames import (
     StartFrame,
 )
 from pipecat.audio.utils import create_stream_resampler
-from pipecat.services.openai.realtime import events as openai_rt_events
 
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
@@ -38,6 +37,7 @@ from app.input_replay import InputReplayBuffer
 from app.wake_events import WakeAudioCapture, WakeEventStore
 from app.device_auth import DeviceAuth
 from app.ha_sensors import PUBLISHER
+from app.session_controls import controls_for
 
 logger = logging.getLogger(__name__)
 
@@ -206,9 +206,20 @@ class ConnectionRecovery(FrameProcessor):
     REFRESH_CHECK_S = 60.0    # poll cadence of the background check
 
     def __init__(self, openai_service, emit_idle=None, phase_emitter=None,
-                 replay=None, should_replay=None, on_turn_error=None, **kwargs):
+                 replay=None, should_replay=None, on_turn_error=None,
+                 session_gate=None, **kwargs):
         super().__init__(**kwargs)
         self._service = openai_service
+        self._controls = controls_for(openai_service)
+        # On-demand GPT-Live (app/live_session_gate.py). When a gate owns the
+        # session, this processor must NOT bring one back on its own: a
+        # reconnect while the house is idle re-opens a billed session nobody
+        # asked for, and the proactive 55-minute refresh is meaningless because
+        # a session never lives that long. Recovery is allowed only while a
+        # turn is genuinely unresolved — that is a user waiting for an answer —
+        # and a drop with no turn in flight is simply a close.
+        self._gate = session_gate
+        self._gate_close_task = None
         # Reconnects hold mic frames and, when the request in progress was not
         # answered yet, replay it into the fresh session (input_replay.py).
         self._replay = replay
@@ -247,7 +258,11 @@ class ConnectionRecovery(FrameProcessor):
             # or act on an error — that resurrected a dead connection's session.
             await self.push_frame(frame, direction)
             return
-        if self._refresh_task is None:
+        if self._refresh_task is None and self._gate is None:
+            # Never started under an on-demand gate: the session's hard maximum
+            # lifetime is minutes, so there is no 60-minute cap to stay ahead
+            # of, and a refresh loop that reconnects during quiet is precisely
+            # the behaviour that has to stop.
             self._refresh_task = asyncio.create_task(self._proactive_refresh_loop())
         if isinstance(frame, InputAudioRawFrame):
             # Only kept for the proactive-refresh "is anyone interacting?" check.
@@ -271,11 +286,24 @@ class ConnectionRecovery(FrameProcessor):
             session_dead = any(m in msg for m in self._SESSION_DEAD_MARKERS)
             # (c) the OpenAI READ side died or ended (network drop / silent
             #     server close). pipecat produces no ErrorFrame for these at
-            #     all — SafeRealtimeLLMService wraps the receive loop and
-            #     reports them with this message. Without it the session sat
+            #     all — SafeRealtimeLLMService (and the GPT-Live service)
+            #     wrap the receive loop and report them with this message. Without it the session sat
             #     deaf for hours until the next utterance hit the dead socket.
-            reader_dead = "realtime receive loop" in msg
+            reader_dead = "receive loop" in msg
             if send_flood or session_dead or reader_dead:
+                if self._gate is not None and not self._gate.turn_in_flight:
+                    # On-demand session with nobody waiting: close, never
+                    # reopen. This is the "no reconnect loop while idle" rule —
+                    # without it one dead socket produces an endless chain of
+                    # fresh, billed sessions in an empty house.
+                    # Kept on the instance so the task is not garbage
+                    # collected mid-close: a dropped close leaves a session
+                    # that is still being billed.
+                    self._gate_close_task = asyncio.create_task(
+                        self._gate.close("connection lost while idle")
+                    )
+                    await self.push_frame(frame, direction)
+                    return
                 now = time.monotonic()
                 if now - self._last_attempt >= self.RECONNECT_COOLDOWN_S:
                     self._reconnecting = True
@@ -304,6 +332,13 @@ class ConnectionRecovery(FrameProcessor):
     def reconnecting(self) -> bool:
         return self._reconnecting
 
+    def _reconnect_allowed(self) -> bool:
+        """Under an on-demand gate, only a waiting user justifies a new session."""
+        gate = self._gate
+        if gate is None:
+            return True
+        return gate.turn_in_flight and getattr(self._service, "session_ready", False)
+
     async def probe_liveness(self, timeout_s: float = 1.5) -> bool:
         """Positive liveness check: a WebSocket ping must get its pong back.
 
@@ -331,6 +366,14 @@ class ConnectionRecovery(FrameProcessor):
         server events, no error, request lost)."""
         now = time.monotonic()
         if self._closed or self._reconnecting or now - self._last_attempt < self.RECONNECT_COOLDOWN_S:
+            return
+        if self._gate is not None and not self._reconnect_allowed():
+            # Under an on-demand gate there is normally no socket at all to be
+            # half-open, and the liveness probes that call this run right after
+            # a wake — while the gate's own handshake is still in flight. Never
+            # answer "no pong yet" by replacing a session that is still being
+            # born, and never open one at all when no turn is waiting.
+            logger.debug(f"on-demand gate: not reconnecting ({reason[:60]})")
             return
         self._reconnecting = True
         self._last_attempt = now
@@ -364,7 +407,11 @@ class ConnectionRecovery(FrameProcessor):
             if reset is None:
                 logger.error("❌ service has no reset_conversation(); cannot reconnect in place")
                 return
-            await reset()
+            if self._gate is not None:
+                if not await self._gate.recover(reason):
+                    return
+            else:
+                await reset()
             self._connected_at = time.monotonic()
             logger.info(
                 f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "
@@ -406,7 +453,7 @@ class ConnectionRecovery(FrameProcessor):
                 now = time.monotonic()
                 age = now - self._connected_at
                 quiet = now - self._last_input_audio
-                busy = getattr(self._service, "_current_assistant_response", None) is not None
+                busy = self._controls.response_active
                 if (age >= self.REFRESH_AGE_S and quiet >= self.REFRESH_QUIET_S
                         and not busy and now - self._last_attempt >= self.RECONNECT_COOLDOWN_S):
                     self._reconnecting = True
@@ -469,6 +516,9 @@ class WebSocketHandler:
     """Handles WebSocket transport initialization, pipeline building, and event management."""
 
     WEDGE_TIMEOUT_S = 12.0
+    # Phases in which a turn is owned by something else (the thinking watchdog,
+    # the reply path), so the silent-wake check never ends it.
+    WEDGE_HANDED_OFF_PHASES = ("thinking", "replying")
     # A wake opens a liveness check that runs during the chime + mic-open
     # delay, so a dead socket is replaced before the user starts talking.
     WAKE_PROBE_TIMEOUT_S = 1.5
@@ -525,6 +575,16 @@ class WebSocketHandler:
         # Called with (connection, kind) to speak a short error to the user
         # (set by main.py; see SpokenPrompts).
         self.turn_error_speaker = None
+        # On-demand GPT-Live session lifetime. Set by main.py on the Live
+        # runtime only; None means the model session lives as long as the
+        # device connection (the Realtime behaviour, which is free to idle).
+        # The spend ledger is deliberately SHARED by every device: the cap is
+        # an add-on-instance cap persisted to one file, NOT a household-wide
+        # cap across independently running add-ons.
+        self.live_session_policy = None
+        self.live_spend_ledger = None
+        # Called with (connection, reason) when the spend cutoff refuses a turn.
+        self.budget_refusal_speaker = None
         self._background: set = set()
 
         # Per-device connections. Everything that used to be a singleton here —
@@ -568,6 +628,66 @@ class WebSocketHandler:
         )
 
 
+    def _build_session_gate(self, connection: DeviceConnection):
+        """The on-demand session owner for one connection, or None.
+
+        Returns None unless a Live session policy is configured AND the
+        connection's service actually supports the on-demand surface, so the
+        Realtime runtime is byte-for-byte unaffected.
+        """
+        policy = self.live_session_policy
+        service = connection.openai_service
+        if policy is None or not getattr(service, "on_demand", False):
+            return None
+        from app.live_session_gate import LiveSessionGate
+
+        async def _refused(reason: str) -> None:
+            speaker = self.budget_refusal_speaker
+            if speaker is not None:
+                await speaker(connection, reason)
+
+        def _charged(charge) -> None:
+            # Publish on every close, so the session-minute total a spend
+            # watchdog reads is never more than one session stale.
+            try:
+                PUBLISHER.live_session_cost(gate.snapshot())
+            except Exception as e:
+                logger.debug(f"live cost sensor publish failed: {e!r}")
+            # Closing the paid model session is also a hard device turn
+            # boundary. The real 2026-10-07 failure reached this callback while
+            # PhaseEmitter still believed a tiny low-level output burst meant
+            # `replying`; without an explicit idle the physical ring spun
+            # forever after the session itself was gone.
+            phase_emitter = connection.phase_emitter
+            if phase_emitter is not None:
+                self._spawn(phase_emitter.force_idle(
+                    f"GPT-Live session closed: {getattr(charge, 'reason', 'closed')}"
+                ))
+
+        gate = LiveSessionGate(
+            service, device_id=connection.device_id, policy=policy,
+            ledger=self.live_spend_ledger, on_refused=_refused,
+            on_closed=_charged,
+        )
+        # Activity -> deadlines. Only audible output counts as the model being
+        # worth paying for; see LiveSessionGate for why silence must not.
+        service.on_input_audio = gate.note_user_audio
+        service.on_user_utterance = gate.note_user_utterance
+        service.on_audible_output = gate.note_audible_output
+        service.on_backend_activity = gate.note_backend_activity
+        service.on_reply_finished = gate.note_reply_finished
+        if hasattr(service, "on_task_reopen"):
+            # A background task's result arriving after the session closed
+            # may open one short session to speak it: through this gate, so
+            # the spend ledger, the daily caps and every idle bound apply.
+            service.on_task_reopen = lambda: gate.open("background task result")
+        logger.info(
+            f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
+            f"idle {policy.idle_s:.0f}s, follow-up {policy.followup_s:.0f}s, "
+            f"silent {policy.max_silent_s:.0f}s, max {policy.max_session_s:.0f}s"
+        )
+        return gate
+
     def build_pipeline(
         self,
         connection: DeviceConnection,
@@ -594,6 +714,10 @@ class WebSocketHandler:
         
         if openai_service is None:
             raise RuntimeError("OpenAI service must be created before building pipeline")
+        # Provider-neutral view of the model session (app/session_controls.py):
+        # the device-driven pokes below (stop, connect, flush, verdicts) never
+        # touch a wire protocol directly.
+        controls = controls_for(openai_service)
         
         logger.info(f"🔗 Building pipeline with WebSocket transport and OpenAI service: {type(openai_service).__name__}")
         
@@ -628,8 +752,18 @@ class WebSocketHandler:
         timeline = connection.turn_timeline
         connection.replay = InputReplayBuffer()
 
+        # On-demand GPT-Live session ownership. Created BEFORE ConnectionRecovery
+        # so recovery can ask it whether a reconnect is justified at all.
+        gate = self._build_session_gate(connection)
+        connection.session_gate = gate
+
         def _should_replay() -> bool:
             # Replay only a request that is still in progress and unanswered.
+            # Once a tool has started, its side effect may have happened even
+            # if its result never reached the model. Replaying the utterance in
+            # a replacement session could execute it twice.
+            if getattr(openai_service, "unsafe_to_replay_input", False):
+                return False
             turn = getattr(timeline, "current", None)
             return bool(turn and not turn.done and "first_model_audio" not in turn.stamps)
 
@@ -642,7 +776,7 @@ class WebSocketHandler:
             openai_service=openai_service, emit_idle=send_phase,
             phase_emitter=connection.phase_emitter,
             replay=connection.replay, should_replay=_should_replay,
-            on_turn_error=_on_turn_error,
+            on_turn_error=_on_turn_error, session_gate=gate,
         )
         pipeline_components = [
             transport.input(),
@@ -828,26 +962,32 @@ class WebSocketHandler:
             # OpenAI replying to the spoken "stop", or a slow tool's answer.
             _kill_next_response["v"] = True
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🛑 device interrupt → input_audio_buffer.clear sent (drop in-flight user audio)")
+                if await controls.discard_pending_input("device interrupt"):
+                    logger.info("🛑 device interrupt → input_audio_buffer.clear sent (drop in-flight user audio)")
+                else:
+                    logger.info("🛑 device interrupt → no input buffer to clear on this runtime")
             except Exception as e:
                 logger.info(f"🛑 device interrupt → input_audio_buffer.clear no-op ({e!r})")
             try:
-                if getattr(openai_service, "_current_assistant_response", None) is not None:
-                    await openai_service.send_client_event(openai_rt_events.ResponseCancelEvent())
+                if await controls.cancel_active_response("device interrupt"):
                     logger.info("🛑 device interrupt → response.cancel sent (response was still active)")
                 else:
                     logger.info("🛑 device interrupt → no active response to cancel (device already silenced)")
             except Exception as e:
                 logger.info(f"🛑 device interrupt → response.cancel no-op ({e!r})")
+            # A stop ends the turn AND the session. The device closes its mic
+            # on stop, so there is nothing left to listen for and every further
+            # second would be billed for silence. A new wake opens a new
+            # session; the stop/barge-in semantics above are untouched — the
+            # cancel still runs first, so the model is told to be quiet before
+            # the socket goes away.
+            if gate is not None:
+                await gate.close("device stop")
 
-        @openai_service.event_handler("on_conversation_item_created")
-        async def _kill_racing_response(service, item_id, item):
-            # Pipecat fires this for every conversation.item.added; only an
-            # ASSISTANT item right after a device interrupt is the racing
-            # response to the stop word the user just cancelled.
-            if getattr(item, "role", None) != "assistant":
-                return
+        async def _kill_racing_response():
+            # Runs whenever a NEW assistant response starts; only one right
+            # after a device interrupt is the racing response to the stop
+            # word the user just cancelled.
             within_window = time.monotonic() < _interrupt_kill_until["t"]
             kill_armed = _kill_next_response["v"]
             if not within_window and not kill_armed:
@@ -857,13 +997,15 @@ class WebSocketHandler:
             # a stopped tool's answer, or the cancelled reply's tail.
             _kill_next_response["v"] = False
             try:
-                await openai_service.send_client_event(openai_rt_events.ResponseCancelEvent())
+                await controls.cancel_active_response("post-stop racing response", force=True)
                 logger.info(
                     "🛑 response raced in right after a device interrupt → "
                     "response.cancel (post-stop)"
                 )
             except Exception as e:
                 logger.info(f"🛑 post-interrupt racing-response cancel no-op ({e!r})")
+
+        controls.on_assistant_response_started(_kill_racing_response)
 
         async def _on_device_session_start():
             # va_client sends {"type":"start"} once per WebSocket CONNECTION
@@ -873,8 +1015,8 @@ class WebSocketHandler:
             # with a clean one. The per-WAKE/follow-up stale-buffer case is
             # covered by the device's {"type":"flush"} on follow-up timeout.
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🎬 device (re)connected → input_audio_buffer.clear (clean start)")
+                if await controls.discard_pending_input("device (re)connected"):
+                    logger.info("🎬 device (re)connected → input_audio_buffer.clear (clean start)")
             except Exception as e:
                 logger.debug(f"🎬 connect-time input clear no-op ({e!r})")
 
@@ -888,14 +1030,34 @@ class WebSocketHandler:
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
             try:
-                await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
-                logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
+                if await controls.discard_pending_input("follow-up cut-off"):
+                    logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
             except Exception as e:
                 logger.debug(f"🧽 mic-flush input clear no-op ({e!r})")
+            # The device just told us its follow-up window closed with no
+            # speech. Normally that is the authoritative end of the paid
+            # interaction. An explicitly configured, tightly bounded re-wake
+            # grace may retain the ready session briefly so a fresh wake does
+            # not pay another handshake; the device mic remains closed.
+            if gate is not None:
+                if gate.note_followup_closed():
+                    logger.info(
+                        "🟡 follow-up closed; retaining GPT-Live session for "
+                        f"{gate.policy.rewake_grace_s:.0f}s re-wake grace"
+                    )
+                else:
+                    await gate.close("follow-up cut-off")
 
         async def _on_device_wake(meta=None):
             meta = dict(meta or {})
             source = meta.get("src") or "wake_word"
+            # A wake is the ONLY thing that buys a GPT-Live session (with the
+            # first mic frame below as a backstop for a lost wake frame).
+            # Spawned, not awaited: the receive loop that delivered this wake
+            # also delivers the user's audio, and that audio is what the
+            # bounded pre-roll buffer preserves while the handshake runs.
+            if gate is not None:
+                self._spawn(gate.open(f"wake ({source})"))
             turn = timeline.begin(turn_id=meta.get("turn"), source=source, meta=meta)
             connection.replay.clear()
             event = self.wake_events.record_wake(
@@ -945,6 +1107,9 @@ class WebSocketHandler:
         )
 
         def _on_turn_end(outcome: str) -> None:
+            cancel_ack = getattr(openai_service, "cancel_progress_ack", None)
+            if cancel_ack is not None:
+                cancel_ack()
             turn = timeline.current
             if turn is None or turn.done:
                 return
@@ -952,8 +1117,20 @@ class WebSocketHandler:
             self.wake_events.set_outcome(connection.device_id, turn.turn_id.split(".f")[0], outcome)
 
         phase_emitter.on_turn_end = _on_turn_end
-        phase_emitter.on_bot_started = lambda: timeline.mark("bot_started")
-        phase_emitter.on_bot_stopped = lambda: timeline.mark("bot_stopped", overwrite=True)
+        def _on_bot_started():
+            cancel_ack = getattr(openai_service, "cancel_progress_ack", None)
+            if cancel_ack is not None:
+                cancel_ack()
+            timeline.mark("bot_started")
+        phase_emitter.on_bot_started = _on_bot_started
+        phase_emitter.on_user_started = getattr(openai_service, "cancel_progress_ack", None)
+        phase_emitter.on_thinking = getattr(openai_service, "schedule_progress_ack", None)
+        def _on_output_drained():
+            timeline.mark("bot_stopped", overwrite=True)
+            observer = getattr(openai_service, "note_output_drained", None)
+            if observer is not None:
+                observer()
+        phase_emitter.on_bot_stopped = _on_output_drained
 
         def _on_silent_response() -> None:
             turn = timeline.current
@@ -962,6 +1139,11 @@ class WebSocketHandler:
                     connection.device_id, turn.turn_id.split(".f")[0], "admission_silence"
                 )
             phase_emitter.end_silent_turn()
+            # The model answered nothing and called nothing. There is no request
+            # left to rescue, so a later socket drop must not re-open a session
+            # for it; the idle/silent deadlines close this one on schedule.
+            if gate is not None:
+                gate.note_turn_resolved()
 
         if hasattr(openai_service, "turn_timeline"):
             openai_service.turn_timeline = timeline
@@ -986,17 +1168,8 @@ class WebSocketHandler:
 
                 async def _on_speaker_verdict(label, name, f0):
                     try:
-                        await openai_service.send_client_event(
-                            openai_rt_events.ConversationItemCreateEvent(
-                                item=openai_rt_events.ConversationItem(
-                                    type="message",
-                                    role="system",
-                                    content=[openai_rt_events.ItemContent(
-                                        type="input_text",
-                                        text=verdict_text(connection.speaker_probe, label, name, f0),
-                                    )],
-                                )
-                            )
+                        await controls.inject_context(
+                            verdict_text(connection.speaker_probe, label, name, f0)
                         )
                     except Exception as e:
                         logger.warning(f"⚠️ speaker verdict injection failed: {e!r}")
@@ -1029,8 +1202,22 @@ class WebSocketHandler:
                 await connection.send_json({"type": "ack"})
             serializer.set_first_audio_handler(_on_first_audio)
 
+            async def _on_mic_open():
+                # Backstop for the on-demand session: the device only streams
+                # the mic during an active turn or an open follow-up window, so
+                # a burst of mic audio is itself proof of a turn. This covers a
+                # wake frame that never arrived (dropped JSON, firmware
+                # variant) without ever opening a session while the house is
+                # idle — an idle device sends no mic audio at all.
+                if gate is not None and not gate.is_open:
+                    self._spawn(gate.open("device mic opened"))
+            serializer.set_mic_open_handler(_on_mic_open)
+
             async def _on_turn_metrics(turn_id, metrics):
                 timeline.merge_device_metrics(turn_id, metrics)
+                observer = getattr(openai_service, "note_device_drain", None)
+                if observer is not None:
+                    observer(turn_id, metrics)
             serializer.set_turn_metrics_handler(_on_turn_metrics)
 
             async def _on_trigger_audio(turn_id, pcm, rate):
@@ -1046,6 +1233,7 @@ class WebSocketHandler:
             serializer.set_shadow_detection_handler(_on_shadow_detection)
 
             serializer.set_output_audio_handler(lambda: timeline.mark("first_audio_sent"))
+            serializer.on_output_batch_end = getattr(openai_service, 'note_output_drained', None)
 
             if self.enrollment_conductor is not None:
                 async def _on_device_enroll_stopped():
@@ -1079,6 +1267,20 @@ class WebSocketHandler:
         logger.warning("🔌 OpenAI socket did not answer a ping at wake — reconnecting before the request")
         await recovery.force_reconnect("liveness: no pong at wake", unstick=False)
 
+    @staticmethod
+    def _backend_progress_since(connection: DeviceConnection, phase_emitter: PhaseEmitter,
+                                since: float) -> bool:
+        """A delegation or tool is running, or one started or finished since ``since``.
+
+        Delegations and tool calls tick the turn's ``TurnLiveness`` (shared by
+        the service and the phase emitter), so this is the speech-independent
+        sign that the model understood a request.
+        """
+        liveness = getattr(phase_emitter, "_liveness", None) or connection.turn_liveness
+        if liveness is None:
+            return False
+        return liveness.in_flight > 0 or liveness.last_activity >= since
+
     async def _wedge_check(
         self, connection: DeviceConnection, phase_emitter: PhaseEmitter, wake_mono: float
     ) -> None:
@@ -1089,9 +1291,45 @@ class WebSocketHandler:
         Now a ping decides: a live socket just ends the turn (the device mic
         closes, nothing is reconnected); a dead one is replaced.
         """
+        timeline = connection.turn_timeline
+        turn = timeline.current if timeline is not None else None
         await asyncio.sleep(self.WEDGE_TIMEOUT_S)
-        if getattr(phase_emitter, "last_vad_mono", 0.0) >= wake_mono:
-            return
+        window_start = wake_mono
+        extended = False
+        while True:
+            if getattr(phase_emitter, "last_vad_mono", 0.0) >= wake_mono:
+                return
+            if getattr(phase_emitter, "_current", None) in self.WEDGE_HANDED_OFF_PHASES:
+                # The turn is thinking or replying: its own watchdog and the
+                # reply path end it. A reply must never be cut off as "no
+                # speech" because the server sent no input transcript.
+                return
+            if extended and timeline is not None and (
+                    timeline.current is not turn or (turn is not None and turn.done)):
+                return  # the turn finished or a new one began while we waited
+            if not self._backend_progress_since(connection, phase_emitter, window_start):
+                break
+            # The server sent no input transcript, but the model handed the
+            # request to the backend or a tool ran: the turn is being answered.
+            # The socket must still be alive; then look again one window later
+            # instead of killing the turn.
+            recovery = connection.recovery
+            if recovery is not None and not await recovery.probe_liveness():
+                if connection.recovery is not recovery:
+                    return
+                logger.warning(
+                    "🧟 no pong while the backend works on a wake with no input "
+                    "transcript — half-open OpenAI socket, reconnecting")
+                await recovery.force_reconnect("wedge: silent after wake")
+                return
+            if not extended:
+                logger.info(
+                    "⏳ no input transcript %.0fs after wake, but the backend is working "
+                    "on the request; the turn stays open", self.WEDGE_TIMEOUT_S
+                )
+            extended = True
+            window_start = time.monotonic()
+            await asyncio.sleep(self.WEDGE_TIMEOUT_S)
         recovery = connection.recovery
         if recovery is None:
             return
@@ -1402,6 +1640,17 @@ class WebSocketHandler:
         # CancelFrame cannot reach its end; meanwhile a live recovery or phase
         # emitter would still act on the dead connection (refresh its OpenAI
         # session, send phases to its closed socket).
+        # The session gate goes FIRST and for good: it must stop billing before
+        # anything else is unwound, and a late wake or liveness probe from a
+        # dying connection must not be able to open a new one. shutdown() also
+        # records the final charge, so a disconnect mid-session is accounted.
+        gate = connection.session_gate
+        if gate is not None:
+            try:
+                await gate.shutdown("device disconnected")
+            except Exception as e:
+                logger.warning(f"⚠️ session gate shutdown for {connection.device_id}: {e!r}")
+            logger.info(f"💵 GPT-Live session cost: {gate.snapshot()}")
         recovery = connection.recovery
         if recovery is not None:
             await recovery.close()
@@ -1437,6 +1686,7 @@ class WebSocketHandler:
         connection.openai_service = None
         connection.recovery = None
         connection.phase_emitter = None
+        connection.session_gate = None
 
     async def cleanup(self):
         """Tear down every connection at shutdown."""

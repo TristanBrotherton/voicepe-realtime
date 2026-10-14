@@ -93,6 +93,16 @@ STAT_KEYS = (
     "device.first_audio_to_audible_ms",
 )
 
+# GPT-Live router timings (0.18.26) copied from turn meta into the summary.
+# Integers, short enum strings and tool counts only: never words.
+LIVE_META_KEYS = (
+    "route_kind", "route_source", "ack_source", "speech_end_to_heard_ms",
+    "speech_end_to_result_ms", "speech_end_to_result_audio_ms",
+    "stopped_to_heard_ms", "stopped_to_result_audio_ms",
+    "commentary_to_ack_ms", "ack_to_audio_ms", "commentary_to_audio_ms",
+    "backend_calls", "backend_cached_tokens",
+)
+
 _TURN_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -340,6 +350,8 @@ class TurnTimeline:
             "tools": tools,
             "wake": {k: turn.meta[k] for k in ("model", "model_sha", "cutoff", "window", "tier", "fw")
                      if k in turn.meta},
+            **({"live": {k: turn.meta[k] for k in LIVE_META_KEYS if k in turn.meta}}
+               if any(k in turn.meta for k in LIVE_META_KEYS) else {}),
             "complete": all(s in turn.stamps for s in (
                 "speech_stopped", "first_model_audio", "first_audio_sent"))
             if turn.outcome == "replied" else None,

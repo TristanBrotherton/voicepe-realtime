@@ -38,7 +38,7 @@ jobs:
       - name: Unit tests (fails if discovery silently shrinks the suite)
         working-directory: openai_realtime_voice_agent
         env:
-          MIN_TESTS: "190"
+          MIN_TESTS: "1000"
         run: |
           PYTHONPATH=. python - <<'EOF'
           import os

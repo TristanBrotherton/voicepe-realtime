@@ -1,6 +1,7 @@
 """ConnectionRecovery teardown, wedge handling and reconnect bookkeeping."""
 import asyncio
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from pipecat.frames.frames import ErrorFrame, InputAudioRawFrame
@@ -9,7 +10,7 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from app.device_registry import DeviceConnection
 from app.main import SafeRealtimeLLMService
-from app.phase_emitter import PhaseEmitter
+from app.phase_emitter import PhaseEmitter, TurnLiveness
 from app.websocket_handler import ConnectionRecovery, WebSocketHandler
 
 
@@ -189,6 +190,104 @@ class TestWedgeCheck(unittest.IsolatedAsyncioTestCase):
         await handler._wedge_check(connection, PhaseEmitter(capture), 1.0)
         self.assertEqual(recovery.reasons, [])
         self.assertEqual(phases, ["idle"])
+
+    async def test_a_turn_the_backend_is_answering_without_an_input_transcript_is_not_killed(self):
+        # The server sent no input transcript, but the model delegated the
+        # request (or a tool started): that is progress, not a silent wake.
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append(value)
+
+        handler = WebSocketHandler()
+        handler.WEDGE_TIMEOUT_S = 0.02
+        recovery = FakeRecovery(alive=True)
+        liveness = TurnLiveness()
+        connection = DeviceConnection("kitchen", object(), recovery=recovery)
+        emitter = PhaseEmitter(capture, liveness=liveness)
+        liveness.tool_started()  # the delegation is in flight
+        check = asyncio.create_task(handler._wedge_check(connection, emitter, 1.0))
+        await asyncio.sleep(0.15)
+        self.assertEqual(phases, [], "a turn being answered must not be forced idle")
+        self.assertEqual(recovery.reasons, [])
+        self.assertFalse(check.done())
+        check.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await check
+
+    async def test_backend_activity_extends_the_check_but_a_dead_turn_still_closes(self):
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append(value)
+
+        handler = WebSocketHandler()
+        handler.WEDGE_TIMEOUT_S = 0.02
+        recovery = FakeRecovery(alive=True)
+        liveness = TurnLiveness()
+        connection = DeviceConnection("kitchen", object(), recovery=recovery)
+        emitter = PhaseEmitter(capture, liveness=liveness)
+        liveness.tool_started()
+        liveness.tool_finished()  # the backend answered once, then nothing more
+        await asyncio.wait_for(handler._wedge_check(connection, emitter, 1.0), 1.0)
+        self.assertEqual(phases, ["idle"])
+        self.assertEqual(recovery.reasons, [])
+
+    async def test_a_reply_playing_after_backend_work_is_never_cut_off_as_no_speech(self):
+        # No input transcript; the backend answered and the reply is still
+        # playing when a later window closes. It must not be forced idle.
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append(value)
+
+        handler = WebSocketHandler()
+        handler.WEDGE_TIMEOUT_S = 0.02
+        recovery = FakeRecovery(alive=True)
+        liveness = TurnLiveness()
+        connection = DeviceConnection("kitchen", object(), recovery=recovery)
+        emitter = PhaseEmitter(capture, liveness=liveness)
+        liveness.tool_started()
+        check = asyncio.create_task(handler._wedge_check(connection, emitter, 1.0))
+        await asyncio.sleep(0.05)
+        await emitter._emit("replying")
+        liveness.tool_finished()
+        await asyncio.wait_for(check, 1.0)
+        self.assertNotIn("idle", phases)
+        self.assertEqual(recovery.reasons, [])
+
+    async def test_a_dead_socket_is_reconnected_while_the_backend_works(self):
+        handler = WebSocketHandler()
+        handler.WEDGE_TIMEOUT_S = 0.02
+        recovery = FakeRecovery(alive=False)
+        liveness = TurnLiveness()
+        connection = DeviceConnection("kitchen", object(), recovery=recovery)
+        emitter = PhaseEmitter(None, liveness=liveness)
+        liveness.tool_started()  # a delegation that will never finish on a dead socket
+        await asyncio.wait_for(handler._wedge_check(connection, emitter, 1.0), 1.0)
+        self.assertEqual(recovery.reasons, [("wedge: silent after wake", True)])
+
+    async def test_the_check_stops_once_the_turn_it_watched_is_over(self):
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append(value)
+
+        handler = WebSocketHandler()
+        handler.WEDGE_TIMEOUT_S = 0.02
+        recovery = FakeRecovery(alive=True)
+        liveness = TurnLiveness()
+        connection = DeviceConnection("kitchen", object(), recovery=recovery)
+        turn = SimpleNamespace(done=False)
+        connection.turn_timeline = SimpleNamespace(current=turn, finish=lambda outcome: None)
+        emitter = PhaseEmitter(capture, liveness=liveness)
+        liveness.tool_started()
+        liveness.tool_finished()  # backend progress in the first window
+        check = asyncio.create_task(handler._wedge_check(connection, emitter, 1.0))
+        await asyncio.sleep(0)
+        turn.done = True  # the reply finished and the turn closed
+        await asyncio.wait_for(check, 1.0)
+        self.assertEqual(phases, [], "a finished turn is not forced idle afterwards")
 
     async def test_speech_after_wake_skips_the_check(self):
         handler = WebSocketHandler()

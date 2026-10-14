@@ -61,7 +61,8 @@ operation:
 POST <openclaw_url>
 Content-Type: application/json
 
-{"question": "Research flight prices to London for October", "room": "kitchen", "device_id": "kitchen-voice-pe"}
+{"question": "Research flight prices to London for October", "room": "kitchen",
+ "device_id": "kitchen-voice-pe", "request_id": "call_abc123"}
 ```
 
 ```
@@ -69,16 +70,41 @@ Content-Type: application/json
 {"answer": "Direct flights in October start around ..."}
 ```
 
-- `question` — the user's request, with context the model added.
+- `question` — the user's request, with context the model added. Since
+  0.18.27 it starts with a short answer-only prefix (fewest, most direct
+  lookups; one to three spoken sentences; claim success only when it
+  succeeded), then `Request:` and the request. `answer_only: true` says the
+  prefix is there, so a bridge can drop any "be thorough" directive of its own.
+- `session_key` — a fresh `voicepe-<device>-<request id>-<random>` key for
+  this one request (0.18.27). Use it as the agent's session key: a new
+  session per request keeps sessions small, and no two requests share one (two
+  runs on one session key queue behind each other). Accept only that shape;
+  if the key is already running, fall back to a fresh key of your own.
 - `room` — the add-on's `instance_name`, lowercased.
 - `device_id` — the device that asked. Your bridge should remember it: if the
   work outlasts the voice turn, deliver the eventual answer through the
   [announce endpoint](#the-announce-endpoint) with that `device_id`, so it plays
   on the device that asked (one add-on instance can serve several devices).
+- `request_id` — the current tool-call correlation id. Treat it as an
+  idempotency key: matching retries must join or replay the original work, and
+  reusing it with different content must fail closed.
 - The add-on waits up to **145 seconds** for the answer. If your agent needs
-  longer, have the bridge reply at ~120 s with a "still working on it — I'll
-  report back" style `answer`, keep the task running, and deliver the real result
-  via announce when it's done.
+  longer, have the bridge reply inside a short foreground budget with
+  `{"accepted": true, "task_id": "<task_id>", "eta_s": 60}` (or the older
+  `{"answer":"Still working…","background":true,"retry":false}`), keep the
+  task running, and deliver the real result through
+  [`/task-result`](#task-results) when it is done (an `/announce` carrying
+  `announcement_id` = the request id works too). The voice tells the user it
+  is still working and will report back; the conversation goes on meanwhile.
+- `task_id` — equal to `request_id`; the id a late result must carry.
+  `callback_url` (when the add-on has `OPENCLAW_CALLBACK_URL`) names the
+  add-on's `/task-result` route; otherwise derive it from the announce host and
+  port.
+- A tool that *arms a watch* ("tell me when X leaves work") should answer
+  `{"deferred": true, "task_id": "<task_id>"}` at once and post the event to
+  `/task-result` when it fires. The add-on closes the voice session while it
+  waits (no billed idle time) and tells the user by voice when it happens,
+  outside quiet hours.
 - The model is instructed to use this only for things Home Assistant can't do
   itself (memory, messaging, calendar, research, cross-app tasks) — never for
   smart-home control.
@@ -124,19 +150,23 @@ Authorization: Bearer <announce_token>
 Content-Type: application/json
 
 {"message": "Your London flight research is done: direct flights start at ...",
- "device_id": "kitchen-voice-pe"}
+ "device_id": "kitchen-voice-pe", "announcement_id": "call_abc123"}
 ```
 
 `device_id` is optional. With it, the message plays on that device (or fails
 with `503` if it is offline — it never falls back to another room). Without it,
 the device used most recently speaks.
 
+`announcement_id` is the originating `request_id`. Retries with the same id
+are accepted but spoken once. Distinct ids are distinct results even when their
+wording is similar; never use fuzzy text matching to suppress announcements.
+
 Responses:
 
 | Status | Body | Meaning |
 |---|---|---|
 | `200` | `{"status": "announced", "device_id": ...}` | Spoken on the device |
-| `200` | `{"status": "duplicate_suppressed"}` | A near-identical message was already spoken in the last 10 minutes — do not retry |
+| `200` | `{"status": "duplicate_suppressed"}` | This exact announcement id (or exact legacy text) was already spoken — do not retry |
 | `400` | `{"error": ...}` | Invalid JSON or empty message |
 | `401` | `{"error": "unauthorized"}` | Bad/missing bearer token |
 | `503` | `{"error": "no device connected"}` / `"device not connected"` | Device offline — **fall back to a text channel** |
@@ -154,20 +184,50 @@ Details:
   pass the `device_id` from the escalation; with one instance per room, the
   `room` field tells your agent which URL to use.
 
+### Task results
+
+```
+POST http://<ha-host>:<announce_port>/task-result
+Authorization: Bearer <announce_token>
+
+{"task_id": "call_abc123", "answer": "Flights to London in October start around…",
+ "ok": true, "device_id": "kitchen-voice-pe"}
+```
+
+| Status | Body | Meaning |
+|---|---|---|
+| `200` | `{"status": "accepted", "task_id": ...}` | Delivered into the conversation, or by voice on the device when no session is open |
+| `200` | `{"status": "duplicate_suppressed"}` | Already delivered — do not retry |
+| `400` | `{"error": ...}` | Missing `task_id` or empty `answer` |
+| `404` | `{"error": "unknown task"}` | Nothing waits for that id (delivered, expired, or the add-on restarted): fall back to `/announce` |
+
+A failure: `{"task_id": "...", "ok": false, "error": "short reason"}`; the user is
+told the request was not completed, never that it was done. Retries with the
+same `task_id` are idempotent.
+
+Delivery order when no session is open is configurable (`LIVE_TASK_DELIVERY`,
+default `session,reopen,announce,imessage`; `LIVE_TASK_DEFERRED_DELIVERY`,
+default `session,announce,reopen,imessage`): a short new voice session opened
+through the spend gate, the announcement lane, then a text through the bridge's
+`notification_destination` contract (`LIVE_TASK_IMESSAGE_TO`) — the text comes
+first only when the user asked for one. `LIVE_TASK_QUIET_HOURS` (`22:00-07:00`)
+holds a deferred result until the morning.
+
 ## The full delegation loop
 
 Putting it together — what a long-running task looks like end to end:
 
 ```
 You (kitchen): "Research flight prices to London for October."
-  └─ add-on → bridge: {"question": "...", "room": "kitchen", "device_id": "..."}  (ask_openclaw)
+  └─ add-on → bridge: {"question": "...", "room": "kitchen", "device_id": "...", "request_id": "..."}  (ask_openclaw)
        └─ agent starts working…
-  ┌─ bridge → add-on at ~120 s: {"answer": "Still working on it — I'll report back."}
-Assistant: "I'm still looking into it — I'll let you know."
-       └─ agent finishes (5 minutes later, or 50)
-  ┌─ agent → announce endpoint: {"message": "Flights to London in October…", "device_id": "..."}
-Device (kitchen): speaks the result out loud.
-       └─ (503? The agent texts you the details instead.)
+  ┌─ bridge → add-on at its short deadline: {"accepted": true, "task_id": "..."}
+Assistant: "I'm still looking into it — I'll let you know." (you can keep talking meanwhile)
+       └─ agent finishes (90 seconds later, or 50 minutes)
+  ┌─ agent → /task-result: {"task_id": "...", "answer": "Flights to London in October…"}
+Device (kitchen): the open conversation hears it; or a short new voice session /
+                  an announcement says it; or (device unreachable, or you asked
+                  for a text) the bridge texts you.
 ```
 
 Fast tasks never touch the announce path — the answer just comes back inside the
@@ -180,5 +240,48 @@ voice turn.
 3. Set `announce_port` + `announce_token`; give your agent the URL and token
    (one pair per room/instance).
 4. Optionally gate escalation to a specific speaker via `male_only_tools`.
-5. Say something only your agent would know — then delegate something slow and
-   walk away.
+5. Prove the direct bridge contract with a bounded POST and record its latency.
+   This validates HTTP/auth/process behavior, but is not end-to-end acceptance.
+6. Before a release or deployment, run one authorized real-audio test: an
+   external speaker says the wake phrase and an `ask_openclaw` request into a
+   real Voice PE microphone, and the final agent answer must be audible on that
+   device's physical speaker.
+7. Correlate that physical turn end to end. Require exactly one tool call, a
+   successful bridge result, an admitted final reply after any acknowledgement,
+   the exact current-turn output-batch drain acknowledgement, return to idle,
+   no active paid session, and restoration of the injection host's output,
+   volume, and mute state.
+8. Keep the detailed evidence private if it identifies a home, person, room,
+   device, host, or transcript. The release record should contain only a
+   redacted evidence id, candidate hashes, timing, and pass/fail outcome.
+9. Finally, say something only your agent would know — then delegate something
+   slow and walk away to verify report-back.
+
+A bridge returning `200` proves only the middle of the path. It does not prove
+that the model invoked the tool, that the result produced a final reply, or that
+the device played and drained it. Those claims require the real-audio test.
+
+## Latency architecture
+
+`ask_openclaw` is intentionally the deep path, not the fast smart-home path.
+Transport startup may be measurable, but agent state loading, model scheduling,
+tool work, and a second voice-model pass can dominate the spoken critical path.
+Measure each stage instead of assuming the CLI process is the bottleneck. Keep
+ordinary home control in Home Assistant and personal fact lookup in
+`recall_memory`.
+
+For a lower-latency production bridge:
+
+- keep one authenticated bridge process connected to the agent runtime instead
+  of spawning a CLI process per request;
+- reuse the transport and a bounded per-room agent session, rotating it by age
+  and turn count, while preserving a correlation/idempotency id per voice turn;
+- stream structured progress so the device can acknowledge work locally;
+- give synchronous voice work a short deadline (roughly 5–8 seconds), then
+  return a deterministic "I'll report back" response, close the metered voice
+  session, and deliver the eventual result through `/announce`; and
+- keep deterministic operations (memory search, status reads, routing) outside
+  the general agent turn entirely.
+
+Do not reduce latency by weakening final-reply admission, device-drain proof,
+tool confirmation, or session/spend bounds.
