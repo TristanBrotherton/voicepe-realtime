@@ -173,3 +173,35 @@ async def test_the_direct_call_arms_the_grace_for_later_turns():
     assert pe._seen_engine_end is True
     assert pe._model_turn_open is False
     await pe.close()
+
+
+@pytest.mark.asyncio
+async def test_thinking_with_nothing_from_the_engine_goes_idle(monkeypatch):
+    """US-060 AC-8, Kontor 2026-10-14: a bare "Aha" cut him, Gemini sent nothing at all, and the LED sat in
+    "thinking" until the next question. The watchdog must release it -- and only when no tool is running."""
+    monkeypatch.setattr(PhaseEmitter, "THINKING_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(PhaseEmitter, "WATCHDOG_POLL_S", 0.01)
+    sent = []
+
+    async def send(v):
+        sent.append(v)
+
+    pe = PhaseEmitter(send, idle_debounce_s=0)
+    await pe._emit("thinking")
+    await pe._thinking_watchdog()
+    assert sent[-1] == "idle"
+
+    liveness = TurnLiveness()
+    liveness.tool_started()
+    sent.clear()
+    pe = PhaseEmitter(send, idle_debounce_s=0, liveness=liveness)
+    await pe._emit("thinking")
+    import asyncio
+    task = asyncio.create_task(pe._thinking_watchdog())
+    await asyncio.sleep(0.2)
+    assert sent == ["thinking"]   # a running tool keeps the turn alive, with no cap
+    task.cancel()
+
+
+def test_the_watchdog_does_not_leave_him_thinking_for_long():
+    assert PhaseEmitter.THINKING_TIMEOUT_S <= 8.0

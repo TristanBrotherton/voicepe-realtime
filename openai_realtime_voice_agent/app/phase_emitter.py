@@ -198,11 +198,13 @@ class PhaseEmitter(FrameProcessor):
 
     # Thinking watchdog: how long `thinking` may sit without any model
     # activity before we declare the turn dead and force idle. Normal silent
-    # gaps (turn end -> first token, tool result -> next response) are 1-4 s,
-    # so 15 s has ample margin without leaving the user staring at a blinking
-    # LED for long. While a tool is in flight the watchdog waits with NO cap
-    # (see the module docstring — explicit user decision).
-    THINKING_TIMEOUT_S = 15.0
+    # gaps (turn end -> first token, tool result -> next response) are 1-4 s
+    # (Kontor 2026-10-14, 40 rounds: at most 4.9 s from the end of his question
+    # to the first sound). 8 s: after a bare "Aha" cut him, Gemini sent nothing
+    # at all and the LED sat in "thinking" 14 s until the next question (US-060
+    # AC-8). While a tool is in flight the watchdog waits with NO cap (see the
+    # module docstring — explicit user decision).
+    THINKING_TIMEOUT_S = 8.0
     WATCHDOG_POLL_S = 1.0
     # How often to log that we're deliberately waiting on a running tool.
     INFLIGHT_LOG_EVERY_S = 30.0
@@ -601,7 +603,7 @@ class PhaseEmitter(FrameProcessor):
                 # split the utterance and the second half closed late). Emitting
                 # `thinking` would overwrite `replying`, reopen the mic mid-reply
                 # (the TTS leaks in) and strand the LED in `thinking` until the
-                # 15 s watchdog. Keep replying.
+                # 8 s watchdog. Keep replying.
                 logger.info("📞 'thinking' suppressed — bot is replying (stale VAD tail)")
             elif not self._speech_since_wake:
                 # A: no real speech since the last wake/flush → this stop is a
