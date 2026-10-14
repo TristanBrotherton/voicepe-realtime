@@ -368,7 +368,7 @@ class TestTranscriptTurns(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(live_service_module.should_rescue_silent_tool_request(transcript))
         for transcript in (
             "search the web for weather",
-            "search the web for today's weather in San Francisco",
+            "search the web for today's weather in New York",
             "search the web for today's weather in Lisbon and read it aloud",
         ):
             with self.subTest(transcript=transcript):

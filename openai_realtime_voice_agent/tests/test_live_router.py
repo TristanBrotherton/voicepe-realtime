@@ -478,19 +478,19 @@ from app.live_router import is_state_question  # noqa: E402
 
 
 class DeviceNamesWithHouseholdWordsAreStillQuestions(unittest.TestCase):
-    """Workshop real-audio trial, 0.18.34: "Is quick heat downstairs on?"
-    turned Quick Heat on. "heat" is a household verb, so the question was
+    """Workshop real-audio trial, 0.18.34: "Is boost heat downstairs on?"
+    turned Boost Heat on. "heat" is a household verb, so the question was
     judged action-shaped and the read-only guard never applied."""
 
     def test_be_questions_about_devices_are_read_only(self):
-        for text in ("Is quick heat downstairs on?", "Is the heat on?", "Are the cooling fans running?",
-                     "Is the front door locked?", "Hey, is quick heat on downstairs?",
+        for text in ("Is boost heat downstairs on?", "Is the heat on?", "Are the cooling fans running?",
+                     "Is the front door locked?", "Hey, is boost heat on downstairs?",
                      "Was the lock left open?"):
             self.assertTrue(is_state_question(text), text)
 
     def test_commands_and_requests_are_not(self):
-        for text in ("Turn on quick heat downstairs.", "Quick heat downstairs on.", "Heat the house.",
-                     "Can you turn on the heat?", "Is quick heat on, turn it off.",
+        for text in ("Turn on boost heat downstairs.", "Boost heat downstairs on.", "Heat the house.",
+                     "Can you turn on the heat?", "Is boost heat on, turn it off.",
                      "Is it possible to turn on the heat?", "How do I turn off the heat?",
                      "Are you turning on the heat?"):
             self.assertFalse(is_state_question(text), text)
@@ -525,13 +525,13 @@ class ReadOnlyQuestionRunsNoAction(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Not run", refusal["output"])
 
     async def test_a_question_about_a_device_named_with_a_household_word_runs_no_action(self):
-        """Workshop real-audio trial, 0.18.34: "Is quick heat downstairs on?"
-        ran HassTurnOn twice and turned Quick Heat on."""
+        """Workshop real-audio trial, 0.18.34: "Is boost heat downstairs on?"
+        ran HassTurnOn twice and turned Boost Heat on."""
         result, executed, _ = await self._route(
-            "Is quick heat downstairs on?",
-            response(call("intent__HassTurnOn", {"name": "quick heat downstairs"}, "c1")),
-            response(call("homeassistant__GetLiveContext", {"name": "quick heat downstairs"}, "c2")),
-            response(message("Quick heat downstairs is off.")))
+            "Is boost heat downstairs on?",
+            response(call("intent__HassTurnOn", {"name": "boost heat downstairs"}, "c1")),
+            response(call("homeassistant__GetLiveContext", {"name": "boost heat downstairs"}, "c2")),
+            response(message("Boost heat downstairs is off.")))
         self.assertEqual(executed, ["homeassistant__GetLiveContext"])
         self.assertEqual(result.timings.get("read_only_refused"), ["intent__HassTurnOn"])
 

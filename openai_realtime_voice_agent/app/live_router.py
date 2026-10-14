@@ -973,7 +973,7 @@ class TurnRouter:
         detail = (f"; unmatched: {', '.join(heard_info['unmatched'])}" if heard_info.get("unmatched")
                   else f"; {heard_info.get('targets', 0)} matching devices")
         # A hint only, never an instruction: the parser forces a question
-        # into a command shape ("Is quick heat downstairs on?" parsed as
+        # into a command shape ("Is boost heat downstairs on?" parsed as
         # HassTurnOn), and "this is a request" made the backend turn it on.
         return (f"Home Assistant's parser guessed {heard_info.get('intent')} ({slots}){detail}"
                 + (f"; not run locally ({refused})" if refused else "") +
@@ -1323,7 +1323,7 @@ def is_state_question(text: str) -> bool:
     question. Used to refuse control tools, where treating a question as a
     request is the unsafe mistake. Adds to is_read_only_question every yes/no
     question opened by a form of "be", whatever nouns follow: a device NAME
-    can hold a household word ("Is quick heat downstairs on?" turned Quick
+    can hold a household word ("Is boost heat downstairs on?" turned Boost
     Heat on in the 0.18.34 Workshop real-audio trial). A clause that is not a
     question ("..., turn it off") still makes it a request."""
     if is_read_only_question(text):

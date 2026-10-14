@@ -347,7 +347,7 @@ def response_created(delegation_id: str = DELEGATION_ID):
 
 
 def function_call_added(call_id: str, name: str, delegation_id: str = DELEGATION_ID,
-                        item_id: str = "fc_09f37c83836cf8d9006ac6546a0cb887d08a6b68aadc0c5769"):
+                        item_id: str = "fc_c0ffee01"):
     """``response.output_item.added``: name and call_id, arguments still empty.
 
     Deliberately part of the replay: acting on this event would dispatch a
@@ -361,7 +361,7 @@ def function_call_added(call_id: str, name: str, delegation_id: str = DELEGATION
 
 
 def function_call_arguments_delta(fragment: str, delegation_id: str = DELEGATION_ID,
-                                  item_id: str = "fc_09f37c83836cf8d9006ac6546a0cb887d08a6b68aadc0c5769"):
+                                  item_id: str = "fc_c0ffee01"):
     return envelope({
         "type": "response.function_call_arguments.delta", "delta": fragment,
         "item_id": item_id, "output_index": 0, "sequence_number": 3,
@@ -370,7 +370,7 @@ def function_call_arguments_delta(fragment: str, delegation_id: str = DELEGATION
 
 
 def function_call_arguments_done(arguments: str, delegation_id: str = DELEGATION_ID,
-                                 item_id: str = "fc_09f37c83836cf8d9006ac6546a0cb887d08a6b68aadc0c5769"):
+                                 item_id: str = "fc_c0ffee01"):
     """Carries the arguments but neither ``name`` nor ``call_id``.
 
     Replayed so a regression that starts dispatching on this event — and so
@@ -384,7 +384,7 @@ def function_call_arguments_done(arguments: str, delegation_id: str = DELEGATION
 
 def function_call_done(call_id: str, name: str, arguments: str,
                        delegation_id: str = DELEGATION_ID,
-                       item_id: str = "fc_09f37c83836cf8d9006ac6546a0cb887d08a6b68aadc0c5769"):
+                       item_id: str = "fc_c0ffee01"):
     return envelope({
         "type": "response.output_item.done", "output_index": 0, "sequence_number": 28,
         "item": {"id": item_id, "type": "function_call", "status": "completed",
