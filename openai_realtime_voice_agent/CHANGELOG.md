@@ -9,7 +9,8 @@ All notable changes to this add-on. Newest first.
 Nothing changes for existing installs: `voice_runtime` defaults to the
 Realtime runtime. Setting `voice_runtime: live` (with
 `live_acknowledge_gaps`) runs the device on OpenAI's GPT-Live voice instead.
-See DOCS section 12 and `docs/configuration.md` for every `live_*` option.
+See DOCS section 12, `docs/configuration.md` for every `live_*` option, and
+`docs/releases/0.18.35.md` for the release notes.
 
 - **Router mode (`live_router`, on by default inside Live).** The add-on, not
   the voice model, decides and runs every tool. Home Assistant's own intent
@@ -36,7 +37,7 @@ See DOCS section 12 and `docs/configuration.md` for every `live_*` option.
 - **Confirmation for risky actions is unchanged:** locks, garages, gates,
   doors and alarms still need a spoken yes, and a state question never runs
   a control tool, including a yes/no question about a device whose name
-  holds a household word ("Is quick heat downstairs on?"). What Home
+  holds a household word ("Is boost heat downstairs on?"). What Home
   Assistant's parser heard reaches the backend as a hint, never as an
   instruction.
 - **Long tasks.** A request that needs a slow tool (the OpenClaw agent, a web
@@ -67,9 +68,9 @@ See DOCS section 12 and `docs/configuration.md` for every `live_*` option.
 
 ### Tests
 
-- About 1,030 unit tests (the CI floor is now 1,000), including the router, household directory, room
-  context, cost controls and long tasks, and a privacy check that keeps
-  fixtures fictional.
+- 1,040 unit tests (the CI floor is now 1,000), including the router,
+  household directory, room context, cost controls and long tasks, and a
+  privacy check that keeps fixtures fictional.
 
 ## 0.17.3 (fork)
 

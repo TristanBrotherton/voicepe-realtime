@@ -71,12 +71,12 @@ Content-Type: application/json
 ```
 
 - `question` — the user's request, with context the model added. Since
-  0.18.27 it starts with a short answer-only prefix (fewest, most direct
+  0.18.35 it starts with a short answer-only prefix (fewest, most direct
   lookups; one to three spoken sentences; claim success only when it
   succeeded), then `Request:` and the request. `answer_only: true` says the
   prefix is there, so a bridge can drop any "be thorough" directive of its own.
 - `session_key` — a fresh `voicepe-<device>-<request id>-<random>` key for
-  this one request (0.18.27). Use it as the agent's session key: a new
+  this one request (0.18.35). Use it as the agent's session key: a new
   session per request keeps sessions small, and no two requests share one (two
   runs on one session key queue behind each other). Accept only that shape;
   if the key is already running, fall back to a fresh key of your own.

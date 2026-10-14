@@ -1,8 +1,10 @@
 # Voice PE Realtime — Add-on Documentation
 
 This add-on runs an **OpenAI Realtime** voice session (default model
-`gpt-realtime-2`) and bridges it to Home Assistant control, web search, voice
-timers, speaker recognition, and persistent voice-taught memory. It is the
+`gpt-realtime-2`), or optionally an experimental **GPT-Live** session (see
+[section 12](#12-gpt-live-runtime-experimental)), and bridges it to Home
+Assistant control, web search, voice timers, speaker recognition, and
+persistent voice-taught memory. It is the
 backend half of a two-part project; the front half is custom **firmware for the
 Home Assistant Voice PE** device (see
 [Firmware](#firmware-home-assistant-voice-pe-only) below).
@@ -269,7 +271,7 @@ The add-on can run on either of two OpenAI voice protocols:
 > of session-minutes (tens of dollars of voice charges) in a single day**,
 > before any backend call.
 >
-> Since 0.18.1 the session is **on demand**: nothing is connected while the
+> The session is **on demand**: nothing is connected while the
 > device is idle, a wake opens a session, and it closes again on a short
 > bounded timer. There are also **hard daily caps** (60 session-minutes /
 > $3.00 by default, shared by every device) after which turns are refused out
@@ -282,9 +284,68 @@ To try it on one instance: set `voice_runtime: live` and
 read the startup log: it prints the GPT-Live settings, the cost model and the
 caps in force, the parity report and any Realtime-only options that are
 ignored. Set `voice_runtime` back to `realtime` (or remove it) and restart to
-roll back; the Realtime path is untouched by the switch.
+roll back; the Realtime path is untouched by the switch. The device firmware
+needs no change: firmware 1.3.1 (the firmware repo's current `main`) serves
+both runtimes.
 
-What differs under GPT-Live:
+### Router mode: how a request is handled under GPT-Live
+
+With `live_router` on (the default inside Live), the voice model never calls a
+tool itself. The add-on routes every request:
+
+1. **Home Assistant first.** A plain device command ("turn on the kitchen
+   lights", "set the thermostat to 20") is offered to Home Assistant's own
+   intent engine, locally, for recognition only and only on safe domains
+   (lights, switches, fans, climate, media, scenes and the like; never locks,
+   covers, alarms or scripts, which always take the guarded path). The intent
+   call carries the asking satellite's device id, so "the lights" means the
+   lights in the room the Voice PE is in. A room Home Assistant fills in on its
+   own is not trusted: the request is re-asked with the satellite's room, or
+   handed on.
+2. **Otherwise the backend.** Everything else goes to a Responses backend
+   (`live_backend_model`) called directly with the full tool set: the same Home
+   Assistant, web search, timer, memory, enrollment, confirmation and agent
+   tools, through the same safety gates as the Realtime runtime.
+3. **Only verified results are spoken.** While a tool runs, the voice may say
+   only a short acknowledgement from a closed set of waiting phrases (a short
+   fallback clip covers silence after about a second). A success claim with no
+   tool result behind it is never played. A parsed command is never dropped
+   silently either: when Home Assistant recognised a command but it could not
+   be carried out, the assistant says it could not tell which device you meant.
+4. **Confirmations are unchanged.** Locks, garages, gates, doors and alarms
+   still need a spoken yes, bound to the exact question that asked for it, and
+   a state question ("is the boost heater on?") never runs a control tool.
+   Anything Home Assistant's parser heard reaches the backend as a hint, never
+   as an instruction.
+
+**The backend knows the home.** Home Assistant's exposed-entity overview, the
+floor and area registries and their aliases form one compact block in the
+backend's cached prompt prefix, refreshed every 5 minutes and at each wake.
+`live_context_entities` (off by default) adds a short snapshot of the current
+states of up to 30 entities you name, read at each wake and never waited for.
+
+**Optional auto-expose (`live_auto_expose`, off by default).** Every 5 minutes
+the add-on exposes to Assist each enabled, visible entity in a controllable
+domain that Assist cannot see yet; input booleans and scripts only when they
+appear on a dashboard; locks never. An entity you un-exposed on purpose stays
+un-exposed. Exposure applies to every Assist agent, not only this add-on.
+
+**Long tasks.** A request that needs a slow tool (the agent, a web search)
+becomes a background task after a few seconds (house commands get up to 8 s
+first). The voice says so, the conversation can go on, and the answer is
+delivered when it lands: in the open session, through a short new session that
+goes through the spend gate, as an announcement, or by text. See section 9 and
+the `live_task_*` options.
+
+**Fast paths.** Plain chat can skip the wait for the backend's verdict through
+a tiny tool-less classifier (`live_fast_chat_model`, about $0.00006 per routed
+request, counted against the daily spend cutoff); clock questions and
+person-location questions go straight to the matching tool.
+
+Set `live_router: false` for the older delegation mode, in which the voice
+model itself decides when to hand a request to the backend.
+
+### What else differs under GPT-Live
 
 - `openai_voice` must be a documented GPT-Live voice. Shared voices are
   `marin` and `cedar`; Live additionally provides `quartz`, `ripple`, `vesper`,

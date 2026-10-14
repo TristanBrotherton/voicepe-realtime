@@ -51,6 +51,18 @@ price, noticeable quality drop in tool routing); a trimmed `mcp_tool_allowlist`
 (shrinks the uncached first-turn prefix — worth ~$1/month at typical usage, so
 do it for latency, not money); each web search adds a few cents.
 
+**GPT-Live (opt-in) is billed differently: by the clock.** OpenAI charges
+$0.05 per connected session minute, billed per second, and idle time inside an
+open session counts; the backend model's tokens, web searches and the fast chat
+classifier are billed separately on top. The add-on keeps that bounded by
+opening a session only on a wake, closing it within seconds of quiet and
+refusing new sessions past a hard daily cap (60 session-minutes / $3.00 by
+default, shared by all devices). `sensor.voicepe_<instance>_live_session_cost_today`
+shows voice dollars, session-minutes and the remaining allowance; there is no
+per-response cost sensor under Live. Read
+[GPT-Live cost safety](configuration.md#-gpt-live-cost-safety) before enabling
+it.
+
 ### What about privacy — what leaves my network?
 
 - **Wake-word detection runs on the device.** No audio leaves the Voice PE until

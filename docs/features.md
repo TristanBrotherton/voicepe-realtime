@@ -17,6 +17,7 @@ and which options drive it. Option details live in the
 - [Confirmations & device access](#confirmations--device-access)
 - [HA sensors](#ha-sensors)
 - [Persona & voices](#persona--voices)
+- [Voice runtimes: Realtime and GPT-Live](#voice-runtimes-realtime-and-gpt-live)
 - [On the device](#on-the-device)
 
 ---
@@ -422,6 +423,33 @@ What you can and can't change:
 Language: the Realtime model is multilingual. Set `transcription_language` to your
 ISO code and write your `instructions` in your language, keeping the same
 LANGUAGE / STYLE / BEHAVIOR structure as the default prompt.
+
+---
+
+## Voice runtimes: Realtime and GPT-Live
+
+The add-on runs on one of two OpenAI voice protocols, chosen per instance with
+`voice_runtime`:
+
+- **Realtime** (default, option unset): the OpenAI Realtime API with
+  `openai_model` (`gpt-realtime-2`), semantic VAD and tools on the voice model.
+  Billed per response; idle costs nothing. Everything else in this guide
+  describes this runtime unless it says otherwise.
+- **GPT-Live** (`voice_runtime: live`, experimental, since 0.18.35): OpenAI's
+  `gpt-live-1` listens and speaks continuously while the add-on routes every
+  request itself — Home Assistant's local intent engine first, otherwise a
+  Responses backend with the full tool set — and plays only results a tool
+  verified. It knows the home's floors, rooms and exposed entities, acts on the
+  room of the Voice PE that heard you, can optionally expose new entities to
+  Assist, and turns slow requests into background tasks whose answers arrive
+  when they land. GPT-Live is billed per connected second, so sessions are
+  opened by a wake, closed within seconds of quiet, and refused past a hard
+  daily cap.
+
+How to enable it, what differs and what it costs:
+[DOCS section 12](../openai_realtime_voice_agent/DOCS.md#12-gpt-live-runtime-experimental),
+the [Live options](configuration.md#-voice-runtime-gpt-live-experimental) and
+[GPT-Live cost safety](configuration.md#-gpt-live-cost-safety).
 
 ---
 

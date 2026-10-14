@@ -2,7 +2,7 @@
 
 A complete, from-zero walkthrough. You'll set up two halves:
 
-1. the **backend add-on** (the voice "brain" that runs the OpenAI Realtime session), and
+1. the **backend add-on** (the voice "brain" that runs the OpenAI Realtime session — or, [opt-in](configuration.md#-voice-runtime-gpt-live-experimental), a GPT-Live one), and
 2. the **device firmware** (turns the Voice PE into a thin client that listens and speaks).
 
 Plan ~30–45 minutes the first time. After that, updates are one click.
