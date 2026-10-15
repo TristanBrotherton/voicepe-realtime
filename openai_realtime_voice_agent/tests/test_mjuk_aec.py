@@ -374,3 +374,42 @@ def test_two_estimates_in_a_row_that_agree_move_it(monkeypatch):
 def test_a_normal_estimate_between_two_lagging_ones_starts_the_count_over(monkeypatch):
     """B on #77: an estimate where AEC3 finds the echo itself clears the one waiting; two lagging ones must be in a row."""
     assert _skattningar(monkeypatch, [-0.45, 0.15, -0.46]).skift_s == 0.0
+
+
+def _glidning(monkeypatch, flagga, sek=20.0, drift=200e-6):
+    """Reply audio sent at our pace (STADIG_TAKT=1), played and heard by a device whose clock runs `drift` slow. Returns
+    how many samples the echo moved against the reference the canceller read, from the first 2 s to the last."""
+    monkeypatch.setenv("STADIG_TAKT", "1")
+    monkeypatch.setenv("AEC_FOLJ", "0")
+    monkeypatch.setenv("REF_ENHETSKLOCKA", "1" if flagga else "0")
+    ref = _tal(sek)
+    mic = _eko(ref, tap_ms=(150,), amp=(0.5,))       # the device plays sample k at its sample k + 150 ms, heard at once
+    klock = [0.0]
+    aec = MjukAec(klocka=lambda: klock[0])
+    last, orig = [], aec._ref_ram
+    aec._ref_ram = lambda t0, s0=None: last.append(orig(t0, s0)) or last[-1]
+    steg = 320
+    sant = [(i / RATE, 0, i) for i in range(0, len(ref) - steg, steg)]                      # sent on our clock
+    hort = [((i + steg) / RATE * (1 + drift) + 0.02, 1, i) for i in range(0, len(ref) - steg, steg)]  # heard on the device's
+    for t, mik, i in sorted(sant + hort):
+        klock[0] = t
+        if mik:
+            aec.process(mic[i:i + steg].tobytes(), t)
+        else:
+            aec.ref(ref[i:i + steg].tobytes(), RATE, t)
+    lest = np.concatenate(last).astype(np.float64)
+    m = mic[:len(lest)].astype(np.float64)
+
+    def lag(a, b):
+        c = np.fft.irfft(np.fft.rfft(a, 2 ** 17) * np.conj(np.fft.rfft(b, 2 ** 17)), 2 ** 17)
+        k = int(np.argmax(np.abs(c)))
+        return k if k < 2 ** 16 else k - 2 ** 17
+    n = 2 * RATE
+    return lag(m[-n:], lest[-n:]) - lag(m[RATE:RATE + n], lest[RATE:RATE + n])
+
+
+def test_an_unbroken_reply_stays_on_the_device_clock(monkeypatch):
+    """Ljudprov Kontor 2026-10-15 18:50: laid in our seconds the reference slid 4 ms in 20 s against the echo (-200 ppm)
+    and a long linear canceller took 1-5 dB of it; with the slide out, 16-19 dB."""
+    assert abs(_glidning(monkeypatch, True)) <= 2
+    assert abs(_glidning(monkeypatch, False)) >= 40      # today: the slide is there (64 samples = 4 ms)

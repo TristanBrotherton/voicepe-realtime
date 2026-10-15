@@ -102,7 +102,7 @@ class MjukAec:
             self.ap.set_stream_format(RATE, 1)
             self.ap.set_reverse_stream_format(RATE, 1)
             self.ap.set_stream_delay(0)
-        self.tidslinje: List[Tuple[float, np.ndarray]] = []   # (start time, 16 kHz samples) of what the speaker plays
+        self.tidslinje: List[Tuple[float, np.ndarray, Optional[int]]] = []   # (start time, 16 kHz samples, its mic sample) of what the speaker plays
         self.ref_slut = 0.0
         self.rest = np.zeros(0, dtype=np.int16)               # mic samples that did not fill a 10 ms frame yet
         self.trasig = False
@@ -148,6 +148,15 @@ class MjukAec:
         self.mic_sist: Optional[float] = None     # when the last mic packet came
         self.mic_ankare: Optional[float] = None   # our clock at sample 0 of this stretch of the mic stream
         self.mic_n = 0                            # samples of this stretch so far
+        # REF_ENHETSKLOCKA=1 (with STADIG_TAKT=1): an unbroken reply is laid on the device's sample clock, not ours. The
+        # speaker and the mic share one clock, so the k-th sample sent plays k samples after the first, counted in mic
+        # samples. Ljudprov Kontor 2026-10-15 18:50: laid in our seconds the reference slid 4 ms in 20 s (-200 ppm)
+        # against the echo and a long linear canceller took 1-5 dB; with the slide taken out, 16-19 dB, as with the
+        # true clip. Only where a reply starts, or after a hole, is our clock used to place it.
+        self.ref_klocka = os.environ.get("REF_ENHETSKLOCKA", "0") == "1"
+        self.mic_tot = 0                          # mic samples received, all stretches
+        self.mic_t: Optional[float] = None        # our clock at mic sample mic_tot
+        self.ref_slut_samp: Optional[int] = None  # the mic sample where the reference laid so far ends
         self.agc_db = 0.0                 # the gain now
         self.golv_db = -50.0              # noise floor estimate (slow minimum of the frame levels)
         self.folj = os.environ.get("AEC_FOLJ", "1") == "1"
@@ -217,8 +226,12 @@ class MjukAec:
             start = self.ref_slut if t <= self.ref_slut + sammanhang else t
             if start - self.ref_slut > NIVA_HAL_S:
                 self.svar_start = start     # a new reply, or a hole in this one: the echo is not where it was
+            samp = None
+            if self.ref_klocka:
+                samp = self.ref_slut_samp if start == self.ref_slut and self.ref_slut_samp is not None else self._samp(start)
+                self.ref_slut_samp = None if samp is None else samp + len(a)
             self.ref_slut = start + len(a) / RATE
-            self.tidslinje.append((start, a))
+            self.tidslinje.append((start, a, samp))
             while self.tidslinje and self.tidslinje[0][0] + len(self.tidslinje[0][1]) / RATE < t - 2.0:
                 self.tidslinje.pop(0)
         except Exception as e:
@@ -235,11 +248,14 @@ class MjukAec:
             t = self.klocka() if t is None else t
             self.svar_start = t
             fran = t - forsening_s - 0.15            # the burst began about this long ago
-            for i, (start, a) in enumerate(self.tidslinje):
+            d = int(round(forsening_s * RATE))
+            for i, (start, a, samp) in enumerate(self.tidslinje):
                 if start >= fran:
-                    self.tidslinje[i] = (start + forsening_s, a)
+                    self.tidslinje[i] = (start + forsening_s, a, None if samp is None else samp + d)
             if self.ref_slut >= fran:
                 self.ref_slut += forsening_s
+                if self.ref_slut_samp is not None:
+                    self.ref_slut_samp += d
         except Exception as e:
             self._fel(e)
 
@@ -314,10 +330,20 @@ class MjukAec:
         x = x.astype(np.float32)
         return float(20 * np.log10(max(float(np.sqrt(np.mean(x * x))), 1.0) / 32768))
 
-    def _ref_ram(self, t0: float) -> np.ndarray:
+    def _samp(self, t: float) -> Optional[int]:
+        """The mic sample that is heard at our time `t` (None before the mic has streamed)."""
+        return None if self.mic_t is None else self.mic_tot + int(round((t - self.mic_t) * RATE))
+
+    def _ref_ram(self, t0: float, s0: Optional[int] = None) -> np.ndarray:
+        """The reference for the mic frame that begins at our time `t0`, or at mic sample `s0` (REF_ENHETSKLOCKA)."""
         ram = np.zeros(FRAME, dtype=np.int16)
         t1 = t0 + FRAME / RATE
-        for start, a in self.tidslinje:
+        for start, a, samp in self.tidslinje:
+            if s0 is not None and samp is not None:
+                i0, i1 = max(s0 - samp, 0), min(s0 + FRAME - samp, len(a))
+                if i1 > i0:
+                    ram[samp + i0 - s0:samp + i1 - s0] = a[i0:i1]
+                continue
             slut = start + len(a) / RATE
             if slut <= t0 or start >= t1:
                 continue
@@ -351,6 +377,13 @@ class MjukAec:
             else:
                 self.mic_ankare += min(kand - self.mic_ankare, MIC_DRIFT * n_in / RATE)   # a slow device clock, no more
             t = self.mic_ankare + self.mic_n / RATE
+            ny_stracka = self.mic_n == n_in
+            self.mic_tot += n_in
+            self.mic_t = t
+            if self.ref_klocka and ny_stracka:
+                # the mic was closed: what was laid by the old count is placed again by our clock
+                self.tidslinje = [(s, a_, self._samp(s)) for s, a_, _ in self.tidslinje]
+                self.ref_slut_samp = self._samp(self.ref_slut)
             a = np.concatenate([self.rest, np.frombuffer(pcm, dtype=np.int16)])
             tot = len(a)
             ut: List[bytes] = []
@@ -359,7 +392,8 @@ class MjukAec:
                 ram = a[i:i + FRAME]
                 refr = None
                 if aktiv and (self.aec_pa or self.spara):
-                    refr = self._ref_ram(t - (tot - i) / RATE + self.skift_s)
+                    s0 = self.mic_tot - tot + i + int(round(self.skift_s * RATE)) if self.ref_klocka else None
+                    refr = self._ref_ram(t - (tot - i) / RATE + self.skift_s, s0)
                     if self.folj and self.aec_pa:
                         self._folj(ram, refr)
                 if self.spara and refr is not None:
