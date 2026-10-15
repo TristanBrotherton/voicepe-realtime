@@ -204,5 +204,5 @@ def test_avbrott_nar_gemini_vid_varje_uppkoppling(monkeypatch):
 def test_den_inbyggda_sjalen_laser_aldrig_upp_bara_panelen_gor_det():
     """raawr E-07/D-6 (Henrik 2026-10-04): upplåsning, larm av och garage öppna bara på panelen, aldrig med rösten.
     Den gamla meningen ('utan att någon uttryckligen bett om just det') sa att rösten fick låsa upp på begäran."""
-    assert "bara på panelen" in INBYGGD and "Lås aldrig upp" in INBYGGD
+    assert "bara på panelen eller i Hem-appen" in INBYGGD and "Lås aldrig upp" in INBYGGD
     assert "uttryckligen bett" not in INBYGGD
