@@ -299,7 +299,7 @@ function chooseSessionKey(requested) {
   return `voicepe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly = false) {
+function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly = false, requestId = "") {
   return new Promise((resolve) => {
     const sessionKey = chooseSessionKey(requestedKey);
     activeSessionKeys.add(sessionKey);
@@ -334,7 +334,10 @@ function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly =
       const text = out.trim();
       if (timedOut) {
         // The HTTP caller is long gone — deliver the answer to the room.
-        if (code === 0 && text) announce(text, room, deviceId);
+        // A completed late answer carries ok: true and the request id, so the
+        // add-on delivers it as a verified result, not a failure.
+        if (code === 0 && text) announce(text, room, deviceId, { id: requestId, ok: true });
+        else announce("I couldn't finish that request. Please try again.", room, deviceId, { id: requestId, ok: false });
         return;
       }
       if (code === 0 && text) resolve(text);
@@ -477,7 +480,7 @@ const server = createServer((req, res) => {
       return;
     }
     console.log(`[bridge] question (${room || "?"}${deviceId ? `/${deviceId}` : ""}): ${describe(question)}`);
-    const answer = await runAgent(question, room, deviceId, sessionKey, answerOnly);
+    const answer = await runAgent(question, room, deviceId, sessionKey, answerOnly, requestId);
     console.log(`[bridge] answer: ${describe(answer)}`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ answer }));

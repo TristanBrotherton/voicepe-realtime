@@ -23,6 +23,11 @@ All notable changes to this add-on. Newest first.
   "be thorough" lookup directive, which conflicted with the add-on's
   answer-only brief. Requests without a `session_key` behave as before.
   See `docs/agent-integration.md`.
+- **Reference bridge: a late answer is a completed result.** Its announce of
+  an answer that outlived the sync window now carries `ok: true` (and its
+  error announce `ok: false`); without `ok` the add-on framed the answer as a
+  request that was not completed (correct per contract, wrong for a bridge
+  that had the answer).
 
 ## 0.19.1 (fork)
 

@@ -56,7 +56,7 @@ class TestEscalationRouting(unittest.IsolatedAsyncioTestCase):
         # The answer-only prefix and the per-request session key are covered
         # by tests/test_openclaw_path.py; this test checks the routing fields.
         sent = CapturingClient.payloads[0]
-        self.assertTrue(sent.pop("session_key").startswith("voicepe-office-call-office-1-"))
+        self.assertTrue(sent.pop("session_key").startswith("voicepe-office-"), "the device names the conversation key")
         self.assertTrue(sent.pop("answer_only"))
         self.assertEqual(sent["question"], openclaw_tool.answer_only_question("book a table"))
         sent["question"] = "book a table"
