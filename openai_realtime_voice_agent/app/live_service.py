@@ -78,6 +78,7 @@ from app.live_evidence import TurnEvidence
 from app.live_router import (
     ACK,
     ACK_PREFIX,
+    ACTION as ROUTE_ACTION,
     CHAT_KIND,
     FAILED as ROUTE_FAILED,
     LOOKUP as ROUTE_LOOKUP,
@@ -4151,6 +4152,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         for op in reversed(list(self._tasks.values())):
             if op.key != key or op.delivered or op.abandoned or op.confirm_withdrawn:
                 continue
+            if op.session_sent_mono is not None:
+                continue  # its result is being spoken right now: a repeat is a new request
             if op.done and now - (op.result_ready_mono or now) > TASK_JOIN_DONE_WINDOW_S:
                 continue
             return op
@@ -4610,18 +4613,20 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_drop_until_ack = False
         await self._send_commentary(text, None)
         op.result_sent_mono = time.monotonic()
-        if op.explain and result.kind == ROUTE_LOOKUP:
-            # An explanation is finished only once it has been heard; a
-            # session that closes under it (the device's follow-up cut-off)
-            # hands the result back to the task list for another route.
+        if result.kind in (ROUTE_LOOKUP, ROUTE_ACTION, ROUTE_REPLY, ROUTE_FAILED):
+            # 0.19.2: every result spoken from the task list (an explanation,
+            # a slow lookup, a late action report) is finished only once it
+            # has been heard; while the voice is speaking it the task holds
+            # the session (_task_holds_session, bounded), and a session that
+            # closes under it hands the result back for another route.
             op.session_sent_mono = op.result_sent_mono
             self._spawn(self._task_heard_watch(op), f"live-task-heard-{op.op_id}")
             return
         self._finish_task(op, SESSION)
 
     async def _task_heard_watch(self, op: RouterOp) -> None:
-        """The explanation is finished once the voice has spoken it to the
-        end in a session that stayed open: audible output for at least
+        """A result spoken from the task list is finished once the voice has
+        spoken it to the end in a session that stayed open: audible output for at least
         TASK_HEARD_MIN_S after the commentary, then quiet past the speech
         hangover. A session closing while it is still being spoken, or
         silence for TASK_HEARD_WAIT_S, hands the result back to the task

@@ -155,6 +155,21 @@ class RouterHarness(LiveHarness):
         return b"".join(f.audio for f in self.sink.of(TTSAudioRawFrame))
 
 
+async def heard(h, timeout=5.0):
+    """The voice speaks the delivered background result to the end. Since
+    0.19.2 a result spoken from the task list is finished only once heard
+    (audible output, then quiet), so tests that look at ``tasks_pending`` after
+    a session delivery let the voice speak first."""
+    import time as _time
+    with patch.object(live_service_module, "TASK_HEARD_MIN_S", 0.3):
+        h.voice_says("Here it is.", ms=400)
+        await asyncio.sleep(0.35)
+        h.voice_says(" Done.", ms=400)
+        deadline = _time.monotonic() + timeout
+        while h.service.tasks_pending and _time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+
+
 def fast():
     return [patch.object(live_service_module, "USER_TURN_GAP_S", 0.05),
             patch.object(live_service_module, "ACK_LAG_S", 0.05),
@@ -688,6 +703,7 @@ class CancelledJoin(Patched):
             self.assertTrue(h.service._op.done)
             contents = [m["content"] for m in h.socket.of("session.commentary.append")]
             self.assertTrue(any("earlier request" in c and "on" in c for c in contents), contents)
+            await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
 
 

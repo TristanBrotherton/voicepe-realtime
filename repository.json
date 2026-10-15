@@ -5,8 +5,8 @@
   "addons": [
     {
       "slug": "openai_realtime_voice_agent",
-      "name": "Voice PE Realtime \u2014 Voice Agent",
-      "version": "0.19.1"
+      "name": "Voice PE Realtime — Voice Agent",
+      "version": "0.19.2"
     }
   ]
 }

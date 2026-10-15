@@ -46,7 +46,7 @@ from app.live_tasks import (
 from app.tool_results import classify_result
 
 from tests.test_live_router import (
-    ON, TOOLS, FakeBackend, FirstCallSlow, Patched, RouterHarness, call, message, response,
+    ON, TOOLS, FakeBackend, FirstCallSlow, Patched, RouterHarness, call, heard, message, response,
 )
 
 # Longer than USER_FRAGMENT_MERGE_S: a second utterance this long after the
@@ -321,6 +321,7 @@ class NeverCancelled(Patched):
             h.release.set()
             await until(lambda: any("earlier request" in c and "lamp is on" in c for c in commentaries(h)), 5.0)
             self.assertEqual(h.executed, [ON, ("llm__GetDateTime", {})], "each tool ran exactly once")
+            await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
 
     async def test_an_impatient_repeat_joins_the_running_operation(self):
@@ -432,6 +433,7 @@ class PromotedToBackground(Patched):
             self.assertEqual(h.executed, [("llm__GetDateTime", {})], "the clock question is answered meanwhile")
             backend.gate.set()
             await until(lambda: any("sunny" in c and "earlier request" in c for c in commentaries(h)), 5.0)
+            await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
 
     async def test_progress_is_mentioned_only_when_the_user_is_not_talking(self):
@@ -835,6 +837,7 @@ class AgentHandOff(Patched):
             landed = next(c for c in commentaries(h) if "300 dollars" in c)
             self.assertIn("household assistant", landed)
             self.assertIn("earlier request", landed)
+            await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
             await acked(h)
             self.assertFalse(h.service.router_pending)
@@ -866,6 +869,60 @@ class AgentHandOff(Patched):
             self.assertTrue(await live_tasks.deliver_external_result(task_id, "Could not reach Messages.", ok=False))
             await until(lambda: any("not completed" in c for c in commentaries(h)))
             self.assertIn("do not say it was done", commentaries(h)[-1])
+
+
+class SpokenResultsAreHeardToTheEnd(Patched):
+    """0.19.2: every result spoken from the task list, not only an explanation,
+    holds the session while the voice speaks it and is re-queued for the next
+    route if the session closes under it (owner, 2026-10-14/15)."""
+
+    def setUp(self):
+        super().setUp()
+        self._tools = patch("tests.test_live_router.TOOLS", TOOLS + [ASK])
+        self._tools.start()
+
+    def tearDown(self):
+        self._tools.stop()
+        super().tearDown()
+
+    async def test_a_slow_lookup_holds_the_session_while_it_is_spoken_then_lets_go(self):
+        backend = FakeBackend(response(call("ask_openclaw", {"question": "flights"}, "c1")),
+                              response(message("Flights start at 300 dollars.")))
+        async with AskHarness(self, backend, {"accepted": True, "task_id": "task-h"}) as h:
+            await h.user_says("Find me flights to London in October.")
+            await h.wait_commentary(count=1, timeout=3.0)
+            await acked(h)
+            self.assertTrue(await live_tasks.deliver_external_result("task-h", "Flights start at 300 dollars."))
+            await until(lambda: any("300 dollars" in c for c in commentaries(h)))
+            await acked(h)
+            self.assertEqual(h.service.tasks_pending, 1, "sent, not yet heard")
+            self.assertTrue(h.service.router_pending, "the result being spoken holds the session")
+            await heard(h)
+            self.assertEqual(h.service.tasks_pending, 0)
+            self.assertFalse(h.service.router_pending, "no idle time added once the voice stopped")
+            self.assertEqual(h.service.router_stats["delivered"], {SESSION: 1})
+
+    async def test_a_session_closing_under_a_spoken_lookup_hands_it_to_the_next_route(self):
+        backend = FakeBackend(response(call("ask_openclaw", {"question": "flights"}, "c1")),
+                              response(message("I've asked.")))
+        async with AskHarness(self, backend, {"accepted": True, "task_id": "task-h2"}) as h:
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            h.service.on_task_reopen = None
+            await h.user_says("Find me flights to London in October.")
+            await h.wait_commentary(count=1, timeout=3.0)
+            await acked(h)
+            self.assertTrue(await live_tasks.deliver_external_result("task-h2", "Flights start at 300 dollars."))
+            await until(lambda: any("300 dollars" in c for c in commentaries(h)))
+            await asyncio.wait_for(h.service.close_session("follow-up cut-off"), 10)
+            await until(lambda: announced, timeout=5.0)
+            self.assertIn("300 dollars", announced[0])
+            self.assertEqual(h.service.router_stats["delivered"], {ANNOUNCE: 1})
+            self.assertEqual(h.service.tasks_pending, 0)
 
 
 class TaskResultEndpoint(unittest.IsolatedAsyncioTestCase):

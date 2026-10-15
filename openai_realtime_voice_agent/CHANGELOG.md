@@ -2,6 +2,28 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.2 (fork)
+
+### Changed: answers are heard to the end; the agent keeps a conversation
+
+- **A result spoken from the task list holds the session until it has been
+  heard.** 0.19.1 did this for explanations only. Now every background result
+  the voice is given (a slow lookup that outlived the soft budget, a late
+  action report, an agent answer) keeps the session open while it is being
+  spoken, bounded: only while audio is actually playing, never past the
+  session's own maximum, and no idle time is added once the voice stops. A
+  session closing under it (the device's follow-up cut-off) hands the result to
+  the next route instead of losing it.
+- **The agent bridge now honours the add-on's session key for ordinary
+  questions.** The add-on sends `voicepe-<device>-<random>` and reuses it for
+  follow-ups within 30 minutes from the same device (a fresh key only when a
+  request is still in flight on it), so "and what about tomorrow?" continues
+  the same agent session; before, the reference bridge kept one long-lived
+  session per room. With `answer_only: true` the bridge drops its own
+  "be thorough" lookup directive, which conflicted with the add-on's
+  answer-only brief. Requests without a `session_key` behave as before.
+  See `docs/agent-integration.md`.
+
 ## 0.19.1 (fork)
 
 

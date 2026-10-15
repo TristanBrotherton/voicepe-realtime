@@ -1,5 +1,5 @@
-"""The OpenClaw request shape (candidate-v35): answer-only prefix, a fresh
-session key per request, and never two in-flight requests on one key."""
+"""The OpenClaw request shape: answer-only prefix, one conversation key per
+device (0.19.2; reused for follow-ups), and never two in-flight requests on one key."""
 import asyncio
 import re
 import unittest
@@ -56,6 +56,7 @@ def _reset():
     RecordingClient.in_flight = []
     RecordingClient.max_overlap_on_one_key = 0
     RecordingClient.hold = None
+    openclaw_tool.forget_conversation_sessions()
 
 
 async def _ask(llm, question, call_id):
@@ -105,7 +106,10 @@ class TestAnswerOnlyPrefix(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPerRequestSessionKeys(unittest.IsolatedAsyncioTestCase):
-    async def test_every_request_gets_its_own_voicepe_key(self):
+    async def test_follow_ups_reuse_the_devices_conversation_key(self):
+        # 0.19.2: one conversation key per device for half an hour, so a
+        # follow-up continues the agent's session; a repeated tool-call id
+        # (a retried call) is the same conversation too.
         _reset()
         llm = FakeLLM()
         with patch.dict("os.environ", ENV), \
@@ -113,12 +117,28 @@ class TestPerRequestSessionKeys(unittest.IsolatedAsyncioTestCase):
             openclaw_tool.register_openclaw_tool(llm, device_id="office")
             for n in range(5):
                 await _ask(llm, "follow up", f"call-{n}")
-            # A repeated tool-call id still gets a new session.
             await _ask(llm, "follow up", "call-0")
         keys = [p["session_key"] for p in RecordingClient.payloads]
-        self.assertEqual(len(set(keys)), len(keys))
-        for n, key in enumerate(keys[:5]):
-            self.assertTrue(key.startswith(f"voicepe-office-call-{n}-"), key)
+        self.assertEqual(len(set(keys)), 1, keys)
+        self.assertTrue(keys[0].startswith("voicepe-office-"), keys[0])
+
+    def test_the_conversation_key_expires_and_an_in_flight_key_is_never_shared(self):
+        openclaw_tool.forget_conversation_sessions()
+        first = openclaw_tool.request_session_key("office", "c1", now=1000.0)
+        self.assertEqual(openclaw_tool.request_session_key("office", "c2", now=1000.0 + 600), first)
+        self.assertNotEqual(openclaw_tool.request_session_key("kitchen", "c3", now=1000.0), first,
+                            "another device is another conversation")
+        openclaw_tool.mark_in_flight(first, True)
+        other = openclaw_tool.request_session_key("office", "c4", now=1000.0 + 700)
+        self.assertNotEqual(other, first, "a request still running on the key: a fresh one")
+        openclaw_tool.mark_in_flight(first, False)
+        self.assertEqual(openclaw_tool.request_session_key("office", "c5", now=1000.0 + 800), first,
+                         "the conversation key is kept, not the overflow key")
+        later = openclaw_tool.request_session_key("office", "c6",
+                                                   now=1000.0 + 800 + openclaw_tool.CONVERSATION_FOLLOWUP_S + 1)
+        self.assertNotEqual(later, first, "a cold start after the window")
+        for key in (first, other, later):
+            self.assertRegex(key, r"^voicepe-office-[0-9a-f]{10}$")
 
     def test_keys_have_the_shape_the_bridge_accepts(self):
         source = BRIDGE.read_text(encoding="utf-8")
@@ -138,7 +158,7 @@ class TestPerRequestSessionKeys(unittest.IsolatedAsyncioTestCase):
              patch.object(openclaw_tool.httpx, "AsyncClient", RecordingClient):
             openclaw_tool.register_openclaw_tool(llm)
             await _ask(llm, "anything", "call-9")
-        self.assertTrue(RecordingClient.payloads[0]["session_key"].startswith("voicepe-workshop-call-9-"))
+        self.assertTrue(RecordingClient.payloads[0]["session_key"].startswith("voicepe-workshop-"))
 
 
 class TestNoParallelRequestsOnOneKey(unittest.IsolatedAsyncioTestCase):

@@ -75,11 +75,15 @@ Content-Type: application/json
   lookups; one to three spoken sentences; claim success only when it
   succeeded), then `Request:` and the request. `answer_only: true` says the
   prefix is there, so a bridge can drop any "be thorough" directive of its own.
-- `session_key` — a fresh `voicepe-<device>-<request id>-<random>` key for
-  this one request (0.19.0). Use it as the agent's session key: a new
-  session per request keeps sessions small, and no two requests share one (two
-  runs on one session key queue behind each other). Accept only that shape;
-  if the key is already running, fall back to a fresh key of your own.
+- `session_key` — the device's conversation key, `voicepe-<device>-<random>`
+  (0.19.2; 0.19.0 sent a fresh key per request). The add-on reuses it for
+  follow-ups within 30 minutes from the same device, so "and tomorrow?"
+  continues the agent session, and mints a fresh key only while a request is
+  still in flight on it (no two runs on one session key, which would queue).
+  Use it as the agent's session key. Accept only the shape
+  `^voicepe-[A-Za-z0-9_-]{1,112}$`; if the key is already running, fall back
+  to a session of your own. With `answer_only: true` drop any "be thorough"
+  directive of yours; it conflicts with the add-on's answer-only brief.
 - `room` — the add-on's `instance_name`, lowercased.
 - `device_id` — the device that asked. Your bridge should remember it: if the
   work outlasts the voice turn, deliver the eventual answer through the

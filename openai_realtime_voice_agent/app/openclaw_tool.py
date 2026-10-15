@@ -369,23 +369,55 @@ def split_explain_reply(text: str) -> Tuple[str, str]:
     return (spoken or text), part
 
 
-def request_session_key(origin: str, request_id: str = "") -> str:
-    """A fresh OpenClaw session key for ONE request, never reused.
+# One conversation key per device for ordinary questions (0.19.2): a
+# follow-up within this long continues the same OpenClaw session, so "and
+# tomorrow?" has its context. A fresh key is minted while a request is still
+# in flight on the current one (two runs on one session queue behind each
+# other) and is not adopted as the conversation key. Before 0.19.2 every
+# request got its own key, which kept sessions small but lost every follow-up.
+CONVERSATION_FOLLOWUP_S = 1800.0
+# origin -> (session key, monotonic time last used)
+_conversation_sessions: Dict[str, Tuple[str, float]] = {}
+# keys with a bridge request in flight right now
+_inflight_keys: set = set()
 
-    One long-lived session grew to 122k tokens in a day on the OpenClaw side
-    and is slow after an idle spell, and two requests on the same session key
-    queue behind each other (+23 s seen). So every request gets its own key:
-    ``voicepe-<device or room>-<request id>-<random>``. The random tail makes
-    two concurrent requests distinct even when they share a request id (a
-    retried tool call); the bridge's request deduper, keyed by request id,
-    is what joins a true duplicate so it runs once.
-    """
-    place = re.sub(r"[^a-z0-9]+", "-", (origin or "").lower()).strip("-")[:32] or "unrouted"
-    request = re.sub(r"[^A-Za-z0-9_]+", "-", request_id or "").strip("-")[:40]
-    tail = uuid.uuid4().hex[:10]
-    key = (f"{SESSION_KEY_PREFIX}{place}-{request}-{tail}" if request
-           else f"{SESSION_KEY_PREFIX}{place}-{tail}")
-    return key[:SESSION_KEY_MAX_CHARS]
+
+def _fresh_key(place: str) -> str:
+    return f"{SESSION_KEY_PREFIX}{place}-{uuid.uuid4().hex[:10]}"[:SESSION_KEY_MAX_CHARS]
+
+
+def request_session_key(origin: str, request_id: str = "", now: float = None) -> str:
+    """The OpenClaw session key for an ordinary request from ``origin``: the
+    device's current conversation key while it is younger than
+    CONVERSATION_FOLLOWUP_S and has no request in flight, otherwise a fresh
+    ``voicepe-<device or room>-<random>`` key. ``request_id`` is kept for
+    callers; the bridge's deduper, keyed by request id, joins true duplicates."""
+    place = _place(origin)
+    now = time.monotonic() if now is None else now
+    current = _conversation_sessions.get(place)
+    if current is not None and now - current[1] < CONVERSATION_FOLLOWUP_S:
+        if current[0] not in _inflight_keys:
+            _conversation_sessions[place] = (current[0], now)
+            return current[0]
+        return _fresh_key(place)  # overlapping request: its own key, not the conversation's
+    key = _fresh_key(place)
+    _conversation_sessions[place] = (key, now)
+    return key
+
+
+def mark_in_flight(key: str, running: bool) -> None:
+    """The request on ``key`` has started (True) or finished (False)."""
+    if not key:
+        return
+    if running:
+        _inflight_keys.add(key)
+    else:
+        _inflight_keys.discard(key)
+
+
+def forget_conversation_sessions() -> None:
+    _conversation_sessions.clear()
+    _inflight_keys.clear()
 
 
 def bridge_request_fields(question: str, origin: str, request_id: str = "",
@@ -430,6 +462,7 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
         callback = openclaw_callback_url()
         if callback:
             payload["callback_url"] = callback
+        mark_in_flight(payload.get("session_key", ""), True)
         try:
             async with httpx.AsyncClient(timeout=ASK_TIMEOUT_S) as client:
                 r = await client.post(openclaw_url(), json=payload)
@@ -448,6 +481,8 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
             await params.result_callback({
                 "error": "The assistant could not be reached; try again shortly."})
             return
+        finally:
+            mark_in_flight(payload.get("session_key", ""), False)
         if accepted or background:
             task_id = str(response.get("task_id") or request_id or "").strip()
             logger.info(f"🦞 ask_openclaw accepted as a background task ({task_id or 'no id'})"
