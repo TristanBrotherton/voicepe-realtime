@@ -99,6 +99,9 @@ class ToolOutcome:
     task_id: str = ""
     # The hand-off answers when an event happens (a watch), not after work.
     deferred: bool = False
+    # The hand-off is an explanation (ask_openclaw explain mode): minutes of
+    # read-only research, delivered as a spoken summary, or a text on request.
+    explain: bool = False
 
     @property
     def log_detail(self) -> str:
@@ -160,7 +163,8 @@ def classify_result(result: Any) -> ToolOutcome:
             # A hand-off: the work continues elsewhere and reports back.
             task_id = str(mapping.get("task_id") or mapping.get("request_id") or "").strip()
             deferred = mapping.get("deferred") is True or mapping.get("watch") is True
-            return ToolOutcome(ok=True, kind="pending", pending=True, task_id=task_id, deferred=deferred)
+            return ToolOutcome(ok=True, kind="pending", pending=True, task_id=task_id, deferred=deferred,
+                               explain=mapping.get("mode") == "explain")
         if mapping.get("deferred") is True or mapping.get("watch") is True:
             # A watch armed by a tool that answers instantly ("I'll let you
             # know"): done as a hand-off, with the event still to come.

@@ -16,6 +16,21 @@
  *       turn finish, and POSTs the eventual answer to that room's announce
  *       endpoint itself — report-back is a guarantee, not model goodwill.
  *
+ *   POST <secret path>  {"question": "...", "mode": "explain", "request_id": "...", "budget_s": 600,
+ *                        "session_key": "voicepe-…", "room": "...", "device_id": "..."}
+ *                       → {"accepted": true, "task_id": "<request_id>", "eta_s": 180}
+ *       Explain mode (add-on 0.19.1): a research question about the owner's own
+ *       projects ("explain how our X supports Y"). The question already carries
+ *       the add-on's read-only research brief, which asks the agent to answer in
+ *       two parts, "SPOKEN:" and "WRITEUP:". The request is accepted at once; the
+ *       agent turn runs for up to EXPLAIN_BUDGET_MS on the add-on's session key
+ *       (a follow-up within the add-on's window reuses it, so the agent keeps its
+ *       context), one at a time (409 {"error": "busy"} while one runs). The
+ *       reply is split at the markers and posted to the device's announce
+ *       endpoint with announcement_id = request_id, ok: true and detail = the
+ *       write-up; a failure is posted with ok: false. The add-on speaks the
+ *       summary (or texts the write-up when the user asked for a text).
+ *
  *   POST <secret path>  {"recall": "grandma phone"} → {"matches": ["..."]}
  *       No agent turn: greps OpenClaw's own memory markdown (MEMORY.md, the
  *       most recent dailies, person-files) and returns matching lines. This is
@@ -29,6 +44,7 @@
  *   OPENCLAW_AGENT      agent id to run                    (default "main")
  *   OPENCLAW_WORKSPACE  workspace dir for recall greps     (default ~/.openclaw/workspace)
  *   ASK_TIMEOUT_MS      sync window before "still working" (default 120000)
+ *   EXPLAIN_BUDGET_MS   ceiling for one explain-mode turn       (default 600000)
  *   ANNOUNCE_HOST       Home Assistant host IP/name — required for report-back
  *   ANNOUNCE_MAP        room=port list, e.g. "kitchen=8090,workshop=8091"
  *   ANNOUNCE_TOKEN      bearer token for the announce endpoint, or put it in a
@@ -61,6 +77,9 @@ const ASK_PATH = process.env.ASK_PATH || readOptional(".ask-path");
 const WORKSPACE =
   process.env.OPENCLAW_WORKSPACE || join(homedir(), ".openclaw", "workspace");
 const ASK_TIMEOUT_MS = Number(process.env.ASK_TIMEOUT_MS || 120000);
+const EXPLAIN_BUDGET_MS = Number(process.env.EXPLAIN_BUDGET_MS || 600000);
+const SPOKEN_MARK = "SPOKEN:";
+const WRITEUP_MARK = "WRITEUP:";
 const ANNOUNCE_HOST = process.env.ANNOUNCE_HOST || "";
 const ANNOUNCE_TOKEN = process.env.ANNOUNCE_TOKEN || readOptional(".announce-token");
 const ANNOUNCE_PORTS = Object.fromEntries(
@@ -183,22 +202,30 @@ if (!ASK_PATH) {
 
 // Deliver a late answer to the device that asked. Requires ANNOUNCE_HOST,
 // ANNOUNCE_MAP and ANNOUNCE_TOKEN; silently logs (never throws) otherwise.
-async function announce(text, room, deviceId = "") {
+// `task` (explain mode): { id, ok, detail } — the add-on claims the announce
+// for the pending task named by `id`, so the text may be longer than the bare
+// lane's limit and carries the write-up as `detail`; ok: false marks a failure.
+async function announce(text, room, deviceId = "", task = null) {
   const port = ANNOUNCE_PORTS[room] || ANNOUNCE_PORTS[DEFAULT_ROOM];
   if (!ANNOUNCE_HOST || !port || !ANNOUNCE_TOKEN) {
     console.log("[bridge] late answer NOT announced (announce not configured)");
     return false;
   }
   try {
+    const body = { message: text.slice(0, task ? 1500 : 590) };
+    if (deviceId) body.device_id = deviceId;
+    if (task) {
+      body.announcement_id = task.id;
+      body.ok = task.ok === true;
+      if (task.detail) body.detail = String(task.detail).slice(0, 4000);
+    }
     const r = await fetch(`http://${ANNOUNCE_HOST}:${port}/announce`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ANNOUNCE_TOKEN}`,
       },
-      body: JSON.stringify(
-        deviceId ? { message: text.slice(0, 590), device_id: deviceId } : { message: text.slice(0, 590) },
-      ),
+      body: JSON.stringify(body),
     });
     console.log(`[bridge] late answer announced (${room || "default"}${deviceId ? `/${deviceId}` : ""}): HTTP ${r.status}`);
     return r.ok;
@@ -306,6 +333,61 @@ function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly =
   });
 }
 
+// --- Explain mode -----------------------------------------------------------
+// One explanation at a time: a research turn is minutes long and the device
+// has promised one answer. The request is accepted at once; the result goes
+// to the device through announce() with the task id.
+const explainRuns = new Set();
+
+function splitExplainReply(text) {
+  const s = text.indexOf(SPOKEN_MARK);
+  const w = text.indexOf(WRITEUP_MARK);
+  if (s < 0) {
+    return w < 0 ? { spoken: text.trim(), writeup: "" }
+      : { spoken: text.slice(0, w).trim(), writeup: text.slice(w + WRITEUP_MARK.length).trim() };
+  }
+  const spoken = text.slice(s + SPOKEN_MARK.length, w > s ? w : text.length).trim();
+  const writeup = w >= 0 ? text.slice(w + WRITEUP_MARK.length).trim() : "";
+  return { spoken: spoken || text.trim(), writeup };
+}
+
+function runExplain(question, room, deviceId, requestId, requestedKey, budgetS) {
+  if (explainRuns.size > 0) return { busy: true };
+  // The add-on's explain key is reused by a follow-up, so it is honoured even
+  // while idle; a key that is running right now gets a fresh one.
+  const sessionKey = chooseSessionKey(requestedKey);
+  const asked = Number(budgetS) > 0 ? Number(budgetS) * 1000 : EXPLAIN_BUDGET_MS;
+  const timeoutMs = Math.min(Math.max(asked, 60000), EXPLAIN_BUDGET_MS);
+  const roomNote = room || deviceId
+    ? `[This request came from the ${room || "home"} Voice PE. The caller delivers your reply to the user; ` +
+      "do not announce it yourself.] "
+    : "";
+  explainRuns.add(sessionKey);
+  activeSessionKeys.add(sessionKey);
+  console.log(`[bridge] explain started (${room || "?"}): ${describe(question)} budget_ms=${timeoutMs}`);
+  const p = spawn(BIN, ["agent", "--agent", AGENT, "--session-key", sessionKey, "--message", roomNote + question],
+                  { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "", timedOut = false;
+  p.stdout.on("data", (d) => (out += d.toString()));
+  p.stderr.on("data", (d) => (err += d.toString()));
+  const timer = setTimeout(() => { timedOut = true; p.kill(); }, timeoutMs);
+  p.on("close", async (code) => {
+    clearTimeout(timer);
+    explainRuns.delete(sessionKey);
+    activeSessionKeys.delete(sessionKey);
+    const text = out.trim();
+    if (code === 0 && text && !timedOut) {
+      const { spoken, writeup } = splitExplainReply(text);
+      console.log(`[bridge] explain completed: spoken ${spoken.length} chars, write-up ${writeup.length} chars`);
+      await announce(spoken, room, deviceId, { id: requestId, ok: true, detail: writeup });
+    } else {
+      console.error(`[bridge] explain failed (${timedOut ? "budget exceeded" : `exit ${code}`}): ${err.trim().slice(0, 160)}`);
+      await announce("I couldn't finish looking into that.", room, deviceId, { id: requestId, ok: false });
+    }
+  });
+  return { accepted: true, task_id: requestId, eta_s: 180, mode: "explain" };
+}
+
 const server = createServer((req, res) => {
   if (req.method !== "POST" || req.url !== ASK_PATH) {
     res.writeHead(404).end();
@@ -315,6 +397,7 @@ const server = createServer((req, res) => {
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
     let question = "", recall = "", room = "", deviceId = "", sessionKey = "", answerOnly = false;
+    let mode = "", requestId = "", budgetS = 0;
     let notificationDestination = "", notificationMessage = "", notificationMedia = "";
     try {
       const parsed = JSON.parse(body);
@@ -324,6 +407,9 @@ const server = createServer((req, res) => {
       deviceId = cleanDeviceId(parsed?.device_id);
       sessionKey = String(parsed?.session_key || "").trim();
       answerOnly = parsed?.answer_only === true;
+      mode = String(parsed?.mode || "").trim().toLowerCase();
+      requestId = String(parsed?.request_id || parsed?.task_id || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 120);
+      budgetS = Number(parsed?.budget_s || 0);
       notificationDestination = String(parsed?.notification_destination || "").trim();
       notificationMessage = String(parsed?.notification_message || "").trim();
       notificationMedia = String(parsed?.notification_media || "").trim();
@@ -351,6 +437,17 @@ const server = createServer((req, res) => {
     if (!question) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ answer: "question required" }));
+      return;
+    }
+    if (mode === "explain") {
+      const result = runExplain(question, room, deviceId, requestId || `explain-${Date.now()}`, sessionKey, budgetS);
+      if (result.busy) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "busy", answer: "An explanation is already being researched." }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
       return;
     }
     console.log(`[bridge] question (${room || "?"}${deviceId ? `/${deviceId}` : ""}): ${describe(question)}`);

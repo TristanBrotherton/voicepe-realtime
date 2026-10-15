@@ -217,6 +217,18 @@ action that needs a spoken yes is never asked from the background: the voice
 says it was not done and the user asks again. All `live_task_*` options are
 optional; see the configuration reference.
 
+**Explanations (router mode, 0.19.1).** "Can you explain how our bridge
+supports remote access?" is research: the backend sends it to the agent in
+*explain mode* (a read-only brief: read the code and documents, change
+nothing, come back with a spoken summary and a write-up), with a ten-minute
+budget. The voice says at once that it will take a moment and that it will
+get back to you, and offers a text instead; the answer is then read in full
+by voice (the open conversation, a short new session or an announcement), or
+texted through the bridge's verified sender when you answer "text would be
+great" (`live_task_imessage_to` names the destination). A follow-up within
+half an hour ("what about the authentication part?") continues the same
+agent session. One explanation runs at a time.
+
 The integration is agent-agnostic — any agent behind a small bridge works. Full
 contracts and examples:
 [Agent Integration](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/agent-integration.md).

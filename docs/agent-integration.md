@@ -109,6 +109,45 @@ Content-Type: application/json
   itself (memory, messaging, calendar, research, cross-app tasks) — never for
   smart-home control.
 
+#### Explain mode (0.19.1, router mode)
+
+A question about how the owner's own software, projects or systems work, are
+designed or stand ("explain how our bridge supports remote access", "what's
+the status of project X") is research, not a lookup. The backend calls
+`ask_openclaw` with `mode: "explain"`, and the request to the bridge changes:
+
+```
+{"question": "<explain brief>\n\nRequest: Can you explain how ...", "mode": "explain",
+ "budget_s": 600, "answer_only": false, "session_key": "voicepe-<device>-explain-<random>",
+ "room": "kitchen", "device_id": "...", "request_id": "call_abc123", "task_id": "call_abc123"}
+```
+
+- The brief replaces the answer-only prefix. It is **read-only** (investigate
+  and explain; change no code, files, settings or devices; send nothing) and
+  asks for a reply in two parts: `SPOKEN:` a summary of 20-40 seconds of
+  speech, written for the ear, and `WRITEUP:` a fuller explanation under
+  about 1200 characters for a text message.
+- `budget_s` is how long the add-on expects the agent may take (600). The
+  bridge should accept the request **at once** with `{"accepted": true,
+  "task_id": "<task_id>", "eta_s": 180}` and run the turn in the background;
+  the add-on's voice has already told the user it will take a moment.
+- `session_key` is **reused** by a follow-up within 30 minutes from the same
+  device ("what about the auth part?"), so the agent keeps the context it has
+  read. Run one explanation at a time: answer `409` while one is running and
+  the voice says it is still on the earlier one.
+- Deliver the result with `/task-result` or `/announce` (`announcement_id` =
+  the request id) carrying `"ok": true`, the `SPOKEN:` part as the message
+  and the `WRITEUP:` part as `"detail"`. A task result may be up to 1500
+  characters (`detail` 4000); the bare announcement lane keeps its 600. On
+  failure post `"ok": false` with a short message.
+- Delivery is the user's choice: by default the summary is read in full by
+  voice on the device that asked; if the user answers the acknowledgement
+  with "text would be great", the add-on texts the write-up through the
+  bridge's `notification_destination` contract (`LIVE_TASK_IMESSAGE_TO`) and
+  says so. The bridge does not need to text anything itself.
+- A bridge without explain support may ignore `mode` and answer inline: the
+  add-on speaks the `SPOKEN:` part of such a reply.
+
 When `openclaw_url` is set, the add-on registers `ask_openclaw` natively and
 skips any same-named tool from the MCP server, so the model sees exactly one.
 This matters: Home Assistant core hard-caps every MCP request at **60 seconds**,

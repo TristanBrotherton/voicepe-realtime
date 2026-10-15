@@ -28,6 +28,11 @@ from aiohttp import web
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 600
+# A background task's result is spoken by the Live voice or texted, not played
+# on the bare lane, so it may be longer: an explanation's spoken summary is
+# 20-40 s of speech; its ``detail`` (the write-up for a text) longer still.
+MAX_TASK_TEXT_CHARS = 1500
+MAX_TASK_DETAIL_CHARS = 4000
 # Repeat guard: agents monitoring for a result can re-announce the same news
 # every poll cycle (observed live: the same reply announced three times, a
 # minute apart, in three phrasings). Near-duplicates within the window are
@@ -43,14 +48,19 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
     """``task_sink(task_id, text, ok) -> awaitable bool`` claims a result for a
     pending background task (app.live_tasks.deliver_external_result)."""
 
-    async def claim_task(task_id: str, text: str, ok: bool) -> bool:
+    async def claim_task(task_id: str, text: str, ok: bool, detail: str = "") -> bool:
         if task_sink is None or not task_id:
             return False
         try:
+            if detail:
+                return bool(await task_sink(task_id, text, ok, detail))
             return bool(await task_sink(task_id, text, ok))
         except Exception as e:
             logger.warning(f"⚠️ task result sink failed: {e!r}")
             return False
+
+    def task_detail(body: dict) -> str:
+        return str(body.get("detail") or body.get("writeup") or "").strip()[:MAX_TASK_DETAIL_CHARS]
 
     async def handle_task_result(request: web.Request) -> web.Response:
         auth = request.headers.get("Authorization", "")
@@ -61,7 +71,7 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
         task_id = str(body.get("task_id") or body.get("request_id") or "").strip()[:200]
-        text = str(body.get("answer") or body.get("message") or "").strip()[:MAX_MESSAGE_CHARS]
+        text = str(body.get("answer") or body.get("message") or "").strip()[:MAX_TASK_TEXT_CHARS]
         # A missing "ok" is NOT ok: bridge error text must never be framed as
         # a verified result (longtask review ii).
         ok = body.get("ok") is True and not body.get("error")
@@ -77,7 +87,7 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
             if any(key == f"task:{task_id}" for _, _, key in _recent):
                 return web.json_response({"status": "duplicate_suppressed",
                                           "note": "this task result was already delivered — do not retry"})
-        if not await claim_task(task_id, text, ok):
+        if not await claim_task(task_id, text, ok, task_detail(body) if ok else ""):
             return web.json_response({"error": "unknown task", "task_id": task_id}, status=404)
         async with _announce_lock:
             _recent.append((time.monotonic(), None, f"task:{task_id}"))
@@ -92,14 +102,18 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
-        message = (body.get("message") or "").strip()[:MAX_MESSAGE_CHARS]
+        full = (body.get("message") or "").strip()
+        message = full[:MAX_MESSAGE_CHARS]
         if not message:
             return web.json_response({"error": "empty message"}, status=400)
         # A result for a pending background task lands in the conversation,
-        # not on the bare announcement lane.
+        # not on the bare announcement lane (at the task length, with its
+        # write-up when the bridge sent one).
+        ok = body.get("ok") is True
         for task_id in (str(body.get("task_id") or "").strip()[:200],
                         str(body.get("announcement_id") or "").strip()[:200]):
-            if task_id and await claim_task(task_id, message, body.get("ok") is True):
+            if task_id and await claim_task(task_id, full[:MAX_TASK_TEXT_CHARS], ok,
+                                            task_detail(body) if ok else ""):
                 async with _announce_lock:
                     _recent.append((time.monotonic(), None, f"task:{task_id}"))
                 logger.info(f"📬 announce routed to pending task {task_id}: {message[:80]}")

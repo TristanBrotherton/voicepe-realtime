@@ -24,6 +24,7 @@ from app.openclaw_tool import (
     get_openclaw_tool_definition,
     send_task_message,
     get_recall_tool_definition,
+    get_text_delivery_tool_definition,
     openclaw_url,
     register_openclaw_tool,
 )
@@ -1445,6 +1446,8 @@ class Application:
         if openclaw_url():
             all_tools.append(get_openclaw_tool_definition())
             all_tools.append(get_recall_tool_definition())
+            # "Text would be great" after an explanation's acknowledgement.
+            all_tools.append(get_text_delivery_tool_definition())
 
         # Get MCP tool definitions if available
         mcp_tools_schema = None

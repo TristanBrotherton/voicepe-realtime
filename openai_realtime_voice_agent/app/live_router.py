@@ -39,7 +39,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.ha_household import fold, mentions
 from app.live_protocol import responses_function_tool
-from app.live_tasks import deferred_commentary, is_deferred_request
+from app.live_tasks import deferred_commentary, explain_ack_commentary, is_deferred_request
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ Carry the request out with the tools, or look it up with them:
 - Call an action tool directly with the exact device or area name from the home's list below; look up state first only when the request needs it.
 - People speak loosely: match their words to the closest listed device, room or floor ("upstairs bedroom" is the bedroom on the upstairs floor, "the kitchen" with no device means its lights). A request that names no room means the room of the satellite the user is speaking to. Ask only when two or more listed devices fit equally well.
 - Prefer a specific tool over the general assistant: when a script or intent tool exists for what was asked (a person's location or arrival time, the car, a "tell me when" watch), call that tool. Use ask_openclaw only when no tool covers the request; it is slow.
+- A question about how the user's own software, projects, systems or code work, are designed or stand ("explain how our X handles Y", "what's the status of project Z", "how does the bridge authenticate") is research: call ask_openclaw with mode "explain" and the full question; a follow-up to an earlier explanation is the same, with the earlier topic repeated in the question. If the user then asks for the answer as a text ("text would be great", "send it by text"), call deliver_by_text.
 - A request to be told when something happens ("tell me when X leaves") is done once the watch tool has run: say the user will be told, nothing more.
 - Never claim an action succeeded unless its tool result confirms it. If a tool fails, say what failed.
 - If an action returns confirmation_required, do not act: reply with one short yes/no question. Call confirm_action with that confirm_id only after the user clearly says yes in a later message.
@@ -319,6 +320,7 @@ class ToolRun:
     pending: bool = False
     task_id: str = ""
     deferred: bool = False
+    explain: bool = False
 
 
 def tool_run(name: str, outcome: Any) -> ToolRun:
@@ -328,7 +330,8 @@ def tool_run(name: str, outcome: Any) -> ToolRun:
                    pending_confirmation=bool(getattr(outcome, "pending_confirmation", False)),
                    pending=bool(getattr(outcome, "pending", False)),
                    task_id=str(getattr(outcome, "task_id", "") or ""),
-                   deferred=bool(getattr(outcome, "deferred", False)))
+                   deferred=bool(getattr(outcome, "deferred", False)),
+                   explain=bool(getattr(outcome, "explain", False)))
 
 
 @dataclass
@@ -354,6 +357,11 @@ class RouteResult:
         """The answer comes when an event happens (a watch), not after work."""
         return any(r.deferred for r in self.tools)
 
+    @property
+    def explain(self) -> bool:
+        """A pending explanation (minutes of research; the voice sets expectations)."""
+        return any(r.explain for r in self.tools)
+
     def commentary(self) -> Optional[str]:
         """The one line the voice is given to say, or None for nothing."""
         text = (self.text or "").strip()
@@ -371,6 +379,8 @@ class RouteResult:
         if self.kind == PENDING:
             if self.deferred:
                 return deferred_commentary(text)
+            if self.explain:
+                return explain_ack_commentary()
             return ("The request has been handed to the household assistant, which is still working "
                     "on it and will report back later. " + (text + " " if text else "") +
                     "Tell the user this briefly in your own words; do not guess the result and do "
