@@ -157,6 +157,7 @@ class MjukAec:
         self.mic_tot = 0                          # mic samples received, all stretches
         self.mic_t: Optional[float] = None        # our clock at mic sample mic_tot
         self.ref_slut_samp: Optional[int] = None  # the mic sample where the reference laid so far ends
+        self.ref_frac = 0.0                       # the part of a 16 kHz sample the last resampled chunk did not fill
         self.agc_db = 0.0                 # the gain now
         self.golv_db = -50.0              # noise floor estimate (slow minimum of the frame levels)
         self.folj = os.environ.get("AEC_FOLJ", "1") == "1"
@@ -218,6 +219,9 @@ class MjukAec:
                 return
             if rate != RATE:
                 n = int(len(a) * RATE / rate)
+                if self.ref_klocka:   # counted in samples, so the cut-off fraction is carried, not lost (B on #80)
+                    n = int(len(a) * RATE / rate + self.ref_frac)
+                    self.ref_frac += len(a) * RATE / rate - n
                 a = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a.astype(np.float32)).astype(np.int16)
             t = self.klocka() if t is None else t
             # The device plays chunks back to back. With the steady pacer (STADIG_TAKT=1) it also has a cushion, so a

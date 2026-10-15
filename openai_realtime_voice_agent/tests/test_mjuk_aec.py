@@ -413,3 +413,18 @@ def test_an_unbroken_reply_stays_on_the_device_clock(monkeypatch):
     and a long linear canceller took 1-5 dB of it; with the slide out, 16-19 dB."""
     assert abs(_glidning(monkeypatch, True)) <= 2
     assert abs(_glidning(monkeypatch, False)) >= 40      # today: the slide is there (64 samples = 4 ms)
+
+
+def test_on_the_device_clock_no_sample_is_lost_to_resampling(monkeypatch):
+    """B on #80: 512 samples at 24 kHz are 341.33 at 16 kHz; cutting each chunk to 341 lost a third of a sample a chunk
+    and the count slid (100 samples in 6.4 s)."""
+    monkeypatch.setenv("STADIG_TAKT", "1")
+    monkeypatch.setenv("REF_ENHETSKLOCKA", "1")
+    aec = MjukAec(klocka=lambda: 0.0)
+    aec.process(bytes(640), 0.02)                            # the mic has streamed: samples can be placed
+    chunk = (np.ones(512, dtype=np.int16) * 1000).tobytes()
+    aec.ref(chunk, 24000, 0.0)
+    forst = aec.tidslinje[0][2]
+    for k in range(1, 300):
+        aec.ref(chunk, 24000, k * 512 / 24000)
+    assert abs(aec.ref_slut_samp - forst - 300 * 512 * 2 // 3) <= 1

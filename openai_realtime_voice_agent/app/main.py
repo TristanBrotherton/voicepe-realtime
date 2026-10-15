@@ -1745,12 +1745,19 @@ class Application:
             c = self.websocket_handler.resolve_device(body["rum"])
             if c is None or c.task is None or c.maskin is None:
                 return JSONResponse({"error": "okand_enhet"})
-            await c.maskin.phase("listening", "svar-prov")
-            await asyncio.sleep(0.5)
-            for i in range(0, len(pcm), 1024):
-                await c.task.queue_frame(TTSAudioRawFrame(audio=pcm[i:i + 1024], sample_rate=24000, num_channels=1))
-            await asyncio.sleep(len(pcm) / 48000 + 2.0)
-            await c.maskin.phase("idle", "svar-prov")
+            # Deaf while it plays: the canceller hears the mic (and AEC_SPARA records it), nothing after it does.
+            # Kontoret 2026-10-15 20:53: the local turn path took the clip's echo for a turn ("Hej!") and woke Gemini.
+            ser = c.serializer
+            ser.fraga_tap = lambda _m: None
+            try:
+                await c.maskin.phase("listening", "svar-prov")
+                await asyncio.sleep(0.5)
+                for i in range(0, len(pcm), 1024):
+                    await c.task.queue_frame(TTSAudioRawFrame(audio=pcm[i:i + 1024], sample_rate=24000, num_channels=1))
+                await asyncio.sleep(len(pcm) / 48000 + 2.0)
+            finally:
+                ser.fraga_tap = None
+                await c.maskin.phase("idle", "svar-prov")
             return JSONResponse({"ok": True, "s": round(len(pcm) / 48000, 1)})
 
         @web_app.get("/healthz")
