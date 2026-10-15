@@ -163,7 +163,7 @@ Full walkthrough (~30–45 minutes from zero): **[Getting Started](docs/getting-
 | [Demo](demo/README.md) | A scripted, reproducible demo with timing — runs against a simulated device, no household needed |
 | [Agent Integration](docs/agent-integration.md) | The bridge contracts: recall, escalation, and the announce endpoint — works with any agent |
 | [FAQ](docs/faq.md) | Cost, privacy (what leaves your network), reverting to stock, Raspberry Pi, languages, and more |
-| [Release notes](docs/releases/0.19.0.md) | What changed in 0.19.0 (GPT-Live) and what to check before enabling it; the full history is in the [changelog](openai_realtime_voice_agent/CHANGELOG.md) |
+| [Release notes](docs/releases/0.19.1.md) | What changed in 0.19.1 (explain mode) and [0.19.0](docs/releases/0.19.0.md) (GPT-Live), and what to check before enabling it; the full history is in the [changelog](openai_realtime_voice_agent/CHANGELOG.md) |
 | [Contributing](CONTRIBUTING.md) | PRs welcome — small, tested, explained |
 
 The firmware lives in its own repo: **[TristanBrotherton/voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)**. Firmware 1.3.1 (its current `main`) works with both runtimes; GPT-Live needs no firmware change.
