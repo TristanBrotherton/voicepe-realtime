@@ -22,7 +22,7 @@
  *       Explain mode (add-on 0.19.1): a research question about the owner's own
  *       projects ("explain how our X supports Y"). The question already carries
  *       the add-on's read-only research brief, which asks the agent to answer in
- *       two parts, "SPOKEN:" and "WRITEUP:". The request is accepted at once; the
+ *       two parts, "SPOKEN:" and "TEXT:" (a few plain sentences; the older "WRITEUP:" is still read). The request is accepted at once; the
  *       agent turn runs for up to EXPLAIN_BUDGET_MS on the add-on's session key
  *       (a follow-up within the add-on's window reuses it, so the agent keeps its
  *       context), one at a time (409 {"error": "busy"} while one runs). The
@@ -81,6 +81,7 @@ const WORKSPACE =
 const ASK_TIMEOUT_MS = Number(process.env.ASK_TIMEOUT_MS || 120000);
 const EXPLAIN_BUDGET_MS = Number(process.env.EXPLAIN_BUDGET_MS || 600000);
 const SPOKEN_MARK = "SPOKEN:";
+const TEXT_MARK = "TEXT:";
 const WRITEUP_MARK = "WRITEUP:";
 const ANNOUNCE_HOST = process.env.ANNOUNCE_HOST || "";
 const ANNOUNCE_TOKEN = process.env.ANNOUNCE_TOKEN || readOptional(".announce-token");
@@ -352,15 +353,21 @@ function runAgent(question, room, deviceId = "", requestedKey = "", answerOnly =
 // to the device through announce() with the task id.
 const explainRuns = new Set();
 
+// "SPOKEN:" and "TEXT:" (or the older "WRITEUP:") at the start of a line. The
+// TEXT part is a few plain sentences for an iMessage; the add-on trims it too.
+const markAt = (text, mark) => {
+  const m = new RegExp(`(?:^|\\n)[ \\t]*${mark}[ \\t]*`, "i").exec(text);
+  return m ? { start: m.index, end: m.index + m[0].length } : null;
+};
+
 function splitExplainReply(text) {
-  const s = text.indexOf(SPOKEN_MARK);
-  const w = text.indexOf(WRITEUP_MARK);
-  if (s < 0) {
-    return w < 0 ? { spoken: text.trim(), writeup: "" }
-      : { spoken: text.slice(0, w).trim(), writeup: text.slice(w + WRITEUP_MARK.length).trim() };
-  }
-  const spoken = text.slice(s + SPOKEN_MARK.length, w > s ? w : text.length).trim();
-  const writeup = w >= 0 ? text.slice(w + WRITEUP_MARK.length).trim() : "";
+  const s = markAt(text, SPOKEN_MARK);
+  const w = markAt(text, TEXT_MARK) || markAt(text, WRITEUP_MARK);
+  if (!s && !w) return { spoken: text.trim(), writeup: "" };
+  if (!s) return { spoken: text.slice(0, w.start).trim(), writeup: text.slice(w.end).trim() };
+  const spokenEnd = w && w.start > s.start ? w.start : text.length;
+  const spoken = text.slice(s.end, spokenEnd).trim();
+  const writeup = w ? (w.start < s.start ? text.slice(w.end, s.start) : text.slice(w.end)).trim() : "";
   return { spoken: spoken || text.trim(), writeup };
 }
 

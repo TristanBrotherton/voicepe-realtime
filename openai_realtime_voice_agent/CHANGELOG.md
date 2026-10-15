@@ -12,7 +12,7 @@ lookup (builds on the 0.19.0 router mode). The backend now calls `ask_openclaw` 
 question about how the owner's own software, projects or systems work, are
 designed or stand. The request to the bridge carries a read-only research
 brief instead of the answer-only prefix (read the code and documents, change
-nothing, return a spoken summary of 20-40 seconds plus a fuller write-up), a
+nothing, return a spoken summary of 20-40 seconds plus a short text version), a
 10-minute budget, and a session key that a follow-up within half an hour
 reuses, so "what about the auth part?" continues the same agent session.
 
@@ -31,7 +31,11 @@ reuses, so "what about the auth part?" continues the same agent session.
   its default owner route, so no option is needed (`live_task_imessage_to`
   is an optional override). An open conversation hears "Done, it's in your
   messages"; an idle device is not reopened for that. A text that cannot
-  be delivered falls back to voice.
+  be delivered falls back to voice. The text is the agent's short `TEXT:`
+  part (at most three plain sentences, trimmed by the add-on as well, no
+  header); an explanation that was spoken in the conversation is never
+  texted as well, and a text is the last route for one that could not be
+  spoken.
 - One explanation runs at a time (a second is refused by the bridge and the
   voice says so). An explanation that never reports back is closed after
   15 minutes.

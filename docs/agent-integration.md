@@ -125,8 +125,11 @@ the status of project X") is research, not a lookup. The backend calls
 - The brief replaces the answer-only prefix. It is **read-only** (investigate
   and explain; change no code, files, settings or devices; send nothing) and
   asks for a reply in two parts: `SPOKEN:` a summary of 20-40 seconds of
-  speech, written for the ear, and `WRITEUP:` a fuller explanation under
-  about 1200 characters for a text message.
+  speech, written for the ear, and `TEXT:` the same answer as a text message
+  (at most three plain sentences, under 300 characters, no file paths or
+  function names unless asked). Each marker starts a line. The add-on trims
+  the text part to a few sentences anyway, and still reads the older
+  `WRITEUP:` marker.
 - `budget_s` is how long the add-on expects the agent may take (600). The
   bridge should accept the request **at once** with `{"accepted": true,
   "task_id": "<task_id>", "eta_s": 180}` and run the turn in the background;
@@ -137,12 +140,13 @@ the status of project X") is research, not a lookup. The backend calls
   the voice says it is still on the earlier one.
 - Deliver the result with `/task-result` or `/announce` (`announcement_id` =
   the request id) carrying `"ok": true`, the `SPOKEN:` part as the message
-  and the `WRITEUP:` part as `"detail"`. A task result may be up to 1500
+  and the `TEXT:` part as `"detail"`. A task result may be up to 1500
   characters (`detail` 4000); the bare announcement lane keeps its 600. On
   failure post `"ok": false` with a short message.
 - Delivery is the user's choice: by default the summary is read in full by
   voice on the device that asked; if the user answers the acknowledgement
-  with "text would be great", the add-on texts the write-up through the
+  with "text would be great", the add-on texts the short `TEXT:` part (never
+  an explanation that was already spoken in the conversation) through the
   bridge's notification contract with `notification_recipient` = the
   identified speaker's first name (no destination). The bridge matches the
   name against its own iMessage routes and otherwise uses its default owner

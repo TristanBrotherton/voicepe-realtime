@@ -220,7 +220,7 @@ optional; see the configuration reference.
 **Explanations (router mode, 0.19.1).** "Can you explain how our bridge
 supports remote access?" is research: the backend sends it to the agent in
 *explain mode* (a read-only brief: read the code and documents, change
-nothing, come back with a spoken summary and a write-up), with a ten-minute
+nothing, come back with a spoken summary and a short text version), with a ten-minute
 budget. The voice says at once that it will take a moment and that it will
 get back to you, and offers a text instead; the answer is then read in full
 by voice (the open conversation, a short new session or an announcement), or

@@ -474,6 +474,8 @@ class RouterOp:
     explain_route: bool = False
     explain_ack_sent: bool = False
     speaker: str = ""
+    # The explanation was spoken to the end: it is never texted as well.
+    spoken_to_end: bool = False
     watch: Optional[asyncio.Task] = None       # promotion, then progress narration
     reopen_requested_mono: Optional[float] = None
     delivery: DeliveryLog = field(default_factory=DeliveryLog)
@@ -4563,6 +4565,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         result = op.result
         if self._text_route() is None or result is None or result.kind != ROUTE_LOOKUP or not result.text:
             return False
+        if op.spoken_to_end or op.delivered:
+            return False  # already heard in the conversation: never also texted
         try:
             ok = bool(await self._send_task_text(text_message_body(op.text, result.text, op.detail), op.speaker))
         except Exception as e:
@@ -4635,6 +4639,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             closed = not self.session_ready or self._closing or self._disconnecting
             if spoken_s >= TASK_HEARD_MIN_S and not closed and not self._audio_queue.qsize() \
                     and now - audible >= quiet_s:
+                op.spoken_to_end = True
                 self._finish_task(op, SESSION)
                 return
             if closed:
@@ -4677,6 +4682,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         plan = policy.plan(session_ready=False, idle_s=self._device_idle_s(),
                            available=lambda channel: available.get(channel, False),
                            deferred=op.deferred, wants_text=wants_text(op.text), quiet=quiet)
+        if op.explain and not op.text_requested and IMESSAGE in plan:
+            # An explanation is texted only when asked for, or when it could
+            # not be spoken at all (owner, 2026-10-14): a text is the last route.
+            plan = [c for c in plan if c != IMESSAGE] + [IMESSAGE]
         if quiet and not plan:
             # Quiet hours: no voice in the house. The event is told when they end.
             wait = quiet_hours_end(policy.quiet_hours)

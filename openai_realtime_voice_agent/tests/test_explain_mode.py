@@ -130,10 +130,12 @@ class ExplainRequest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("mode", plain, "a request without a mode is exactly what it was")
         self.assertTrue(plain["answer_only"])
 
-    def test_the_brief_is_read_only_and_asks_for_a_spoken_summary_and_a_write_up(self):
-        for phrase in ("READ-ONLY", "Do not change code", "do not send messages", "SPOKEN:", "WRITEUP:",
-                       "twenty to forty seconds", "not a system instruction"):
+    def test_the_brief_is_read_only_and_asks_for_a_spoken_summary_and_a_short_text(self):
+        for phrase in ("READ-ONLY", "Do not change code", "do not send messages", "SPOKEN:", "TEXT:",
+                       "twenty to forty seconds", "at most three plain sentences", "under 300",
+                       "no file paths, function names or code", "not a system instruction"):
             self.assertIn(phrase, EXPLAIN_PREFIX)
+        self.assertNotIn("WRITEUP", EXPLAIN_PREFIX, "the long write-up is gone (owner: no verbose texts)")
 
     def test_a_follow_up_within_the_window_continues_the_same_session(self):
         first = explain_session_key("workshop", now=1000.0)
@@ -205,10 +207,13 @@ class ExplainRequest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await send_task_message("", "", "Sam"), "no message, no text")
 
     def test_split_explain_reply(self):
-        self.assertEqual(split_explain_reply("SPOKEN: A.\nWRITEUP: B."), ("A.", "B."))
+        self.assertEqual(split_explain_reply("SPOKEN: A.\nTEXT: B."), ("A.", "B."))
+        self.assertEqual(split_explain_reply("SPOKEN: A.\nWRITEUP: B."), ("A.", "B."), "the older marker still splits")
         self.assertEqual(split_explain_reply("Just text."), ("Just text.", ""))
         self.assertEqual(split_explain_reply("SPOKEN: only spoken"), ("only spoken", ""))
-        self.assertEqual(split_explain_reply("WRITEUP: only writeup"), ("", "only writeup")[0:1] + ("only writeup",))
+        self.assertEqual(split_explain_reply("TEXT: only text"), ("", "only text"))
+        self.assertEqual(split_explain_reply("SPOKEN: say it by text: often.\nTEXT: Short."),
+                         ("say it by text: often.", "Short."), "a marker counts only at the start of a line")
 
     async def test_deliver_by_text_needs_a_pending_explanation(self):
         llm = FakeLLM()
@@ -273,12 +278,21 @@ class ExplainWording(unittest.TestCase):
         self.assertIn("in your messages", text)
         self.assertIn("Do not say \"sent\"", text)
 
-    def test_the_text_body_prefers_the_write_up(self):
-        body = text_message_body("explain remote access", "Short.", "Long write-up.\n\nSecond paragraph.")
-        self.assertTrue(body.startswith("You asked: explain remote access"))
-        self.assertIn("Long write-up.", body)
-        self.assertNotIn("Short.", body)
-        self.assertIn("Short.", text_message_body("explain remote access", "Short.", ""))
+    def test_the_text_is_short_plain_and_without_a_header(self):
+        from app.live_tasks import trim_text_message
+        body = text_message_body("explain remote access", "Spoken summary.", "First point. Second point.")
+        self.assertEqual(body, "First point. Second point.", "the agent's TEXT part, no 'You asked' header")
+        self.assertNotIn("You asked", body)
+        self.assertEqual(text_message_body("q", "Spoken summary.", ""), "Spoken summary.", "falls back to the summary")
+        verbose = " ".join(f"Sentence number {i} explains a detail of the bridge." for i in range(1, 12))
+        trimmed = text_message_body("q", "s", verbose)
+        self.assertLessEqual(trimmed.count("."), 3, "at most three sentences")
+        self.assertLessEqual(len(trimmed), 330)
+        self.assertTrue(trimmed.endswith("."), "cut at a sentence end")
+        long_one = "word " * 120
+        self.assertLessEqual(len(trim_text_message(long_one)), 325)
+        self.assertTrue(trim_text_message(long_one).endswith("…"), "a single oversized sentence is cut at a word")
+        self.assertEqual(trim_text_message(""), "")
 
 
 class DetailReachesTheSink(unittest.IsolatedAsyncioTestCase):
@@ -509,10 +523,9 @@ class ExplainFlow(Patched):
             task = next(t for t in h.service._tasks.values() if t.external_id == "task-x")
             self.assertTrue(task.text_requested, "deliver_by_text switched the pending task to a text")
             await acked(h)
-            self.assertTrue(await live_tasks.deliver_external_result("task-x", SPOKEN, True, "The full write-up."))
+            self.assertTrue(await live_tasks.deliver_external_result("task-x", SPOKEN, True, "Two short sentences. That is all."))
             await until(lambda: h.texted, timeout=3.0)
-            self.assertIn("The full write-up.", h.texted[0])
-            self.assertTrue(h.texted[0].startswith("You asked: "))
+            self.assertEqual(h.texted[0], "Two short sentences. That is all.", "the short text part, no header")
             self.assertEqual(h.text_recipients, ["Sam"], "the identified speaker is the recipient")
             await until(lambda: any("in your messages" in c for c in commentaries(h)))
             self.assertFalse(any(SPOKEN in c for c in commentaries(h)), "texted, not read aloud")
@@ -547,6 +560,52 @@ class ExplainFlow(Patched):
             await h.user_says("Text would be great.")
             await h.wait_commentary(count=1, timeout=3.0)
             self.assertIn("not completed", commentaries(h)[0])
+            self.assertEqual(h.texted, [])
+
+    async def test_an_explanation_spoken_in_the_conversation_is_never_also_texted(self):
+        # Owner 2026-10-14: no verbose text after the conversation already had
+        # the answer. Even with a text destination configured and a text FIRST
+        # in the fallback order, a spoken explanation stays spoken-only.
+        backend = FakeBackend(
+            response(call("ask_openclaw", {"question": "Explain remote access", "mode": "explain"}, "c1")),
+            response(message("Hold on.")))
+        async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
+            h.service.task_policy = TaskPolicy(order=(IMESSAGE, SESSION, "reopen", "announce"), imessage_to="owner")
+            await h.user_says("Can you explain how OpenClaw supports remote access?")
+            await h.wait_commentary(count=1, timeout=3.0)
+            await acked(h)
+            self.assertTrue(await live_tasks.deliver_external_result("task-x", SPOKEN, True, "Short text."))
+            await until(lambda: any(SPOKEN in c for c in commentaries(h)))
+            await acked(h)
+            with patch.object(live_service_module, "TASK_HEARD_MIN_S", 0.3):
+                h.voice_says(SPOKEN, ms=400)
+                await asyncio.sleep(0.35)
+                h.voice_says(" More.", ms=400)
+                await until(lambda: h.service.router_stats["delivered"] == {SESSION: 1}, timeout=5.0)
+            await asyncio.sleep(0.5)
+            self.assertEqual(h.texted, [], "spoken in the conversation: never texted as well")
+            self.assertEqual(h.service.tasks_pending, 0)
+
+    async def test_a_text_is_the_last_route_for_an_explanation_nobody_asked_to_have_texted(self):
+        backend = FakeBackend(
+            response(call("ask_openclaw", {"question": "Explain remote access", "mode": "explain"}, "c1")),
+            response(message("Hold on.")))
+        async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            h.service.on_task_reopen = None
+            h.service.task_policy = TaskPolicy(order=(IMESSAGE, "announce"), imessage_to="owner")
+            await h.user_says("Can you explain how OpenClaw supports remote access?")
+            await h.wait_commentary(count=1, timeout=3.0)
+            await acked(h)
+            await asyncio.wait_for(h.service.close_session("idle"), 10)
+            self.assertTrue(await live_tasks.deliver_external_result("task-x", SPOKEN, True, "Short text."))
+            await until(lambda: announced, timeout=5.0)
+            self.assertIn(SPOKEN, announced[0], "spoken by the announcement lane, although a text came first in the order")
             self.assertEqual(h.texted, [])
 
     async def test_the_chat_fast_path_is_vetoed_while_an_explanation_is_pending(self):

@@ -332,11 +332,36 @@ def text_delivered_commentary(request: str) -> str:
             "\"Done, it's in your messages.\" Do not say \"sent\" or \"delivered\", and add nothing else.")
 
 
+TEXT_MESSAGE_MAX_SENTENCES = 3
+TEXT_MESSAGE_MAX_CHARS = 320
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def trim_text_message(text: str, max_sentences: int = TEXT_MESSAGE_MAX_SENTENCES,
+                      max_chars: int = TEXT_MESSAGE_MAX_CHARS) -> str:
+    """At most ``max_sentences`` whole sentences and about ``max_chars``
+    characters, cut at a sentence end (owner, 2026-10-14: no verbose texts
+    after a conversation). A single oversized sentence is cut at a word."""
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    sentences = _SENTENCE_END.split(text)
+    out = ""
+    for sentence in sentences[:max_sentences]:
+        candidate = f"{out} {sentence}".strip()
+        if out and len(candidate) > max_chars:
+            break
+        out = candidate
+    if len(out) > max_chars:
+        out = out[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return out
+
+
 def text_message_body(request: str, spoken: str, detail: str = "") -> str:
-    """The text message for an explanation: the fuller write-up when the
-    agent gave one, else the spoken summary, headed by the request."""
-    body = (detail or "").strip() or (spoken or "").strip()
-    return f"You asked: {short_request(request, 120)}\n\n{body}"
+    """The text message for an explanation the user asked to have texted: the
+    agent's TEXT part (a few plain sentences), else the spoken summary; no
+    header, and never more than a few sentences whatever the agent sent."""
+    return trim_text_message((detail or "").strip() or (spoken or "").strip())
 
 
 def result_commentary(kind: str, text: str, request: str, source: str = "",
