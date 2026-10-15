@@ -333,6 +333,8 @@ EXPLAIN_TASK_MAX_S = 900.0
 # this long after the commentary is sent the result again.
 TASK_HEARD_MIN_S = 2.0
 TASK_HEARD_WAIT_S = 20.0
+# A result being spoken holds the session at most this long from the commentary.
+TASK_SPOKEN_HOLD_S = 90.0
 # A background result follows the foreground one no sooner than this, so the
 # two commentaries never race into the same response.
 TASK_AFTER_RESULT_S = 1.5
@@ -1186,10 +1188,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         watch never does. Past the bound the ordinary idle rules close the
         session and the result arrives by a short new session or an
         announcement. This never opens a session, only declines to close one."""
-        bound = self.task_policy.hold_session_s
-        if bound <= 0 or not self._tasks:
+        if not self._tasks:
             return False
         now = time.monotonic()
+        # A result that went into this session and is being spoken holds it
+        # until it has been heard (rig 2026-10-14: "follow-up quiet" closed
+        # the session one sentence into a 40 s explanation). Bounded.
+        if any(t.session_sent_mono is not None and now - t.session_sent_mono < TASK_SPOKEN_HOLD_S
+               for t in self._tasks.values()):
+            return True
+        bound = self.task_policy.hold_session_s
+        if bound <= 0:
+            return False
         return any(not t.deferred and not t.explain and not t.delivered and now - t.started_mono < bound
                    for t in self._tasks.values())
 
@@ -4559,21 +4569,39 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._finish_task(op, SESSION)
 
     async def _task_heard_watch(self, op: RouterOp) -> None:
+        """The explanation is finished once the voice has spoken it to the
+        end in a session that stayed open: audible output for at least
+        TASK_HEARD_MIN_S after the commentary, then quiet past the speech
+        hangover. A session closing while it is still being spoken, or
+        silence for TASK_HEARD_WAIT_S, hands the result back to the task
+        list. While this runs the task holds the session (_task_holds_session)."""
         sent = op.session_sent_mono or time.monotonic()
         deadline = sent + TASK_HEARD_WAIT_S
+        quiet_s = self.audio.speech_hangover_s + 0.5
         while True:
             await asyncio.sleep(0.2)
             if op.delivered or op.abandoned or op.op_id not in self._tasks:
                 return
-            if (self._last_audible_mono or 0.0) - sent >= TASK_HEARD_MIN_S:
+            now = time.monotonic()
+            audible = self._last_audible_mono or 0.0
+            spoken_s = audible - sent
+            closed = not self.session_ready or self._closing or self._disconnecting
+            if spoken_s >= TASK_HEARD_MIN_S and not closed and not self._audio_queue.qsize() \
+                    and now - audible >= quiet_s:
                 self._finish_task(op, SESSION)
                 return
-            if not self.session_ready or self._closing or self._disconnecting:
-                why = "the session closed before the result was heard"
+            if closed:
+                if spoken_s >= TASK_SPOKEN_HOLD_S - TASK_HEARD_WAIT_S:
+                    self._finish_task(op, SESSION)  # spoken to (near) the end of the bound
+                    return
+                why = "the session closed before the result was heard to the end"
                 break
-            if time.monotonic() > deadline:
+            if spoken_s <= 0 and now > deadline:
                 why = f"nothing audible {TASK_HEARD_WAIT_S:.0f}s after the result went in"
                 break
+            if now - sent > TASK_SPOKEN_HOLD_S:
+                self._finish_task(op, SESSION)  # the hold is bounded; it was speaking all along
+                return
         op.session_sent_mono = None
         op.result_ready_mono = time.monotonic()  # the TTL restarts: this result is still owed
         op.delivery.note(SESSION, False, why)

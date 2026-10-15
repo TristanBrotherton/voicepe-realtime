@@ -33,6 +33,9 @@ reuses, so "what about the auth part?" continues the same agent session.
   it has been heard; a session closing under it (the device's follow-up
   cut-off) hands the result to the next route (a reopened session, an
   announcement) instead of losing it.
+- A result being spoken into a session holds that session until it has been
+  heard to the end (the device's follow-up cut-off and the add-on's own
+  follow-up-quiet close both used to cut it one sentence in).
 - Bridge contract: `mode`, `budget_s`; `/announce` and `/task-result` accept
   `ok` and `detail` (the write-up) for a task result, and a task's text is
   not cut at the bare lane's 600 characters. See `docs/agent-integration.md`.

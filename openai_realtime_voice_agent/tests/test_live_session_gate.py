@@ -259,6 +259,23 @@ class TestRewakeGrace(GateCase):
         await gate.close("follow-up cut-off")
         self.assertEqual(self.service.closes, ["follow-up cut-off"])
 
+    async def test_followup_close_waits_while_the_service_is_still_speaking_a_result(self):
+        # Rig 2026-10-14: the device's follow-up window closed one word into a
+        # background result being spoken. With work in flight the session is
+        # kept under the idle bound and closes "idle" once that work is over.
+        gate = self.make()
+        await gate.open("wake")
+        gate.note_reply_finished()
+        self.service.backend_work_active = True
+        self.assertTrue(gate.note_followup_closed(), "retained: a result is being spoken")
+        self.assertEqual(self.service.closes, [])
+        await self.advance(9.0)
+        self.assertEqual(self.service.closes, [], "still speaking, still open")
+        self.service.backend_work_active = False
+        await self.advance(11.0)
+        await self._settle(lambda: bool(self.service.closes))
+        self.assertEqual(self.service.closes, ["idle"])
+
     async def test_wake_inside_grace_reuses_ready_session(self):
         gate = self.make(policy=LiveSessionPolicy(
             idle_s=10.0, followup_s=8.0, rewake_grace_s=6.0,

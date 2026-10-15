@@ -384,12 +384,18 @@ class ExplainFlow(Patched):
             self.assertEqual(h.texted, [], "voice is the default; no text unless asked")
             self.assertEqual(h.service.router_stats["delivered"], {}, "not finished until it was heard")
             await acked(h)
+            self.assertTrue(h.service.router_pending, "a result being spoken holds the session")
             with patch.object(live_service_module, "TASK_HEARD_MIN_S", 0.3):
                 h.voice_says(SPOKEN, ms=400)
                 await asyncio.sleep(0.35)
                 h.voice_says(" More.", ms=400)
-                await until(lambda: h.service.router_stats["delivered"] == {SESSION: 1}, timeout=3.0)
+                await asyncio.sleep(0.5)
+                self.assertEqual(h.service.router_stats["delivered"], {}, "still speaking: not finished yet")
+                self.assertTrue(h.service.router_pending)
+                # Quiet past the speech hangover: spoken to the end.
+                await until(lambda: h.service.router_stats["delivered"] == {SESSION: 1}, timeout=5.0)
             self.assertEqual(h.service.tasks_pending, 0)
+            self.assertFalse(h.service.router_pending)
 
     async def test_a_session_closing_under_the_explanation_hands_it_to_the_next_route(self):
         backend = FakeBackend(

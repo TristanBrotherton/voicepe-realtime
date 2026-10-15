@@ -412,9 +412,21 @@ class LiveSessionGate:
         or changes turn-taking. It spends only the configured grace seconds;
         the default remains zero and closes immediately as before.
         """
-        if self._state == CLOSED or self.policy.rewake_grace_s <= 0:
+        if self._state == CLOSED:
             return False
         now = self._mono()
+        if getattr(self._service, "backend_work_active", False):
+            # The device's follow-up window closed while the service still
+            # owes the user something it is saying or finishing (a background
+            # result being spoken: rig 2026-10-14, cut one word in). Keep the
+            # session under the ordinary idle bounds; the device mic is closed
+            # either way, so this never extends listening.
+            self._turn_in_flight = True
+            self._idle_deadline = now + self.policy.idle_s
+            self._idle_reason = "idle"
+            return True
+        if self.policy.rewake_grace_s <= 0:
+            return False
         self._turn_in_flight = False
         self._idle_deadline = now + self.policy.rewake_grace_s
         self._silent_deadline = now + self.policy.rewake_grace_s
