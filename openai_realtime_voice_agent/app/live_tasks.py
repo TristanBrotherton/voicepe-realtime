@@ -36,6 +36,7 @@ the socket and the gate.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import unicodedata
@@ -270,16 +271,36 @@ def deferred_commentary(text: str = "") -> str:
             + "Say that briefly in your own words; do not say it has happened and do not guess when.")
 
 
-def explain_ack_commentary(name: str = "") -> str:
-    """Spoken at once when an explanation starts (owner's wording): it sets
-    the expectation of minutes, promises to come back, and offers a text.
-    ``name`` is the identified speaker's first name, or "" for no name."""
+# The explain acknowledgement, rotated for variety (owner, 2026-10-14). Each
+# phrasing carries the same three things: it takes a while, I'll get back to
+# you, a text summary is there for the asking. None says "moment": the
+# fallback clip and the voice's own first words already do, and the
+# acknowledgement must not stack another one on top. ``{who}`` is ", Name" or "".
+EXPLAIN_ACK_PHRASES = (
+    "Hold on{who}. This one needs a proper look, so give me a few minutes and I'll come back to you. "
+    "If you'd rather have a summary by text, just say so.",
+    "Right{who}, that will take me a little while to dig into. I'll get back to you once I have it; "
+    "let me know if you'd prefer it as a text.",
+    "Let me look into that properly{who}. It'll be a few minutes, then I'll report back, or I can "
+    "text you a summary instead if you like.",
+    "That deserves a careful answer{who}. I'll find out and get back to you shortly; say the word "
+    "if you'd rather read it in a text.",
+)
+_ack_cycle = itertools.count()
+
+
+def explain_ack_commentary(name: str = "", pick: Optional[int] = None) -> str:
+    """Spoken at once when an explanation starts: it sets the expectation of
+    minutes, promises to come back, and offers a text, in one of several
+    phrasings (rotated; ``pick`` fixes one). ``name`` is the identified
+    speaker's first name, or "" for no name."""
     who = f", {name.strip()}" if name and name.strip() else ""
+    index = next(_ack_cycle) if pick is None else pick
+    line = EXPLAIN_ACK_PHRASES[index % len(EXPLAIN_ACK_PHRASES)].format(who=who)
     return ("The user asked for an explanation that needs a few minutes of research; it has "
             "started and the answer is delivered when it is ready. Say now, in these words or "
-            f"very close to them: \"Hold on{who}. It's going to take me a moment to find that out. "
-            "I'll get back to you. Let me know if you'd prefer a summary over text instead.\" "
-            "Then stop. Do not guess the answer and do not say it is done.")
+            f"very close to them: \"{line}\" Then stop. Do not say \"one moment\" or that you are "
+            "still working; do not guess the answer and do not say it is done.")
 
 
 def explain_offer_commentary() -> str:
@@ -303,8 +324,12 @@ def explain_result_commentary(text: str, request: str) -> str:
 
 
 def text_delivered_commentary(request: str) -> str:
-    return (f"The explanation for the earlier request \"{short_request(request)}\" has been sent to "
-            "the user as a text message, as they asked. Tell them that in a few words.")
+    """Only for a conversation that is already open: a natural line, not a
+    delivery report (owner: "sent" sounds technical). A closed device is not
+    reopened for this; the text itself is the signal."""
+    return (f"The explanation for the earlier request \"{short_request(request)}\" is now in the "
+            "user's messages, as they asked. Say so in a few natural words, for example "
+            "\"Done, it's in your messages.\" Do not say \"sent\" or \"delivered\", and add nothing else.")
 
 
 def text_message_body(request: str, spoken: str, detail: str = "") -> str:

@@ -113,19 +113,27 @@ def pending_result(task_id: str, answer: str = "", eta_s=None, mode: str = "") -
     return result
 
 
-async def send_task_message(message: str, destination: str) -> bool:
-    """Text a finished result through the bridge's verified iMessage sender
-    (the ``notification_destination`` contract). False when not configured,
-    refused or unverified; never raises."""
+async def send_task_message(message: str, destination: str = "", recipient: str = "") -> bool:
+    """Text a finished result through the bridge's verified iMessage sender.
+    ``destination`` (the optional ``live_task_imessage_to`` override) names one
+    of the bridge's routes exactly; otherwise ``recipient`` is the identified
+    speaker's first name and the bridge resolves it to a route, falling back
+    to its default owner route. False when not configured, refused or
+    unverified; never raises."""
     url = openclaw_url()
     destination = (destination or "").strip()
+    recipient = (recipient or "").strip()
     message = (message or "").strip()
-    if not url or not destination or not message:
+    if not url or not message:
         return False
+    payload = {"notification_message": message}
+    if destination:
+        payload["notification_destination"] = destination
+    elif recipient:
+        payload["notification_recipient"] = recipient
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(url, json={"notification_destination": destination,
-                                             "notification_message": message})
+            r = await client.post(url, json=payload)
             r.raise_for_status()
             delivered = (r.json() or {}).get("delivered") is True
     except Exception as e:
@@ -453,7 +461,7 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
         logger.info("💬 the pending explanation will be delivered by text, as asked")
         await params.result_callback({
             "success": True,
-            "speech": "The answer will be sent as a text message instead of spoken."})
+            "speech": "Noted: the answer will come as a text message instead of being spoken."})
 
     async def _recall(params) -> None:
         query = ((params.arguments or {}).get("query") or "").strip()

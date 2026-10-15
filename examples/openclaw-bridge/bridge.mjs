@@ -50,6 +50,8 @@
  *   ANNOUNCE_TOKEN      bearer token for the announce endpoint, or put it in a
  *                       .announce-token file next to this script
  *   BRIDGE_LOG_CONTENT  "1" to log question/answer text (default: lengths only)
+ *   IMESSAGE_DEFAULT_DESTINATION  route alias for a text that names no destination
+ *                       (default: the first route in the routes file)
  *   IMESSAGE_ROUTES     JSON object mapping destination aliases to OpenClaw
  *                       targets and Messages chat IDs, or put it in an ignored
  *                       .imessage-routes.json file next to this script
@@ -112,6 +114,17 @@ function loadIMessageRoutes() {
 }
 
 const IMESSAGE_DESTINATIONS = loadIMessageRoutes();
+// Default owner route for a text that names no destination (explain mode):
+// IMESSAGE_DEFAULT_DESTINATION, else the first route in the routes file.
+const IMESSAGE_DEFAULT_DESTINATION = (process.env.IMESSAGE_DEFAULT_DESTINATION || "").trim().toLowerCase()
+  || [...IMESSAGE_DESTINATIONS.keys()][0] || "";
+
+function resolveNotificationDestination(destination, recipient) {
+  if (destination) return destination;
+  const named = String(recipient || "").trim().toLowerCase();
+  if (named && IMESSAGE_DESTINATIONS.has(named)) return named;
+  return IMESSAGE_DEFAULT_DESTINATION;
+}
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -398,7 +411,7 @@ const server = createServer((req, res) => {
   req.on("end", async () => {
     let question = "", recall = "", room = "", deviceId = "", sessionKey = "", answerOnly = false;
     let mode = "", requestId = "", budgetS = 0;
-    let notificationDestination = "", notificationMessage = "", notificationMedia = "";
+    let notificationDestination = "", notificationMessage = "", notificationMedia = "", notificationRecipient = "";
     try {
       const parsed = JSON.parse(body);
       question = String(parsed?.question || "").trim();
@@ -411,16 +424,22 @@ const server = createServer((req, res) => {
       requestId = String(parsed?.request_id || parsed?.task_id || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 120);
       budgetS = Number(parsed?.budget_s || 0);
       notificationDestination = String(parsed?.notification_destination || "").trim();
+      notificationRecipient = String(parsed?.notification_recipient || "").trim();
       notificationMessage = String(parsed?.notification_message || "").trim();
       notificationMedia = String(parsed?.notification_media || "").trim();
     } catch { /* fall through to 400 */ }
-    if (notificationDestination || notificationMessage) {
-      if (!notificationDestination || !notificationMessage) {
+    if (notificationDestination || notificationMessage || notificationRecipient) {
+      // The add-on names no destination for an explanation's text: it sends
+      // the identified speaker's first name as notification_recipient, which
+      // is matched against the routes; anything else goes to the default
+      // owner route (IMESSAGE_DEFAULT_DESTINATION, else the first route).
+      const destination = resolveNotificationDestination(notificationDestination, notificationRecipient);
+      if (!destination || !notificationMessage) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ delivered: false, error: "destination and message required" }));
         return;
       }
-      const result = await sendVerifiedIMessage(notificationDestination, notificationMessage, notificationMedia);
+      const result = await sendVerifiedIMessage(destination, notificationMessage, notificationMedia);
       // Always return JSON to Home Assistant. The caller inspects `delivered`
       // and raises a fallback alert when verification fails.
       res.writeHead(200, { "Content-Type": "application/json" });

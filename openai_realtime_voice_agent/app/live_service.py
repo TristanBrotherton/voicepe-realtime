@@ -31,6 +31,7 @@ Official references: developers.openai.com/api/docs/guides/{voice-websockets,
 live-delegation, live-conversations, live-migration}.
 """
 import asyncio
+import inspect
 import base64
 import json
 import logging
@@ -465,6 +466,14 @@ class RouterOp:
     # The explanation went into an open session at this time and is not yet
     # known to have been heard (see _task_heard_watch).
     session_sent_mono: Optional[float] = None
+    # The route called ask_openclaw in explain mode (known at dispatch, before
+    # the acceptance): a promotion speaks the explain acknowledgement instead
+    # of the generic "still working" line, and only one acknowledgement is
+    # ever spoken (explain_ack_sent). ``speaker`` is the identified first
+    # name at the time, for the acknowledgement and the text's recipient.
+    explain_route: bool = False
+    explain_ack_sent: bool = False
+    speaker: str = ""
     watch: Optional[asyncio.Task] = None       # promotion, then progress narration
     reopen_requested_mono: Optional[float] = None
     delivery: DeliveryLog = field(default_factory=DeliveryLog)
@@ -912,6 +921,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         #   on_task_reopen() -> awaitable bool: open a short session through the spend gate
         self.on_task_announce: Optional[Callable[[str, str], Awaitable[bool]]] = None
         self.on_task_message: Optional[Callable[[str], Awaitable[bool]]] = None
+        #   on_task_text(text, recipient) -> awaitable bool: a text the user asked for
+        #   (an explanation); the bridge resolves the identified speaker's first
+        #   name to its own route, else its default owner route
+        self.on_task_text: Optional[Callable[[str, str], Awaitable[bool]]] = None
         self.on_task_reopen: Optional[Callable[[], Awaitable[bool]]] = None
         self._session_started_mono: Optional[float] = None
         self._task_opened_session = False
@@ -3574,6 +3587,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op.tools_started = True
         if SLOW_TOOL.search(name):
             op.slow_tool = True
+        if name.rsplit("__", 1)[-1] == "ask_openclaw" and \
+                str((arguments or {}).get("mode") or "").strip().lower() == "explain":
+            op.explain_route = True
+            op.speaker = op.speaker or self._speaker_first_name()
         self._unsafe_to_replay_input = True
         running_key = json.dumps([name, arguments], sort_keys=True, default=str)
         running = self._router_running.get(running_key)
@@ -3745,7 +3762,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         text = result.commentary() if result is not None else None
         if result is not None and result.kind == ROUTE_PENDING and result.explain and not result.deferred:
             # The explain acknowledgement, with the identified speaker's name.
-            text = explain_ack_commentary(self._speaker_first_name())
+            op.explain_ack_sent = True
+            text = explain_ack_commentary(op.speaker or self._speaker_first_name())
         now = time.monotonic()
         self._last_route_kind = result.kind if result is not None else None
         if op.classifier_task is not None and not op.classifier_task.done():
@@ -4209,7 +4227,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         did = next((d for d in reversed(op.delegations) if d not in op.answered_delegations), None)
         if did is not None:
             op.answered_delegations.update(op.delegations)
-        await self._send_commentary(promotion_commentary(op.text), did)
+        if op.explain_route and not op.explain_ack_sent:
+            # An explanation outliving the soft budget: the explain
+            # acknowledgement replaces the generic "still working" line, so
+            # the user hears one acknowledgement, not a stack of them.
+            op.explain_ack_sent = True
+            await self._send_commentary(explain_ack_commentary(op.speaker or self._speaker_first_name()), did)
+        else:
+            await self._send_commentary(promotion_commentary(op.text), did)
         self._note(self.on_backend_activity)
         # If the voice says nothing, the static clip tells the user the
         # request is still being worked on (as the old narration did).
@@ -4355,7 +4380,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         ext = RouterOp(op_id=f"{op.op_id}-ext", seq=op.seq, text=op.text, key=op.key,
                        started_mono=op.started_mono, tools_started=True, background=True,
                        external_id=task_id, tool_name=name, deferred=deferred, explain=explain,
-                       text_requested=explain and wants_text(op.text))
+                       text_requested=explain and wants_text(op.text),
+                       speaker=op.speaker or (self._speaker_first_name() if explain else ""))
         self._tasks[ext.op_id] = ext
         ext.watch = self._spawn(self._task_progress_watch(ext), f"live-task-progress-{ext.op_id}")
         logger.info(f"🧺 router {op.op_id}: {name} continues elsewhere as "
@@ -4367,7 +4393,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         offered one): the newest undelivered explanation will be texted
         instead of spoken. Returns its request, or "" when nothing is pending
         or no text route is configured (the ``deliver_by_text`` tool)."""
-        if self.on_task_message is None:
+        if self._text_route() is None:
             return ""
         for op in reversed(list(self._tasks.values())):
             if op.explain and not op.delivered and not op.abandoned:
@@ -4511,16 +4537,34 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 retries += 1
                 await asyncio.sleep(TASK_FLUSH_RETRY_S)
 
+    def _text_route(self):
+        """The hook for a text the user asked for: ``on_task_text(text,
+        recipient)`` (wired whenever the bridge is configured), else the
+        fallback chain's ``on_task_message`` (a configured destination)."""
+        return self.on_task_text or self.on_task_message
+
+    async def _send_task_text(self, body: str, recipient: str = ""):
+        hook = self._text_route()
+        try:
+            params = inspect.signature(hook).parameters
+            takes_recipient = len(params) >= 2 or any(
+                p.kind == inspect.Parameter.VAR_POSITIONAL for p in params.values())
+        except (TypeError, ValueError):
+            takes_recipient = False
+        if takes_recipient:
+            return await hook(body, recipient or "")
+        return await hook(body)
+
     async def _task_deliver_text(self, op: RouterOp) -> bool:
         """The user asked for this explanation as a text: send the write-up
         through the bridge's verified iMessage sender and, if a conversation
         is open and free, say that it was sent. A failure (not configured,
         unverified) or a failed explanation falls back to the voice."""
         result = op.result
-        if self.on_task_message is None or result is None or result.kind != ROUTE_LOOKUP or not result.text:
+        if self._text_route() is None or result is None or result.kind != ROUTE_LOOKUP or not result.text:
             return False
         try:
-            ok = bool(await self.on_task_message(text_message_body(op.text, result.text, op.detail)))
+            ok = bool(await self._send_task_text(text_message_body(op.text, result.text, op.detail), op.speaker))
         except Exception as e:
             ok = False
             logger.debug(f"task text failed: {e!r}")
@@ -4541,10 +4585,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         result = op.result
         text = result_commentary(result.kind, result.text, op.text, result.source, deferred=op.deferred,
                                  explain=op.explain)
-        if text is None and result.kind == ROUTE_PENDING and result.explain and not result.deferred:
+        if (text is None and result.kind == ROUTE_PENDING and result.explain and not result.deferred
+                and not op.explain_ack_sent):
             # The explanation was accepted after the soft budget had already
-            # made the voice say it was still working (rig 2026-10-14: a
-            # 4.4 s route). The expectation and the text offer are still owed.
+            # made the voice say it was still working, and the promotion did
+            # not know it was an explanation (the tool was not dispatched yet).
+            # The expectation and the text offer are still owed, once.
+            op.explain_ack_sent = True
             text = explain_offer_commentary()
         self._task_opened_session = False
         if text is None:

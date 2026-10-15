@@ -191,6 +191,19 @@ class ExplainRequest(unittest.IsolatedAsyncioTestCase):
             await llm.handlers["ask_openclaw"](params)
         self.assertEqual(params.results[-1], {"answer": "It uses a tunnel."})
 
+    async def test_the_text_names_the_speaker_unless_an_override_route_is_set(self):
+        from app.openclaw_tool import send_task_message
+        FakeClient.reply = {"delivered": True}
+        with patch.dict("os.environ", ENV), patch.object(openclaw_tool.httpx, "AsyncClient", FakeClient):
+            self.assertTrue(await send_task_message("Body.", "", "Sam"))
+            self.assertEqual(FakeClient.posted[-1], {"notification_message": "Body.", "notification_recipient": "Sam"})
+            self.assertTrue(await send_task_message("Body.", "", ""))
+            self.assertEqual(FakeClient.posted[-1], {"notification_message": "Body."}, "the bridge picks its default")
+            self.assertTrue(await send_task_message("Body.", "owner", "Sam"))
+            self.assertEqual(FakeClient.posted[-1], {"notification_message": "Body.", "notification_destination": "owner"},
+                             "the configured override wins")
+            self.assertFalse(await send_task_message("", "", "Sam"), "no message, no text")
+
     def test_split_explain_reply(self):
         self.assertEqual(split_explain_reply("SPOKEN: A.\nWRITEUP: B."), ("A.", "B."))
         self.assertEqual(split_explain_reply("Just text."), ("Just text.", ""))
@@ -216,18 +229,31 @@ class ExplainRequest(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 
 class ExplainWording(unittest.TestCase):
-    def test_the_acknowledgement_is_the_owners_wording_with_the_name_when_known(self):
-        named = explain_ack_commentary("Sam")
-        self.assertIn("Hold on, Sam. It's going to take me a moment to find that out. I'll get back to you. "
-                      "Let me know if you'd prefer a summary over text instead.", named)
-        self.assertIn("Do not guess the answer", named)
-        plain = explain_ack_commentary("")
-        self.assertIn("\"Hold on. It's going to take me a moment", plain)
-        self.assertNotIn("Hold on,", plain)
+    def test_the_acknowledgement_rotates_natural_phrasings_with_the_name_when_known(self):
+        from app.live_tasks import EXPLAIN_ACK_PHRASES
+        self.assertGreaterEqual(len(EXPLAIN_ACK_PHRASES), 3)
+        seen = set()
+        for i in range(len(EXPLAIN_ACK_PHRASES)):
+            named = explain_ack_commentary("Sam", pick=i)
+            line = named.split('"')[1]
+            seen.add(line)
+            self.assertIn(", Sam", line, "the identified first name is used")
+            self.assertNotIn("moment", line.lower(), "the clip already said 'one moment'")
+            self.assertRegex(line.lower(), r"minute|while|shortly", "it takes a while")
+            self.assertRegex(line.lower(), r"back to you|report back", "I'll get back to you")
+            self.assertIn("text", line.lower(), "a text summary is on offer")
+            self.assertIn("Do not say \"one moment\"", named)
+            self.assertIn("do not guess the answer", named)
+        self.assertEqual(len(seen), len(EXPLAIN_ACK_PHRASES), "distinct phrasings")
+        plain = explain_ack_commentary("", pick=0)
+        self.assertNotIn(", Sam", plain)
+        self.assertIn("Hold on. ", plain, "no name: no dangling comma")
+        a, b = explain_ack_commentary("Sam"), explain_ack_commentary("Sam")
+        self.assertNotEqual(a, b, "consecutive acknowledgements rotate")
         run = ToolRun(name="ask_openclaw", ok=True, kind="pending", pending=True, task_id="t", explain=True)
-        self.assertEqual(RouteResult(PENDING, "", "backend", [run]).commentary(), explain_ack_commentary())
+        self.assertIn("few minutes of research", RouteResult(PENDING, "", "backend", [run]).commentary())
         watch = ToolRun(name="ask_openclaw", ok=True, kind="pending", pending=True, task_id="t", deferred=True)
-        self.assertNotIn("Hold on", RouteResult(PENDING, "", "backend", [watch]).commentary())
+        self.assertNotIn("research", RouteResult(PENDING, "", "backend", [watch]).commentary())
 
     def test_the_result_is_read_in_full_not_briefly(self):
         text = result_commentary(LOOKUP, "It tunnels through a relay.", "explain remote access", "openclaw",
@@ -240,6 +266,12 @@ class ExplainWording(unittest.TestCase):
         self.assertIn("briefly", plain)
         spoken = spoken_result(LOOKUP, "It tunnels through a relay.", "explain remote access", explain=True)
         self.assertEqual(spoken, "Here is what I found out about explain remote access: It tunnels through a relay.")
+
+    def test_the_confirmation_is_conversational_not_a_delivery_report(self):
+        from app.live_tasks import text_delivered_commentary
+        text = text_delivered_commentary("explain remote access")
+        self.assertIn("in your messages", text)
+        self.assertIn("Do not say \"sent\"", text)
 
     def test_the_text_body_prefers_the_write_up(self):
         body = text_message_body("explain remote access", "Short.", "Long write-up.\n\nSecond paragraph.")
@@ -340,9 +372,11 @@ class ExplainHarness(AskHarness):
             openclaw_tool.register_openclaw_tool(shim, "workshop-device")
         self.service.register_function("deliver_by_text", shim.handlers["deliver_by_text"])
         self.texted = []
+        self.text_recipients = []
 
-        async def text(body):
+        async def text(body, recipient=""):
             self.texted.append(body)
+            self.text_recipients.append(recipient)
             return self.text_ok
         self.text_ok = True
         self.service.on_task_message = text
@@ -369,8 +403,9 @@ class ExplainFlow(Patched):
             await h.user_says("Can you explain how OpenClaw supports remote access?")
             await h.wait_commentary(count=1, timeout=3.0)
             ack = commentaries(h)[0]
-            self.assertIn("Hold on, Sam. It's going to take me a moment to find that out.", ack)
-            self.assertIn("summary over text", ack)
+            self.assertIn(", Sam", ack, "the identified speaker's first name")
+            self.assertIn("text", ack.split('"')[1].lower(), "the text offer")
+            self.assertNotIn("moment", ack.split('"')[1].lower())
             self.assertEqual(h.executed[0][1]["mode"], "explain")
             task = next(t for t in h.service._tasks.values() if t.external_id == "task-x")
             self.assertTrue(task.explain)
@@ -434,14 +469,15 @@ class ExplainFlow(Patched):
             h.service.task_policy = TaskPolicy(promote_s=1.0)
             h.ask_delay = 1.6
             await h.user_says("Can you explain how OpenClaw supports remote access?")
-            await h.wait_commentary(count=2, timeout=6.0)
-            first, second = commentaries(h)[:2]
-            self.assertIn("still working on it", first, "the promotion line came first")
-            self.assertIn("prefer a summary over text instead", second, "the offer is still made")
-            self.assertIn("few minutes", second)
-            self.assertNotIn("Hold on", second, "shorter: the voice already said it is working")
+            await h.wait_commentary(count=1, timeout=6.0)
+            first = commentaries(h)[0]
+            self.assertNotIn("still working on it", first, "the generic promotion line is replaced")
+            self.assertIn("few minutes of research", first, "the explain acknowledgement, at promotion")
+            self.assertIn("text", first.split('"')[1].lower())
             await acked(h)
-            self.assertEqual(h.service.tasks_pending, 1, "only the explanation itself is still owed")
+            await until(lambda: h.service.tasks_pending == 1, timeout=3.0)
+            await asyncio.sleep(0.6)
+            self.assertEqual(len(commentaries(h)), 1, "the acceptance adds no second acknowledgement")
 
     async def test_no_name_when_the_speaker_is_unknown(self):
         backend = FakeBackend(
@@ -450,7 +486,8 @@ class ExplainFlow(Patched):
         async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
             await h.user_says("Can you explain how the bridge works?")
             await h.wait_commentary(count=1, timeout=3.0)
-            self.assertIn("\"Hold on. It's going to take me a moment", commentaries(h)[0])
+            line = commentaries(h)[0].split('"')[1]
+            self.assertNotIn(",", line.split(".")[0], "no name when the speaker is unknown")
 
     async def test_text_would_be_great_switches_that_task_to_a_text(self):
         backend = FakeBackend(
@@ -459,6 +496,7 @@ class ExplainFlow(Patched):
             response(call("deliver_by_text", {}, "c2")),
             response(message("Okay, I'll text it to you.")))
         async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
+            h.service.speaker_probe = SimpleNamespace(gate_speaker=lambda: "male", name_for=lambda label: "Sam")
             await h.user_says("Can you explain how OpenClaw supports remote access?")
             await h.wait_commentary(count=1, timeout=3.0)
             await acked(h)
@@ -475,7 +513,8 @@ class ExplainFlow(Patched):
             await until(lambda: h.texted, timeout=3.0)
             self.assertIn("The full write-up.", h.texted[0])
             self.assertTrue(h.texted[0].startswith("You asked: "))
-            await until(lambda: any("sent to the user as a text" in c for c in commentaries(h)))
+            self.assertEqual(h.text_recipients, ["Sam"], "the identified speaker is the recipient")
+            await until(lambda: any("in your messages" in c for c in commentaries(h)))
             self.assertFalse(any(SPOKEN in c for c in commentaries(h)), "texted, not read aloud")
             self.assertEqual(h.service.router_stats["delivered"], {IMESSAGE: 1})
 

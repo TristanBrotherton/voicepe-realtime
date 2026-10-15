@@ -225,7 +225,8 @@ budget. The voice says at once that it will take a moment and that it will
 get back to you, and offers a text instead; the answer is then read in full
 by voice (the open conversation, a short new session or an announcement), or
 texted through the bridge's verified sender when you answer "text would be
-great" (`live_task_imessage_to` names the destination). A follow-up within
+great" (the bridge texts the person it recognised, or its default owner route;
+`live_task_imessage_to` is only an optional override). A follow-up within
 half an hour ("what about the authentication part?") continues the same
 agent session. One explanation runs at a time.
 

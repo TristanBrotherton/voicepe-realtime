@@ -143,8 +143,13 @@ the status of project X") is research, not a lookup. The backend calls
 - Delivery is the user's choice: by default the summary is read in full by
   voice on the device that asked; if the user answers the acknowledgement
   with "text would be great", the add-on texts the write-up through the
-  bridge's `notification_destination` contract (`LIVE_TASK_IMESSAGE_TO`) and
-  says so. The bridge does not need to text anything itself.
+  bridge's notification contract with `notification_recipient` = the
+  identified speaker's first name (no destination). The bridge matches the
+  name against its own iMessage routes and otherwise uses its default owner
+  route (`IMESSAGE_DEFAULT_DESTINATION`, else the first route in its routes
+  file). `LIVE_TASK_IMESSAGE_TO` is only an optional override naming one route
+  exactly. If the conversation is still open the voice says something like
+  "Done, it's in your messages"; an idle device is not reopened for that.
 - A bridge without explain support may ignore `mode` and answer inline: the
   add-on speaks the `SPOKEN:` part of such a reply.
 
@@ -248,8 +253,9 @@ Delivery order when no session is open is configurable (`LIVE_TASK_DELIVERY`,
 default `session,reopen,announce,imessage`; `LIVE_TASK_DEFERRED_DELIVERY`,
 default `session,announce,reopen,imessage`): a short new voice session opened
 through the spend gate, the announcement lane, then a text through the bridge's
-`notification_destination` contract (`LIVE_TASK_IMESSAGE_TO`) — the text comes
-first only when the user asked for one. `LIVE_TASK_QUIET_HOURS` (`22:00-07:00`)
+notification contract (in the fallback chain only when `LIVE_TASK_IMESSAGE_TO`
+names a route; an explanation the user asked to have texted needs no option) —
+the text comes first only when the user asked for one. `LIVE_TASK_QUIET_HOURS` (`22:00-07:00`)
 holds a deferred result until the morning.
 
 ## The full delegation loop

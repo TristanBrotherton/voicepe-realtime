@@ -1753,9 +1753,16 @@ class Application:
         announcer = getattr(self, "_task_announcer", None)
         if announcer is not None:
             service.on_task_announce = announcer
+        # A text the user asks for (an explanation) needs only the bridge: it
+        # resolves the identified speaker's first name to its own iMessage
+        # route, else its default owner route. ``live_task_imessage_to`` is an
+        # optional override, and the only thing that puts a text into the
+        # fallback chain for ordinary results (unchanged).
         destination = service.task_policy.imessage_to
-        if openclaw_url() and destination:
-            service.on_task_message = lambda text: send_task_message(text, destination)
+        if openclaw_url():
+            service.on_task_text = lambda text, recipient="": send_task_message(text, destination, recipient)
+            if destination:
+                service.on_task_message = lambda text: send_task_message(text, destination)
         return service
 
     def _attach_guards(self, service, connection) -> None:
