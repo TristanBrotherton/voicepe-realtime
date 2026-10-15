@@ -12,6 +12,8 @@ All notable changes to this add-on. Newest first.
   action report, an agent answer) keeps the session open while it is being
   spoken, bounded: only while audio is actually playing, never past the
   session's own maximum, and no idle time is added once the voice stops. A
+  one-word answer counts as heard too (the floor is 0.6 s of audio, then
+  quiet), so it is not re-delivered into the next conversation. A
   session closing under it (the device's follow-up cut-off) hands the result to
   the next route instead of losing it.
 - **The agent bridge now honours the add-on's session key for ordinary

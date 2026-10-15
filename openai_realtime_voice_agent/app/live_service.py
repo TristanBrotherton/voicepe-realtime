@@ -328,12 +328,16 @@ EXTERNAL_TASK_MAX_S = 1800.0
 # An explanation (ask_openclaw explain mode) has a 10-minute budget at the
 # bridge, which reports a failure itself; this is the backstop if it never does.
 EXPLAIN_TASK_MAX_S = 900.0
-# An explanation delivered into an open session counts as heard once audible
-# output has gone on this long after the commentary went in (rig 2026-10-14:
-# a result sent 0.8 s before the device's follow-up cut-off closed the
-# session was "delivered" and never heard). A session still open but silent
-# this long after the commentary is sent the result again.
-TASK_HEARD_MIN_S = 2.0
+# A result delivered into an open session counts as heard once at least this
+# much audible output followed the commentary AND the voice has gone quiet past
+# the speech hangover in a session that stayed open (rig 2026-10-14: a result
+# sent 0.8 s before the device's follow-up cut-off closed the session was
+# "delivered" and never heard). Short answers are short: a one-word "Two."
+# is under a second of audio (rig 2026-10-15, where a 2 s floor re-queued it
+# into the next session), so the floor only rules out a stray fragment.
+# A session still open but silent TASK_HEARD_WAIT_S after the commentary is
+# sent the result again.
+TASK_HEARD_MIN_S = 0.6
 TASK_HEARD_WAIT_S = 20.0
 # A result being spoken holds the session at most this long from the commentary.
 TASK_SPOKEN_HOLD_S = 90.0
