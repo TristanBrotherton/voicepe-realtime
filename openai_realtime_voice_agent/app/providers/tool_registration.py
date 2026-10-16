@@ -16,7 +16,7 @@ import logging
 import os
 import time
 
-from app import bana0
+from app import bana0, skills
 from app.early_ack import paa as early_ack_paa
 
 logger = logging.getLogger(__name__)
@@ -355,6 +355,8 @@ class ToolRegistrationMixin:
 
             async def capped_callback(result, *args, **kwargs):
                 stop_waiting_ack()
+                if function_name.rsplit("__", 1)[-1] == "las_skill":  # what anvand_verktyg may run on a question
+                    self.lasande = {**(getattr(self, "lasande", None) or {}), **skills.lasande_ur(result)}
                 fel = ha_misslyckades(result)
                 if fel is not None:
                     logger.warning(f"⚠️ {function_name}: Home Assistant says failed: {', '.join(fel['failed'])}")
@@ -379,7 +381,8 @@ class ToolRegistrationMixin:
                     await params.result_callback({"result": skal})
                     return
                 fraga = getattr(self, "fragevakt", None)  # a question is no order (raawr US-098, 2026-10-17)
-                nej = bana0.fraga_inte_order(fraga(), function_name, getattr(params, "arguments", None)) if fraga else None
+                nej = bana0.fraga_inte_order(fraga(), function_name, getattr(params, "arguments", None),
+                                             getattr(self, "lasande", None)) if fraga else None
                 if nej:
                     logger.warning(f"🛡️ tool {function_name} NOT run: {nej}")
                     await params.result_callback({"result": nej})

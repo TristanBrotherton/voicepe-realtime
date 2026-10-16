@@ -81,7 +81,8 @@ def kor(fraga: dict, a) -> dict:
                             "--since", t0.strftime("%Y-%m-%d %H:%M:%S")], capture_output=True, text=True).stdout.splitlines()
     verktyg = anropade(rader)
     sagt = " ".join(m.group(1).strip() for r in rader if (m := SA.search(r)))
-    rad = {"vag": a.vag, "id": fraga["id"], "verktyg": verktyg, "tider": verktygstider(rader, verktyg),
+    # "anrop", not "verktyg": dela() has a "verktyg" of its own (tool seconds before the first sound)
+    rad = {"vag": a.vag, "id": fraga["id"], "anrop": verktyg, "tider": verktygstider(rader, verktyg),
            "sagt": sagt[:400]}
     if "forsta_svarsljud" not in h:
         return {**rad, "fel": "inget svarsljud", "ratt": False}

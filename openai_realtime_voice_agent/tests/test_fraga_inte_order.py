@@ -15,7 +15,8 @@ from tests.test_ha_misslyckades import _call, _service
                                   "Lyser det i hallen?", "Har du tänt i köket?", "Hur många lampor är på?",
                                   # B on #91: no question word first
                                   "Kan du säga om det är tänt i kontoret?", "Tänt i kontoret?", "Brinner det i köket?",
-                                  "Funkar lampan?", "Lampan på i köket?", "Släckt i hallen?"])
+                                  "Funkar lampan?", "Lampan på i köket?", "Släckt i hallen?",
+                                  "Syns det ljus i köket?"])  # B on #92
 def test_en_fraga_om_laget_ar_ingen_order(text):
     assert bana0.ar_fraga(text)
     assert bana0.verb_ur(text) is None
@@ -42,7 +43,8 @@ def test_ett_skrivande_verktyg_kors_inte_pa_en_fraga(namn, arg):
 @pytest.mark.parametrize("namn,arg", [("homeassistant__GetLiveContext", {"area": "kontoret"}), ("hus_lage", {}),
                                       ("rost__anvand_verktyg", {"namn": "hus_lage", "argument": {}})])
 def test_ett_lasande_verktyg_kors_aven_pa_en_fraga(namn, arg):
-    assert bana0.fraga_inte_order("Är det tänt i kontoret?", namn, arg) is None
+    # through anvand_verktyg comms' own word decides (raawr US-103): here it has said hus_lage only reads
+    assert bana0.fraga_inte_order("Är det tänt i kontoret?", namn, arg, {"hus_lage": True}) is None
 
 
 @pytest.mark.asyncio
@@ -77,3 +79,83 @@ async def test_sessionen_far_fragevakten_med_det_bana0_horde():
 def test_en_begaran_om_ett_lage_ar_ingen_fraga():
     assert not bana0.ar_fraga("Kan du se till att det är tänt i köket?")
     assert bana0.fraga_inte_order("Kan du se till att det är tänt i köket?", "intent__HassTurnOn", {}) is None
+
+
+def test_comms_markning_vinner_over_namnlistan():
+    """raawr US-103: comms says per tool whether it only reads; the name list is the fallback."""
+    las = {"styr": False, "hus_lage": True, "lage_drift": True, "kasta_in": False}
+    fraga = "Är det tänt i kontoret?"
+    assert bana0.fraga_inte_order(fraga, "kasta_in", {}, las) is not None          # comms: changes
+    assert bana0.fraga_inte_order(fraga, "lage_drift", {}, las) is None            # comms: reads
+    assert bana0.fraga_inte_order(fraga, "rost__anvand_verktyg", {"namn": "hus_lage"}, las) is None
+    assert bana0.fraga_inte_order(fraga, "rost__anvand_verktyg", {"namn": "styr"}, las) is not None
+    # not described: through anvand_verktyg it is taken to change something, a direct one goes by the name list
+    assert bana0.fraga_inte_order(fraga, "rost__anvand_verktyg", {"namn": "okant"}, las) is not None
+    assert bana0.fraga_inte_order(fraga, "intent__HassTurnOn", {}, las) is not None
+    assert bana0.fraga_inte_order(fraga, "homeassistant__GetLiveContext", {}, las) is None
+
+
+def test_las_skill_svaret_lar_vakten():
+    from app import skills
+    svar = '{"skill": "hus", "instruktion": "x", "verktyg": [{"namn": "hus_lage", "readOnlyHint": true}, ' \
+           '{"namn": "styr", "readOnlyHint": false}, {"namn": "utan"}]}'
+    assert skills.lasande_ur(svar) == {"hus_lage": True, "styr": False}
+    assert skills.lasande_ur({"result": svar}) == {"hus_lage": True, "styr": False}
+    assert skills.lasande_ur("Fel [Comms]: skillen finns inte") == {}
+
+
+@pytest.mark.asyncio
+async def test_dorrens_tools_list_ger_markningen():
+    import types
+    from app.mcp_service import LasandeMCPClient
+
+    def verktyg(namn, las):
+        ann = None if las is None else types.SimpleNamespace(readOnlyHint=las)
+        return types.SimpleNamespace(name=namn, description="d", inputSchema={"type": "object", "properties": {}},
+                                     annotations=ann)
+
+    class _Session:
+        async def list_tools(self):
+            return types.SimpleNamespace(tools=[verktyg("hus_lage", True), verktyg("styr", False), verktyg("x", None)])
+
+    k = LasandeMCPClient.__new__(LasandeMCPClient)
+    k._tools_filter = None
+    schema = await k._list_tools_helper(_Session())
+    assert k.las == {"hus_lage": True, "styr": False}
+    assert [f.name for f in schema.standard_tools] == ["hus_lage", "styr", "x"]
+
+
+@pytest.mark.asyncio
+async def test_verktygslagret_lar_av_las_skill():
+    service = _service()
+    ran = []
+
+    async def las_skill(params):
+        await params.result_callback('{"verktyg": [{"namn": "hus_lage", "readOnlyHint": true}]}')
+
+    async def anvand(params):
+        ran.append(params.arguments["namn"])
+        await params.result_callback("ok")
+
+    service.register_function("rost__las_skill", las_skill)
+    service.register_function("rost__anvand_verktyg", anvand)
+    service.fragevakt = lambda: "Är det tänt i kontoret?"
+    await _call(service, "rost__anvand_verktyg", {"namn": "hus_lage", "argument": {}})
+    assert ran == []                        # not described yet: through anvand_verktyg it may change something
+    await _call(service, "rost__las_skill", {"namn": "hus"})
+    await _call(service, "rost__anvand_verktyg", {"namn": "hus_lage", "argument": {}})
+    assert ran == ["hus_lage"]
+
+
+@pytest.mark.asyncio
+async def test_sessionen_far_dorrens_markning():
+    from tests.test_ha_tools_recovery import _connect
+    from tests.test_mcp_dorr import _Klient, _schema
+    from tests.test_provider_selection import _bare_app
+
+    app = _bare_app("openai")
+    app.mcp_client = _Klient(_schema("HassTurnOn"))
+    app.dorr_client = _Klient(_schema("lage_drift", "kasta_in"))
+    app.dorr_client.las = {"lage_drift": True, "kasta_in": False}
+    _, service = await _connect(app)
+    assert service.lasande == {"lage_drift": True, "kasta_in": False}

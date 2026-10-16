@@ -53,6 +53,20 @@ def visa_fran_dorren(namn: str) -> bool:
     return namn.rsplit("__", 1)[-1] in DORR_IDAG
 
 
+def lasande_ur(svar) -> dict:
+    """{tool: readOnlyHint} from a las_skill answer (raawr US-103), {} when it is not one: the voice guard learns
+    there what anvand_verktyg may run on a question."""
+    import json
+    try:
+        data = svar if isinstance(svar, dict) else json.loads(svar)
+        if isinstance(data, dict) and isinstance(data.get("result"), (str, dict)) and "verktyg" not in data:
+            data = data["result"] if isinstance(data["result"], dict) else json.loads(data["result"])
+        return {str(v["namn"]): bool(v["readOnlyHint"]) for v in data.get("verktyg", [])
+                if isinstance(v, dict) and "namn" in v and isinstance(v.get("readOnlyHint"), bool)}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+
 def katalog_url() -> str:
     """The room's comms address with `/api` swapped for `/skills`; empty = not configured."""
     bas = ha_api.base()

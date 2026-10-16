@@ -9,6 +9,23 @@ from app import ha_api
 logger = logging.getLogger(__name__)
 
 
+class LasandeMCPClient(MCPClient):
+    """pipecat's MCPClient, plus each tool's MCP `readOnlyHint` from tools/list (raawr US-103): `las` maps a tool name
+    to True (only reads) or False (changes something). A tool that declares nothing is not in it."""
+
+    las: dict = {}
+
+    async def _list_tools_helper(self, session):
+        lista = await session.list_tools()
+        self.las = {t.name: bool(t.annotations.readOnlyHint) for t in lista.tools
+                    if getattr(t, "annotations", None) is not None and t.annotations.readOnlyHint is not None}
+
+        class _Igen:  # hand pipecat the same list instead of asking the door twice
+            async def list_tools(self_):
+                return lista
+        return await super()._list_tools_helper(_Igen())
+
+
 class HomeAssistantMCPService:
     """Home Assistant MCP service using Pipecat's MCPClient."""
     
@@ -83,5 +100,5 @@ class CommsDoorMCPService:
         if not self.url:
             return None
         logger.info(f"🔗 Initializing comms MCP door client at {self.url}")
-        self.mcp_client = MCPClient(server_params=StreamableHttpParameters(url=self.url, headers=ha_api.headers()))
+        self.mcp_client = LasandeMCPClient(server_params=StreamableHttpParameters(url=self.url, headers=ha_api.headers()))
         return self.mcp_client

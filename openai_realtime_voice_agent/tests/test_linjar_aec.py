@@ -103,3 +103,10 @@ def test_matt_parar_utgangen_med_ramen_fore(monkeypatch):
     a.process(hogt.tobytes(), t=0.02)
     _, in_db, ut_db, _ = a.matt[-1]
     assert in_db < -80 and ut_db < -80                   # the quiet frame, in and out
+
+
+def test_ekot_tas_efter_en_lika_stark_rost():
+    # B on #87: the double-talk tests guarded only downwards. A voice as loud as his echo: right after it the filter
+    # must still take his echo (16.4 dB with the leak floor 0.3; 13.9 at 0.5, 10.8 at 1.0, trim/jamfor_1000.txt).
+    taget = _over_ekot(True, 0.0, 1.0)[0]
+    assert taget > 14, taget

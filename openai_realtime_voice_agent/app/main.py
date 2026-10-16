@@ -1216,6 +1216,7 @@ class Application:
         logger.info(f"✅ comms MCP door lists {len(dorr.standard_tools)} tools, {len(nya)} added: {sorted(namn)}")
         ut = ToolsSchema(standard_tools=list(ha.standard_tools) + nya)
         ut.dorr_namn = namn  # travels with the schema it describes: a later fetch by another session cannot change it
+        ut.las = dict(getattr(self.dorr_client, "las", {}) or {})  # readOnlyHint per door tool (raawr US-103)
         return ut
 
     def _ha_tool_definitions(self, mcp_tools_schema) -> list:
@@ -1268,6 +1269,10 @@ class Application:
         register_function keys by name, so running this twice replaces the
         handlers rather than adding a second set.
         """
+        try:  # readOnlyHint per door tool, for the question guard (raawr US-103)
+            service.lasande = {**(getattr(service, "lasande", None) or {}), **getattr(mcp_tools_schema, "las", {})}
+        except AttributeError:
+            pass
         try:
             from pipecat.adapters.schemas.tools_schema import ToolsSchema
 

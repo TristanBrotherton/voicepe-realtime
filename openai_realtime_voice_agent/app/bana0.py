@@ -124,7 +124,7 @@ _PA = re.compile(r"\b(tänd\w*|slå på|sätt på|starta)\b|\bpå\b", re.I)
 # tända?'). Live 2026-10-17 00:20: 'Är det tänt i kontoret?' turned the whole office on ('tänt' and 'tänd' sound
 # alike). A polite request is an order ('Kan du tända...', 'Var snäll och...').
 # ponytail: the first word decides; "Vad bra, tänd lampan" reads as a question (refused, he says it again).
-_FRAGA = re.compile(r"^\W*(är|vad|vilka|vilken|vilket|hur|finns|lyser|står|när|var|varför|har)\b", re.I)
+_FRAGA = re.compile(r"^\W*(är|vad|vilka|vilken|vilket|hur|finns|lyser|syns|står|när|var|varför|har)\b", re.I)
 _BON = re.compile(r"^\W*((kan|kunde|skulle|vill|får|orkar)\s+(du|ni)|(är|var)\s+(du\s+|ni\s+)?snäll)\b", re.I)
 # B on #91: a question can also start without a question word. It ends in '?', names a state ('tänt', 'lyser',
 # 'brinner', 'på') and has no order verb ('tänd', 'släck'): 'Tänt i kontoret?', 'Brinner det i köket?',
@@ -148,12 +148,24 @@ def ar_fraga(text: Optional[str]) -> bool:
             and not _BON.search(t))  # "Kan du se till att det är tänt?" asks for it to be so
 
 
-def fraga_inte_order(turtext: Optional[str], namn: str, argument: Optional[dict]) -> Optional[str]:
-    """Why a switching tool must not run on this turn, or None: the turn (bana 0's local text) was a question."""
+def andrar(namn: str, argument: Optional[dict], lasande: Optional[dict] = None) -> bool:
+    """Whether the tool changes something. comms says so per tool (`readOnlyHint`, raawr US-103: tools/list for the
+    door's own, las_skill for what anvand_verktyg runs); a tool comms has not described is judged by SKRIV_VERKTYG,
+    except one run through anvand_verktyg, which is taken to change something (A: missing = changing)."""
+    lasande = lasande or {}
     bas = namn.rsplit("__", 1)[-1]
-    if bas == "anvand_verktyg":  # comms' generic tool (raawr US-089): judged by the tool it runs
+    genom = bas == "anvand_verktyg"
+    if genom:  # comms' generic tool (raawr US-089): judged by the tool it runs
         bas = str((argument or {}).get("namn", "")).rsplit("__", 1)[-1]
-    if bas not in SKRIV_VERKTYG or not ar_fraga(turtext):
+    if bas in lasande:
+        return not lasande[bas]
+    return genom or bas in SKRIV_VERKTYG
+
+
+def fraga_inte_order(turtext: Optional[str], namn: str, argument: Optional[dict],
+                     lasande: Optional[dict] = None) -> Optional[str]:
+    """Why a changing tool must not run on this turn, or None: the turn (bana 0's local text) was a question."""
+    if not ar_fraga(turtext) or not andrar(namn, argument, lasande):
         return None
     return (f"ignored: he asked a question ('{turtext}'), he did not ask you to change anything. Answer the "
             "question from what you can read; switch nothing.")
