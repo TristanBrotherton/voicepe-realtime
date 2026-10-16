@@ -274,3 +274,67 @@ class ReadOnlyAnswers(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSocketLockNeverStaysTaken(unittest.IsolatedAsyncioTestCase):
+    """Workshop 2026-10-15 08:39 onwards: the recognizer's socket lock stayed
+    taken and every turn logged "HA intent socket busy" for 29 of 29 turns,
+    so every home command went the slow backend way."""
+
+    def recognizer(self, n=1):
+        sock = FakeSocket([matched({"name": "Atrium Lamp"}, ["light.atrium"]) for _ in range(n)])
+        r = recognizer_for(sock)
+        r.timeout_s = 0.05
+        return r
+
+    async def test_a_busy_timeout_leaves_the_lock_free_afterwards(self):
+        r = self.recognizer()
+        release = asyncio.Event()
+
+        async def holder():
+            async with r._held(1.0):
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await asyncio.sleep(0)
+        self.assertIsNone(await r.recognize("Turn off the atrium lamp"), "busy: no local match")
+        release.set()
+        await task
+        await asyncio.sleep(0.01)
+        self.assertFalse(r._lock.locked())
+        self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+
+    async def test_a_late_acquire_after_the_timeout_is_released(self):
+        r = self.recognizer()
+        lock = r._lock
+        await lock.acquire()
+        import time
+        r._held_since = time.monotonic()
+        with self.assertRaises(asyncio.TimeoutError):
+            await r._acquire(0.01)
+        lock.release()  # the waiter's acquire now completes after its timeout
+        await asyncio.sleep(0.01)
+        self.assertFalse(lock.locked(), "the late acquire released itself")
+
+    async def test_a_lock_taken_with_no_holder_is_replaced(self):
+        r = self.recognizer()
+        await r._lock.acquire()  # leaked: nobody will release it
+        with self.assertLogs("app.live_router", "WARNING") as logs:
+            self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+        self.assertTrue(any("lock stuck" in m for m in logs.output))
+
+    async def test_a_holder_stuck_past_the_bound_is_replaced(self):
+        import time
+        from app import live_router
+        r = self.recognizer()
+        await r._lock.acquire()
+        r._held_since = time.monotonic() - live_router.HA_SOCKET_LOCK_STALE_S - 1
+        self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+
+    async def test_a_current_holder_is_waited_for_not_replaced(self):
+        r = self.recognizer()
+        await r._lock.acquire()
+        import time
+        r._held_since = time.monotonic()
+        self.assertIsNone(await r.recognize("Turn off the atrium lamp"))
+        self.assertTrue(r._lock.locked(), "the real holder keeps its lock")

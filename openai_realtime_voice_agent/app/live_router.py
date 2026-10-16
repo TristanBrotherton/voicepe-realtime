@@ -29,6 +29,7 @@ Nothing here speaks. The service turns a result into one
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -55,6 +56,11 @@ ROUTER_MAX_STEPS = 6
 ROUTER_CALL_TIMEOUT_S = 25.0
 ROUTER_HISTORY_TURNS = 6
 HA_INTENT_TIMEOUT_S = 1.2
+# No holder of the Core socket legitimately keeps it longer than this (a
+# registry read: 5 s connect + 10 s reply). Older is a stuck holder: the lock
+# and the socket are replaced so recognition does not stay "busy" for good
+# (Workshop 2026-10-15 08:39 onwards: every turn routed to the backend).
+HA_SOCKET_LOCK_STALE_S = 30.0
 WS_MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 # Sentinels the backend answers with when no tool is wanted.
@@ -417,6 +423,7 @@ class HaIntentRecognizer:
         self._connect = connect
         self._ws = None
         self._lock = asyncio.Lock()
+        self._held_since: Optional[float] = None
         self._id = 0
         self._device_id_supported = True
         # The latest recognition's intent and slots, matched or not.
@@ -452,7 +459,7 @@ class HaIntentRecognizer:
         if not self.available:
             return
         try:
-            async with self._lock:
+            async with self._held(5.0):
                 if self._ws is not None:
                     # A socket idle since the last wake may be dead without
                     # knowing it: ping it, and reopen it if it does not answer.
@@ -482,10 +489,11 @@ class HaIntentRecognizer:
         try:
             # A directory refresh may hold the socket; recognition waits for
             # it only within its own budget.
-            await asyncio.wait_for(self._lock.acquire(), self.timeout_s)
+            lock = await self._acquire(self.timeout_s)
         except asyncio.TimeoutError:
             logger.info("ℹ️ HA intent socket busy; recognising without it this turn")
             return None
+        self._held_since = time.monotonic()
         try:
             for attempt in (1, 2):
                 try:
@@ -504,7 +512,7 @@ class HaIntentRecognizer:
                         logger.info(f"ℹ️ HA intent recognition unavailable: {e!r}")
                         return None
         finally:
-            self._lock.release()
+            self._release(lock)
         return None
 
     async def command(self, payload: dict, timeout_s: float = 10.0) -> dict:
@@ -512,7 +520,7 @@ class HaIntentRecognizer:
         the household directory); returns the reply."""
         if not self.available:
             return {"success": False, "error": {"message": "no token"}}
-        async with self._lock:
+        async with self._held(HA_SOCKET_LOCK_STALE_S):
             try:
                 ws = await asyncio.wait_for(self._socket(), 5.0)
                 self._id += 1
@@ -528,6 +536,66 @@ class HaIntentRecognizer:
             except Exception:
                 await self._drop()
                 raise
+
+    async def _acquire(self, timeout_s: float) -> asyncio.Lock:
+        """Take the socket lock within ``timeout_s`` or raise TimeoutError.
+
+        Never ``wait_for(lock.acquire())``: on Python 3.11 a timeout landing
+        as the acquire completes leaves the lock held with nobody to release
+        it. Here a late acquire is released by its own callback, and a lock
+        held past ``HA_SOCKET_LOCK_STALE_S`` is replaced first.
+        """
+        held = self._held_since
+        if self._lock.locked() and (held is None or time.monotonic() - held > HA_SOCKET_LOCK_STALE_S):
+            # Locked with no holder on record (a leaked acquire) or one far
+            # past any real holder's bound.
+            logger.warning("⚠️ HA intent socket lock stuck%s: replacing the lock and the socket",
+                           f" for {time.monotonic() - held:.0f}s" if held is not None else " with no holder")
+            self._lock = asyncio.Lock()
+            self._held_since = None
+            ws, self._ws = self._ws, None
+            if ws is not None:
+                asyncio.ensure_future(self._close_quietly(ws))
+        lock = self._lock
+        acquire = asyncio.ensure_future(lock.acquire())
+
+        def _undo(fut):
+            if not fut.cancelled() and fut.exception() is None:
+                lock.release()
+
+        try:
+            done, _ = await asyncio.wait({acquire}, timeout=timeout_s)
+        except BaseException:
+            acquire.cancel()
+            acquire.add_done_callback(_undo)
+            raise
+        if acquire in done:
+            acquire.result()
+            return lock
+        acquire.cancel()
+        acquire.add_done_callback(_undo)
+        raise asyncio.TimeoutError
+
+    def _release(self, lock: asyncio.Lock) -> None:
+        if lock is self._lock:
+            self._held_since = None
+        lock.release()
+
+    @contextlib.asynccontextmanager
+    async def _held(self, timeout_s: float):
+        lock = await self._acquire(timeout_s)
+        self._held_since = time.monotonic()
+        try:
+            yield
+        finally:
+            self._release(lock)
+
+    @staticmethod
+    async def _close_quietly(ws) -> None:
+        try:
+            await asyncio.wait_for(ws.close(), 5.0)
+        except BaseException:
+            pass
 
     async def _drop(self) -> None:
         ws, self._ws = self._ws, None
