@@ -166,10 +166,13 @@ BACKGROUND_MIN_MERGES = 4
 BACKGROUND_MIN_CHARS = 160
 # The same room talk can also arrive as separate utterances, each routed and
 # answered "Sorry, I didn't catch that" (Workshop rig 2026-10-16: a spoken
-# monologue got two not-caught replies and a chat reply). The second utterance
-# in one session with no request in it closes the session silently: a person
-# who was misheard heard the first "say it again" and can wake it again.
+# monologue got two not-caught replies and a chat reply), and across sessions:
+# the same talk false-woke the device again between them. The second
+# utterance with no request in it within BACKGROUND_NOT_CAUGHT_WINDOW_S, in
+# any session, closes the session silently: a person who was misheard heard
+# the first "say it again" and can wake it again.
 BACKGROUND_MAX_NOT_CAUGHT = 2
+BACKGROUND_NOT_CAUGHT_WINDOW_S = 90.0
 _NOT_CAUGHT_REPLY = re.compile(
     r"\b(?:didn'?t|did not|couldn'?t|could not) (?:catch|hear|get) (?:that|you|it)\b"
     r"|\b(?:say|repeat) (?:it|that) again\b", re.IGNORECASE)
@@ -956,7 +959,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.on_background_conversation: Optional[Callable[[], Awaitable[Any]]] = None
         self._merged_fragments = 0
         self._background_closing = False
-        self._not_caught = 0
+        # Times of recent utterances with no request; kept across sessions.
+        self._not_caught: Deque[float] = deque()
         self._session_started_mono: Optional[float] = None
         self._task_opened_session = False
         if self.router is not None:
@@ -1137,7 +1141,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._routing_suspended = False
         self._merged_fragments = 0
         self._background_closing = False
-        self._not_caught = 0
         if self.router is not None:
             self._gate_reset("idle")
             self._gate_idle_dropped = 0
@@ -3831,11 +3834,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if result is not None and (result.kind == ROUTE_NOTHING or (
                 result.kind == ROUTE_REPLY and not result.tools
                 and _NOT_CAUGHT_REPLY.search(result.commentary() or ""))):
-            self._not_caught += 1
-            if self._not_caught >= BACKGROUND_MAX_NOT_CAUGHT and self._close_for_background(
-                    f"{self._not_caught} utterances with no request in them"):
+            now_nc = time.monotonic()
+            self._not_caught.append(now_nc)
+            while self._not_caught and now_nc - self._not_caught[0] > BACKGROUND_NOT_CAUGHT_WINDOW_S:
+                self._not_caught.popleft()
+            if len(self._not_caught) >= BACKGROUND_MAX_NOT_CAUGHT and self._close_for_background(
+                    f"{len(self._not_caught)} utterances with no request in them within "
+                    f"{BACKGROUND_NOT_CAUGHT_WINDOW_S:.0f}s"):
+                self._not_caught.clear()
                 await self._task_complete(op)
                 return
+        elif result is not None and result.verified:
+            self._not_caught.clear()  # a real request was served
         text = result.commentary() if result is not None else None
         if result is not None and result.kind == ROUTE_PENDING and result.explain and not result.deferred:
             # The explain acknowledgement, with the identified speaker's name.
