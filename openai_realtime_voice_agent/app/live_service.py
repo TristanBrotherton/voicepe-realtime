@@ -155,6 +155,15 @@ USER_TRANSCRIPT_CONTINUATION_MS = 250
 # characters. Wall clock, because the timestamp continuation above covers
 # only contiguous source audio.
 USER_FRAGMENT_MERGE_S = 2.0
+# Background conversation, not a request: people talking near the device
+# after a false wake keep extending one unanswered "request" fragment by
+# fragment (Workshop 2026-10-15: 10+ merged fragments, 300+ characters, two
+# sessions of 71 s and 93 s answering a private conversation). Once a request
+# has been extended this many times AND grown this long with nothing
+# answered, the session is closed silently. A real request rarely pauses
+# four times; a long question that does is far under the length.
+BACKGROUND_MIN_MERGES = 4
+BACKGROUND_MIN_CHARS = 160
 # After a user turn ends: no speech, no delegation → treat as a silent
 # (admission) response so the phase machine can close the turn early.
 #
@@ -933,6 +942,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         #   name to its own route, else its default owner route
         self.on_task_text: Optional[Callable[[str, str], Awaitable[bool]]] = None
         self.on_task_reopen: Optional[Callable[[], Awaitable[bool]]] = None
+        #   on_background_conversation() -> awaitable: close the session silently
+        #   (set by websocket_handler to the gate's close)
+        self.on_background_conversation: Optional[Callable[[], Awaitable[Any]]] = None
+        self._merged_fragments = 0
+        self._background_closing = False
         self._session_started_mono: Optional[float] = None
         self._task_opened_session = False
         if self.router is not None:
@@ -1111,6 +1125,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._suppress_output = False
         self._stop_sent = False
         self._routing_suspended = False
+        self._merged_fragments = 0
+        self._background_closing = False
         if self.router is not None:
             self._gate_reset("idle")
             self._gate_idle_dropped = 0
@@ -2499,12 +2515,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 )
             if not continuation and self._fragment_of_unanswered_request():
                 continuation = True
+                self._merged_fragments += 1
                 logger.info(
                     "🧩 user transcript fragment %.1fs after the previous one with "
                     "nothing answered yet: merged into one request [%d + %d chars]",
                     time.monotonic() - (self._last_user_turn_closed_mono or 0.0),
                     len(self._last_user_raw_text.strip()), len(delta.strip()),
                 )
+                if self._background_conversation(
+                        len(self._last_user_raw_text.strip()) + len(delta.strip())):
+                    return
+            elif not continuation:
+                self._merged_fragments = 0
         if not turn.open:
             turn.open = True
             turn.text = self._last_user_raw_text if continuation else ""
@@ -2682,6 +2704,27 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     async def _broadcast(self, frame_cls) -> None:
         await self.push_frame(frame_cls(), FrameDirection.UPSTREAM)
         await self.push_frame(frame_cls(), FrameDirection.DOWNSTREAM)
+
+    def _background_conversation(self, chars: int) -> bool:
+        """Close the session if the unanswered request is a conversation in
+        the room (see BACKGROUND_MIN_MERGES). True when the transcript is to
+        be ignored because the session is closing."""
+        if self._background_closing:
+            return True
+        if (self._merged_fragments < BACKGROUND_MIN_MERGES or chars < BACKGROUND_MIN_CHARS
+                or self.on_background_conversation is None):
+            return False
+        self._background_closing = True
+        self._routing_suspended = True  # a half conversation is not a request
+        op = self._op
+        if op is not None and not op.done and op.task is not None and not op.tools_started:
+            op.abandoned = True
+            op.task.cancel()
+        logger.warning(
+            "🙉 background conversation: %d fragments, %d characters with nothing "
+            "answered; closing the session without replying", self._merged_fragments + 1, chars)
+        self._spawn(self.on_background_conversation(), "live-background-close")
+        return True
 
     def _fragment_of_unanswered_request(self) -> bool:
         """Is a user fragment opening now a continuation of the last request?

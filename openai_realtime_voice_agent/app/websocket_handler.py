@@ -681,6 +681,10 @@ class WebSocketHandler:
             # may open one short session to speak it: through this gate, so
             # the spend ledger, the daily caps and every idle bound apply.
             service.on_task_reopen = lambda: gate.open("background task result")
+        if hasattr(service, "on_background_conversation"):
+            # A false wake followed by people talking near the device: close
+            # silently instead of answering the room until the 90 s cap.
+            service.on_background_conversation = lambda: gate.close("background conversation")
         logger.info(
             f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
             f"idle {policy.idle_s:.0f}s, follow-up {policy.followup_s:.0f}s, "

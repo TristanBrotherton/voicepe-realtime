@@ -134,6 +134,62 @@ class FragmentMerge(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(h.socket.of("response.create")), 1)
 
 
+class BackgroundConversation(unittest.IsolatedAsyncioTestCase):
+    """Workshop 2026-10-15 09:53 and 09:59: false wakes, then people talking
+    near the device extended one unanswered "request" fragment by fragment
+    for 71 s and 93 s. Such a session closes silently instead."""
+
+    def setUp(self):
+        patcher = patch.object(live_service_module, "USER_TURN_GAP_S", 0.02)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def _talk(self, h, fragments, closes_on_last=False):
+        for i, text in enumerate(fragments):
+            h.socket.push(fragment(text, i * 2000, i * 2000 + 1500))
+            if closes_on_last and i == len(fragments) - 1:
+                await asyncio.sleep(0.05)  # dropped: the session is closing
+            else:
+                await h.sink.wait_for(UserStoppedSpeakingFrame, count=i + 1)
+
+    async def test_room_conversation_closes_the_session_silently(self):
+        closed = []
+
+        async def close():
+            closed.append(1)
+
+        async with LiveHarness(self) as h:
+            await h.start_session()
+            s = h.service
+            s.on_background_conversation = close
+            s.turn_timeline.begin("t-room")
+            sentence = "and then she said the appointment was moved to next week "
+            with self.assertLogs("app.live_service", level="WARNING") as logs:
+                await self._talk(h, [sentence] * 5, closes_on_last=True)
+                await asyncio.sleep(0.05)
+            self.assertEqual(closed, [1], "closed once")
+            warned = [m for m in logs.output if "background conversation" in m]
+            self.assertEqual(len(warned), 1)
+            self.assertNotIn("appointment", warned[0], "lengths only, never the words")
+            self.assertTrue(s._routing_suspended)
+
+    async def test_a_request_with_a_pause_is_still_one_request(self):
+        closed = []
+
+        async def close():
+            closed.append(1)
+
+        async with LiveHarness(self) as h:
+            await h.start_session()
+            s = h.service
+            s.on_background_conversation = close
+            s.turn_timeline.begin("t-pauses")
+            await self._talk(h, ["Can you add", " eggs and milk", " and bread", " to the list"])
+            await asyncio.sleep(0.05)
+            self.assertEqual(closed, [], "a short request with pauses is not a conversation")
+            self.assertEqual(s._last_user_text, "Can you add eggs and milk and bread to the list")
+
+
 class FalseSuccessWithheld(unittest.IsolatedAsyncioTestCase):
     """Rule 2: "Done." with no tool is never played for an action-shaped request."""
 
