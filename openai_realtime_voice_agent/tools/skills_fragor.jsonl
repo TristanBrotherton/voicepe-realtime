@@ -1,0 +1,8 @@
+{"id": "s1", "wav": "/root/q/skills/s1.wav", "text": "Är det tänt i kontoret?", "vantat": ["GetLiveContext", "search_home", "hus_lage"]}
+{"id": "s2", "wav": "/root/q/skills/s2.wav", "text": "Hur varmt är det ute just nu?", "vantat": ["GetLiveContext", "search_home", "hus_lage", "vaderprognos", "vader", "-"], "ord": ["grad"]}
+{"id": "s3", "wav": "/root/q/skills/s3.wav", "text": "Vad har jag i kalendern i morgon?", "vantat": ["kalender_sok", "kalender_las", "-"]}
+{"id": "s4", "wav": "/root/q/skills/s4.wav", "text": "Blir det regn i morgon?", "vantat": ["vaderprognos", "vader", "-"]}
+{"id": "s5", "wav": "/root/q/skills/s5.wav", "text": "Hur mår servrarna i huset?", "vantat": ["lage_drift", "fraga_core", "delegera_till_raawr"]}
+{"id": "s6", "wav": "/root/q/skills/s6.wav", "text": "Tänd lampan i trädgårdsstugan.", "vantat": ["HassTurnOn", "HassLightSet", "styr"]}
+{"id": "s7", "wav": "/root/q/skills/s7.wav", "text": "Släck lampan i trädgårdsstugan.", "vantat": ["HassTurnOff", "HassLightSet", "styr"]}
+{"id": "s8", "wav": "/root/q/skills/s8.wav", "text": "Vad är två gånger sjutton?", "vantat": ["-"], "ord": ["trettiofyra", "34"]}

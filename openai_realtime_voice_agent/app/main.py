@@ -19,6 +19,7 @@ from app.core_strom import (
 )
 from app.klockan import klipp_paa as klockan_klipp_paa
 from app import bjorn_karna
+from app import skills
 from app.mcp_service import CommsDoorMCPService, HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.idag import Idag
@@ -303,6 +304,8 @@ class Application:
     """Main application class using Pipecat."""
 
     dorr_client = None  # comms' own MCP door, see CommsDoorMCPService
+    skills_katalog = None  # skills.Katalog, made on first use (US-095)
+    skills_text: dict = {}  # room -> the catalogue block of its last session build
     karna = None  # bjorn_karna.Karna, made in initialize() (tests that skip it get one without an environment text)
 
     # Local turn end on Gemini; GEMINI_TURN_SILENCE_MS overrides it at start.
@@ -878,6 +881,8 @@ class Application:
         # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
         # jokes included (owner 2026-10-02 23:07). The slow tools' descriptions
         # carry it instead (early_ack.with_ack_hint, 0.25.6).
+        if skills.lage():  # memory is a skill in comms then, not the agent's own tools (US-095)
+            return self.instructions + SPRAKLAS + avbrott_for(rum) + self.skills_text.get(rum, "") + self.idag.block()
         return self.instructions + SPRAKLAS + avbrott_for(rum) + memory_instructions() + self.idag.block()
 
     async def _idag_loop(self) -> None:
@@ -949,6 +954,10 @@ class Application:
 
         async with self._pipeline_lock:
             await self._uppdatera_karna()
+            if skills.lage():
+                if self.skills_katalog is None:
+                    self.skills_katalog, self.skills_text = skills.Katalog(), {}
+                self.skills_text[client_id or ""] = await self.skills_katalog.text(client_id or "")
             if client_id is None:
                 logger.warning("⚠️ No client_id provided to create_service")
 
@@ -1042,6 +1051,8 @@ class Application:
             options = self.provider_options(provider, rum)
             if not options.api_key:
                 logger.error(f"❌ no API key configured for {provider}")
+            if skills.lage():  # US-095: the house only through comms' two meta tools, plus the speaker's own
+                all_tools = [t for t in all_tools if skills.behall(t.get("name", ""))]
             logger.info(
                 f"🔧 Creating {provider} session with {len(all_tools)} tools: "
                 f"{[tool.get('name', 'unknown') for tool in all_tools]}"
@@ -1211,11 +1222,16 @@ class Application:
         session is not flooded with every intent HA exposes.
         """
         tools = []
+        dorr_namn = getattr(mcp_tools_schema, "dorr_namn", frozenset())
         for function_schema in mcp_tools_schema.standard_tools:
             name = function_schema.name
             # Allow/deny for what the model is offered: app/tool_selection.py.
             if not tool_selection.shown(name, self.mcp_tool_allowlist):
                 continue
+            if skills.lage() and not skills.behall(name):  # US-095: the wake refetch goes through here too
+                continue
+            if not skills.lage() and name in dorr_namn and not skills.visa_fran_dorren(name):
+                continue  # US-095: the door's new tools reach the speaker through the skills path, not on top of HA's
             # Comms hands tools out as `<domain>__<name>`, HA itself bare.
             base = name.rsplit("__", 1)[-1]
             if openclaw_url() and base == "ask_openclaw":
