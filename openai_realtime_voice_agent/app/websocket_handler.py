@@ -684,7 +684,12 @@ class WebSocketHandler:
         if hasattr(service, "on_background_conversation"):
             # A false wake followed by people talking near the device: close
             # silently instead of answering the room until the 90 s cap.
-            service.on_background_conversation = lambda: gate.close("background conversation")
+            async def _close_background():
+                # The device's follow-up window would otherwise stream the same
+                # room talk into a fresh session (rig 2026-10-16, 3 s later).
+                gate.wake_required = True
+                return await gate.close("background conversation")
+            service.on_background_conversation = _close_background
         logger.info(
             f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
             f"idle {policy.idle_s:.0f}s, follow-up {policy.followup_s:.0f}s, "
@@ -1061,6 +1066,7 @@ class WebSocketHandler:
             # also delivers the user's audio, and that audio is what the
             # bounded pre-roll buffer preserves while the handshake runs.
             if gate is not None:
+                gate.wake_required = False
                 self._spawn(gate.open(f"wake ({source})"))
             turn = timeline.begin(turn_id=meta.get("turn"), source=source, meta=meta)
             connection.replay.clear()
@@ -1214,6 +1220,10 @@ class WebSocketHandler:
                 # variant) without ever opening a session while the house is
                 # idle — an idle device sends no mic audio at all.
                 if gate is not None and not gate.is_open:
+                    if getattr(gate, "wake_required", False):
+                        logger.info("🙉 mic opened after a background-conversation close; "
+                                    "waiting for a wake word")
+                        return
                     self._spawn(gate.open("device mic opened"))
             serializer.set_mic_open_handler(_on_mic_open)
 

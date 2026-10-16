@@ -167,6 +167,9 @@ class LiveSessionGate:
         self._opened_mono: Optional[float] = None
         self._supervisor: Optional[asyncio.Task] = None
         self._closed_for_good = False
+        # Set when a session closed on background conversation: only a real
+        # wake opens the next one, not the follow-up window's mic backstop.
+        self.wake_required = False
         # Deadlines, all monotonic. None while closed.
         self._idle_deadline: Optional[float] = None
         self._silent_deadline: Optional[float] = None

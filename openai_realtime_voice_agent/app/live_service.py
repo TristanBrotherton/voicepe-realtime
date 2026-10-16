@@ -3841,7 +3841,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if len(self._not_caught) >= BACKGROUND_MAX_NOT_CAUGHT and self._close_for_background(
                     f"{len(self._not_caught)} utterances with no request in them within "
                     f"{BACKGROUND_NOT_CAUGHT_WINDOW_S:.0f}s"):
-                self._not_caught.clear()
+                # Not cleared: a false wake into the same talk closes at its
+                # first not-caught utterance.
                 await self._task_complete(op)
                 return
         elif result is not None and result.verified:

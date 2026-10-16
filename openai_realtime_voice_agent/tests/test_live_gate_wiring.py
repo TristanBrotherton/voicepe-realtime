@@ -52,6 +52,7 @@ class FakeLiveService(FrameProcessor):
         self.on_audible_output = None
         self.on_backend_activity = None
         self.on_reply_finished = None
+        self.on_background_conversation = None
 
         class Socket:
             async def ping(self_inner):
@@ -266,6 +267,24 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.settle(lambda: connection.session_gate.state == OPEN)
         self.assertEqual(connection.openai_service.opens, 2)
         self.assertEqual(connection.session_gate.generation, 2)
+
+    async def test_after_a_background_conversation_only_a_wake_reopens(self):
+        """Rig 2026-10-16: the follow-up window streamed the same room talk
+        into a fresh session 3 s after a background-conversation close."""
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        await connection.openai_service.on_background_conversation()
+        self.assertEqual(connection.session_gate.state, CLOSED)
+        self.assertEqual(connection.openai_service.closes, ["background conversation"])
+        await asyncio.sleep(0.6)  # past the mic-open gap
+        for _ in range(20):
+            await connection.serializer.deserialize(b"\x00\x00" * 160)
+        await asyncio.sleep(0.05)
+        self.assertEqual(connection.session_gate.state, CLOSED, "mic audio alone reopens nothing")
+        await self.send(connection, {"type": "wake", "turn": "k2", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        self.assertEqual(connection.openai_service.opens, 2)
 
     async def test_a_self_wake_during_an_announcement_opens_nothing(self):
         """The two repairs compose: an echo wake buys no session either."""
