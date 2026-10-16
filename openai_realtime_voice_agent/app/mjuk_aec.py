@@ -13,6 +13,8 @@ After the canceller comes a software AGC (same flag), because the XMOS AGC had t
 level): a slow gain, only ever UP (max SOFT_AGC_DB, default 24, 0 = off), that moves speech toward -20 dBFS and holds still
 on anything near the noise floor, so distant speech is not lost under the -36 dBFS floor of the echo net.
 
+SOFT_AEC_MOTOR=linjar runs app/linjar_aec.py instead of AEC3 (no library needed).
+
 Safe by construction: if the library is missing or anything throws, the mic goes on untouched.
 """
 import logging
@@ -90,7 +92,13 @@ class MjukAec:
     def __init__(self, klocka: Callable[[], float] = time.monotonic) -> None:
         self.klocka = klocka
         self.ap = None
-        if soft_aec_paa():
+        if soft_aec_paa() and os.environ.get("SOFT_AEC_MOTOR", "aec3") == "linjar":
+            # The long linear filter with a double-talk guard and a mild suppressor instead of AEC3 (app/linjar_aec.py):
+            # AEC3's suppressor takes the words of a person speaking over his echo. SOFT_AEC_GOLV_DB: how far it may dim.
+            from app.linjar_aec import LinjarAec
+
+            self.ap = LinjarAec(golv_db=float(os.environ.get("SOFT_AEC_GOLV_DB", "-24")))
+        elif soft_aec_paa():
             from aec_audio_processing import AudioProcessor
 
             # SOFT_AEC_NS=0..3: WebRTC's noise suppressor after the canceller. Offline on the replies of 2026-10-13 (one
