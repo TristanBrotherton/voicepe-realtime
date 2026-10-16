@@ -126,13 +126,26 @@ _PA = re.compile(r"\b(tänd\w*|slå på|sätt på|starta)\b|\bpå\b", re.I)
 # ponytail: the first word decides; "Vad bra, tänd lampan" reads as a question (refused, he says it again).
 _FRAGA = re.compile(r"^\W*(är|vad|vilka|vilken|vilket|hur|finns|lyser|står|när|var|varför|har)\b", re.I)
 _BON = re.compile(r"^\W*((kan|kunde|skulle|vill|får|orkar)\s+(du|ni)|(är|var)\s+(du\s+|ni\s+)?snäll)\b", re.I)
+# B on #91: a question can also start without a question word. It ends in '?', names a state ('tänt', 'lyser',
+# 'brinner', 'på') and has no order verb ('tänd', 'släck'): 'Tänt i kontoret?', 'Brinner det i köket?',
+# 'Funkar lampan?'. And "Kan du säga om..." asks to be told, not to switch.
+_TILLSTAND = re.compile(r"\b(tänt|tända|tänd|släckt|släckta|lyser|brinner|på|av|igång|funkar|fungerar)\b", re.I)
+_BEFALL = re.compile(r"\b(tänd|tända|släck|släcka|slå\s+(på|av)|sätt\s+(på|av)|stäng\s+av|stänga\s+av)\b", re.I)
+_SAG_OM = re.compile(r"^\W*(kan|kunde|skulle)\s+(du|ni)\s+(säga|berätta|kolla|se(?!\s+till)|titta)\b", re.I)
 # The tools that switch something; a question may read with every other tool.
 SKRIV_VERKTYG = frozenset({"HassTurnOn", "HassTurnOff", "HassLightSet", "styr"})
 
 
 def ar_fraga(text: Optional[str]) -> bool:
-    t = text or ""
-    return bool(_FRAGA.search(t)) and not _BON.search(t)
+    t = (text or "").strip()
+    if _SAG_OM.search(t):
+        return True
+    if _FRAGA.search(t) and not _BON.search(t):
+        return True
+    # 'tänd' alone ("Är lampan tänd?") is a state only in a sentence that is a question by its first word (above).
+    tillstand = [m.group(1).lower() for m in _TILLSTAND.finditer(t)]
+    return (t.endswith("?") and any(w != "tänd" for w in tillstand) and not _BEFALL.search(t)
+            and not _BON.search(t))  # "Kan du se till att det är tänt?" asks for it to be so
 
 
 def fraga_inte_order(turtext: Optional[str], namn: str, argument: Optional[dict]) -> Optional[str]:

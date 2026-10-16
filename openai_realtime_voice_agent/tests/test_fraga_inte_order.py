@@ -12,14 +12,18 @@ from tests.test_ha_misslyckades import _call, _service
 
 
 @pytest.mark.parametrize("text", ["Är det tänt i kontoret?", "Vilka lampor är tända?", "Är lampan på i köket?",
-                                  "Lyser det i hallen?", "Har du tänt i köket?", "Hur många lampor är på?"])
+                                  "Lyser det i hallen?", "Har du tänt i köket?", "Hur många lampor är på?",
+                                  # B on #91: no question word first
+                                  "Kan du säga om det är tänt i kontoret?", "Tänt i kontoret?", "Brinner det i köket?",
+                                  "Funkar lampan?", "Lampan på i köket?", "Släckt i hallen?"])
 def test_en_fraga_om_laget_ar_ingen_order(text):
     assert bana0.ar_fraga(text)
     assert bana0.verb_ur(text) is None
 
 
 @pytest.mark.parametrize("text", ["Tänd det i kontoret", "Kan du tända lampan?", "Skulle du kunna släcka köket?",
-                                  "Var snäll och tänd i hallen", "Är du snäll och släcker", "släck kontoret"])
+                                  "Var snäll och tänd i hallen", "Är du snäll och släcker", "släck kontoret",
+                                  "Tänd lampan?", "Kan du tända i köket?", "Släck i hallen, tack?", "Slå på lampan i köket?"])
 def test_en_order_ar_ingen_fraga(text):
     assert not bana0.ar_fraga(text)
     assert bana0.verb_ur(text) is not None
@@ -68,3 +72,8 @@ async def test_sessionen_far_fragevakten_med_det_bana0_horde():
     connection.bana0_heard = "Är det tänt i kontoret?"
     assert service.fragevakt() == "Är det tänt i kontoret?"
     assert bana0.fraga_inte_order(service.fragevakt(), "intent__HassTurnOn", {}) is not None
+
+
+def test_en_begaran_om_ett_lage_ar_ingen_fraga():
+    assert not bana0.ar_fraga("Kan du se till att det är tänt i köket?")
+    assert bana0.fraga_inte_order("Kan du se till att det är tänt i köket?", "intent__HassTurnOn", {}) is None
