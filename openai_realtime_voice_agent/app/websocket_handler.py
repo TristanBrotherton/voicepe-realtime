@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any, Optional, Callable, Awaitable, Dict
@@ -512,6 +513,13 @@ class ConnectionRecovery(FrameProcessor):
                 logger.debug(f"turn-error observer failed: {e!r}")
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
 class WebSocketHandler:
     """Handles WebSocket transport initialization, pipeline building, and event management."""
 
@@ -646,7 +654,14 @@ class WebSocketHandler:
             if speaker is not None:
                 await speaker(connection, reason)
 
+        discussion_hello = [False]
+
         def _charged(charge) -> None:
+            if discussion_hello[0]:
+                # The discussion ended with the session: the device's
+                # follow-up window goes back to the operator's.
+                discussion_hello[0] = False
+                self._spawn(connection.send_json(self.hello_payload()))
             # Publish on every close, so the session-minute total a spend
             # watchdog reads is never more than one session stale.
             try:
@@ -690,6 +705,18 @@ class WebSocketHandler:
                 gate.wake_required = True
                 return await gate.close("background conversation")
             service.on_background_conversation = _close_background
+        if hasattr(service, "on_discussion"):
+            def _discussion():
+                # Discussions by voice: longer session bounds (within the
+                # daily caps) and a longer device follow-up window, so the owner
+                # can think between answers without a wake word.
+                if gate.begin_discussion(_env_float("DISCUSSION_MAX_SESSION_S", 900.0),
+                                         _env_float("DISCUSSION_QUIET_S", 30.0)):
+                    discussion_hello[0] = True
+                    follow_up = int(_env_float("DISCUSSION_FOLLOW_UP_MS", 10000.0))
+                    self._spawn(connection.send_json(
+                        dict(self.hello_payload(), follow_up_ms=max(self.follow_up_ms, follow_up))))
+            service.on_discussion = _discussion
         logger.info(
             f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
             f"idle {policy.idle_s:.0f}s, follow-up {policy.followup_s:.0f}s, "

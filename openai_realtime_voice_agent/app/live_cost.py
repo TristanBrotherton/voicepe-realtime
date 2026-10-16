@@ -162,6 +162,22 @@ class LiveSpendLedger:
             return None
         return owner
 
+    def extend(self, owner, maximum_seconds):
+        """Grow an open session's reservation toward ``maximum_seconds``, never
+        past what the daily budget still allows. Returns the reserved seconds."""
+        if owner not in self._active or self.persistence_error:
+            return self._active.get(owner, {}).get("reserved", 0.)
+        current = self._active[owner]["reserved"]
+        remaining = self.remaining_seconds()
+        want = float(maximum_seconds)
+        if remaining is not None:
+            others = sum(v["reserved"] for k, v in self._active.items() if k != owner)
+            want = min(want, max(0., remaining - others))
+        if want > current:
+            self._active[owner]["reserved"] = want
+            self._save()
+        return self._active[owner]["reserved"]
+
     def reservation_seconds(self, owner):
         return self._active[owner]["reserved"]
 

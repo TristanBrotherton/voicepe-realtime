@@ -25,6 +25,9 @@ from app.openclaw_tool import (
     send_task_message,
     get_recall_tool_definition,
     get_text_delivery_tool_definition,
+    discussions_enabled,
+    get_discussion_tool_definitions,
+    register_discussion_tools,
     openclaw_url,
     register_openclaw_tool,
 )
@@ -1448,6 +1451,8 @@ class Application:
             all_tools.append(get_recall_tool_definition())
             # "Text would be great" after an explanation's acknowledgement.
             all_tools.append(get_text_delivery_tool_definition())
+            if discussions_enabled():
+                all_tools.extend(get_discussion_tool_definitions())
 
         # Get MCP tool definitions if available
         mcp_tools_schema = None
@@ -1655,7 +1660,8 @@ class Application:
         add-on routes and runs every request, every tool stays offered."""
         import time as _t
         from app.live_service import OpenAILiveLLMService
-        from app.live_router import ROUTER_BACKEND_INSTRUCTIONS, BackendRouter, TurnRouter
+        from app.live_router import (
+            DISCUSSION_BACKEND_RULE, ROUTER_BACKEND_INSTRUCTIONS, BackendRouter, TurnRouter)
         from app.live_cost import USD_PER_SESSION_SECOND, SessionCharge
 
         ledger = getattr(self.websocket_handler, "live_spend_ledger", None)
@@ -1678,6 +1684,7 @@ class Application:
             self.openai_api_key,
             model=self.live_config.backend_model,
             instructions=ROUTER_BACKEND_INSTRUCTIONS
+            + (DISCUSSION_BACKEND_RULE if discussions_enabled() and openclaw_url() else "")
             + (f"\n\nOperator instructions:\n{custom}" if custom else ""),
             tools=all_tools,
             service_tier=self.live_config.service_tier or "priority",
@@ -1840,6 +1847,9 @@ class Application:
         if openclaw_url():
             register_openclaw_tool(service, connection.device_id)
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+            if discussions_enabled():
+                register_discussion_tools(service)
+                logger.info("✅ Registered discussion tools (discussions_enabled)")
 
     def _create_confirm_handler(self, service):
         gate = self.action_gate

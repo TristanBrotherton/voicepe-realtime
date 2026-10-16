@@ -663,3 +663,52 @@ class TestPolicySanity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiscussionBounds(GateCase):
+    """Discussions by voice: an open discussion runs on longer bounds, inside
+    the daily caps, until the session closes."""
+
+    def policy(self):
+        return LiveSessionPolicy(idle_s=10.0, followup_s=8.0, max_silent_s=45.0,
+                                 max_session_s=90.0, tick_s=0.005)
+
+    async def test_a_discussion_outlives_the_normal_maximum(self):
+        gate = self.make(policy=self.policy(), max_session_minutes_per_day=60.0, max_usd_per_day=10.0)
+        await gate.open("wake")
+        self.assertTrue(gate.begin_discussion(900.0, 30.0))
+        self.service.response_active = True
+        for _ in range(30):  # 150 s, past the normal 90 s
+            gate.note_user_audio()
+            gate.note_audible_output()
+            await self.advance(5)
+        self.assertEqual(gate.state, OPEN, "the discussion bound applies, not 90 s")
+        self.assertEqual(gate.policy.idle_s, 30.0)
+
+    async def test_the_daily_cap_still_bounds_a_discussion(self):
+        gate = self.make(policy=self.policy(), max_session_minutes_per_day=3.0, max_usd_per_day=10.0)
+        await gate.open("wake")
+        gate.begin_discussion(900.0, 30.0)
+        self.assertLessEqual(gate.policy.max_session_s, 180.0)
+        self.service.response_active = True
+        for _ in range(60):
+            gate.note_user_audio()
+            gate.note_audible_output()
+            await self.advance(5)
+            if gate.state == CLOSED:
+                break
+        await self._settle(lambda: gate.state == CLOSED)
+        self.assertLessEqual(gate.last_charge.seconds, 180.0)
+
+    async def test_the_operators_policy_returns_at_close(self):
+        gate = self.make(policy=self.policy(), max_session_minutes_per_day=60.0, max_usd_per_day=10.0)
+        await gate.open("wake")
+        gate.begin_discussion(900.0, 30.0)
+        await gate.close("test")
+        self.assertEqual(gate.policy.max_session_s, 90.0)
+        self.assertEqual(gate.policy.idle_s, 10.0)
+        self.assertFalse(gate.discussion_active)
+
+    async def test_no_discussion_without_an_open_session(self):
+        gate = self.make(policy=self.policy())
+        self.assertFalse(gate.begin_discussion(900.0, 30.0))

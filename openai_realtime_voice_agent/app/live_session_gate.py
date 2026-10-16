@@ -170,6 +170,9 @@ class LiveSessionGate:
         # Set when a session closed on background conversation: only a real
         # wake opens the next one, not the follow-up window's mic backstop.
         self.wake_required = False
+        # A discussion (discussions by voice) runs on longer bounds until the
+        # session closes; the operator's policy is restored then.
+        self._base_policy: Optional[LiveSessionPolicy] = None
         # Deadlines, all monotonic. None while closed.
         self._idle_deadline: Optional[float] = None
         self._silent_deadline: Optional[float] = None
@@ -516,6 +519,30 @@ class LiveSessionGate:
     # closing
     # ------------------------------------------------------------------
 
+    @property
+    def discussion_active(self) -> bool:
+        return self._base_policy is not None
+
+    def begin_discussion(self, max_session_s: float, quiet_s: float) -> bool:
+        """Longer bounds for a discussion in the open session: up to
+        ``max_session_s`` from the open, quiet windows of ``quiet_s``. The spend
+        reservation grows first and the daily caps still bound it; the policy
+        returns to the operator's at close."""
+        if self._state != OPEN or self._reservation is None:
+            return False
+        base = self._base_policy or self.policy
+        reserved = self.ledger.extend(self._reservation, max_session_s + 15. + base.tick_s)
+        self._reserved_seconds = reserved
+        allowed = max(base.max_session_s, min(float(max_session_s), reserved - 15. - base.tick_s))
+        quiet = max(base.idle_s, float(quiet_s))
+        self._base_policy = base
+        self.policy = replace(
+            base, max_session_s=allowed, idle_s=quiet, followup_s=max(base.followup_s, quiet),
+            max_silent_s=max(base.max_silent_s, quiet * 2))
+        logger.info(f"🗂️ discussion: session bounds raised to max {allowed:.0f}s, quiet {quiet:.0f}s "
+                    f"(reserved {reserved:.0f}s within the daily caps)")
+        return True
+
     async def close(self, reason: str, *, generation: Optional[int] = None) -> bool:
         """Close the session this gate owns. Idempotent and generation-fenced."""
         if generation is not None and generation != self.generation:
@@ -532,6 +559,8 @@ class LiveSessionGate:
         if self._state == CLOSED:
             return False
         self._state = CLOSED
+        if self._base_policy is not None:
+            self.policy, self._base_policy = self._base_policy, None
         self._turn_in_flight = False
         self._idle_deadline = None
         self._silent_deadline = None

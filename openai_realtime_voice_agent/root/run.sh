@@ -137,7 +137,8 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
               live_idle_close_s live_followup_s live_rewake_grace_s live_max_silent_s live_max_session_s \
               live_max_session_minutes_per_day live_max_usd_per_day \
               experiment_mode experiment_overrides \
-              openclaw_callback_url live_task_promote_s live_task_hold_session_s live_task_delivery live_task_deferred_delivery live_task_quiet_hours live_task_imessage_to live_task_imessage_after_idle_s live_task_progress_every_s live_task_progress_max live_task_result_ttl_s live_task_deferred_max_s; do
+              openclaw_callback_url live_task_promote_s live_task_hold_session_s live_task_delivery live_task_deferred_delivery live_task_quiet_hours live_task_imessage_to live_task_imessage_after_idle_s live_task_progress_every_s live_task_progress_max live_task_result_ttl_s live_task_deferred_max_s \
+              discussions_enabled discussion_max_session_s discussion_quiet_s discussion_follow_up_ms; do
     if bashio::config.has_value "${option}"; then
         value=$(bashio::config "${option}")
         case "${option}" in
@@ -173,6 +174,11 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
             openclaw_callback_url) export OPENCLAW_CALLBACK_URL="${value}" ;;
             live_task_promote_s) export LIVE_TASK_PROMOTE_S="${value}" ;;
             live_task_hold_session_s) export LIVE_TASK_HOLD_SESSION_S="${value}" ;;
+            # Discussions by voice (off by default; needs the agent bridge).
+            discussions_enabled) export DISCUSSIONS_ENABLED="${value}" ;;
+            discussion_max_session_s) export DISCUSSION_MAX_SESSION_S="${value}" ;;
+            discussion_quiet_s) export DISCUSSION_QUIET_S="${value}" ;;
+            discussion_follow_up_ms) export DISCUSSION_FOLLOW_UP_MS="${value}" ;;
             live_task_delivery) export LIVE_TASK_DELIVERY="${value}" ;;
             live_task_deferred_delivery) export LIVE_TASK_DEFERRED_DELIVERY="${value}" ;;
             live_task_quiet_hours) export LIVE_TASK_QUIET_HOURS="${value}" ;;

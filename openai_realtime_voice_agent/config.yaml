@@ -285,6 +285,10 @@ schema:
   openclaw_callback_url: str?
   live_task_promote_s: "float(1,60)?"
   live_task_hold_session_s: "float(0,300)?"
+  discussions_enabled: bool?
+  discussion_max_session_s: "float(90,1800)?"
+  discussion_quiet_s: "float(5,120)?"
+  discussion_follow_up_ms: "int(2000,30000)?"
   live_task_delivery: str?
   live_task_deferred_delivery: str?
   live_task_quiet_hours: str?

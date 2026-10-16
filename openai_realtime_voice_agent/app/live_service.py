@@ -957,6 +957,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         #   on_background_conversation() -> awaitable: close the session silently
         #   (set by websocket_handler to the gate's close)
         self.on_background_conversation: Optional[Callable[[], Awaitable[Any]]] = None
+        #   on_discussion() -> None: a discussion opened (the gate raises its bounds)
+        self.on_discussion: Optional[Callable[[], Any]] = None
+        self._discussion_active = False
         self._merged_fragments = 0
         self._background_closing = False
         # Times of recent utterances with no request; kept across sessions.
@@ -1141,6 +1144,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._routing_suspended = False
         self._merged_fragments = 0
         self._background_closing = False
+        self._discussion_active = False
         if self.router is not None:
             self._gate_reset("idle")
             self._gate_idle_dropped = 0
@@ -2730,9 +2734,23 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         return self._close_for_background(
             f"{self._merged_fragments + 1} fragments, {chars} characters with nothing answered")
 
+    def on_discussion_started(self) -> None:
+        """A discussion tool loaded an item (discussions by voice): the owner is
+        talking to the device at length on purpose, so the room-talk closes
+        stand down for this session and the gate gets discussion bounds."""
+        self._discussion_active = True
+        self._not_caught.clear()
+        if self.on_discussion is not None:
+            try:
+                self.on_discussion()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(f"discussion observer failed: {e!r}")
+
     def _close_for_background(self, why: str) -> bool:
         """Close the session silently: what it hears is a conversation in the
         room, not a request. Lengths and counts only, never the words."""
+        if self._discussion_active:
+            return False
         if self._background_closing:
             return True
         if self.on_background_conversation is None:

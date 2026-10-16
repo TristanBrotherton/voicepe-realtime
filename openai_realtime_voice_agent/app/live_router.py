@@ -93,6 +93,10 @@ Answer formats:
 - Needs no tool (greeting, small talk, general knowledge you can answer without looking anything up): reply exactly CHAT.
 - Otherwise: one or two short sentences for speech stating the verified result. No lists, URLs or markdown. Use ordinary names, never entity ids."""
 
+# Appended to the backend instructions when discussions are enabled.
+DISCUSSION_BACKEND_RULE = """
+Discussions: list_open_discussions, open_discussion and propose_decision talk through the owner's open project items. Once open_discussion has been called in this conversation, what the user says next is part of that discussion: answer it in one or two spoken sentences from the item (call open_discussion again to get its details back); never reply NO_REQUEST or CHAT to it. Say only an item's topic and question unless the user asks for the details or the recommendation. Before propose_decision, read the decision back in one sentence and ask whether to record it; call propose_decision only after the user's clear yes, then say a text is coming to confirm it with a thumbs-up."""
+
 # Home Assistant built-in intents the router may run locally, mapped to the
 # bare MCP tool name that performs them. Anything else goes to the backend.
 LOCAL_INTENTS = {

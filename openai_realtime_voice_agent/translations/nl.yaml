@@ -339,6 +339,22 @@ configuration:
     name: "🧺 Lange taken · Sessiegrens"
     description: >-
       Optioneel (standaard 90 s). Harde grens voor hoe lang een trage opzoeking de open (betaalde) sessie mag vasthouden; daarna sluit de sessie gewoon en komt het resultaat later.
+  discussions_enabled:
+    name: "🗂️ Discussies · Aan"
+    description: >-
+      Optioneel (standaard uit). Laat de eigenaar de open punten van de agent-bridge horen en bespreken ("wat heeft mij nodig?"). Een besluit wordt teruggelezen, door de bridge klaargezet en telt pas na bevestiging per bericht.
+  discussion_max_session_s:
+    name: "🗂️ Discussies · Sessiegrens"
+    description: >-
+      Optioneel (standaard 900 s). Hoe lang een sessie mag duren zodra een discussie open is; de daglimieten blijven gelden.
+  discussion_quiet_s:
+    name: "🗂️ Discussies · Stiltevenster"
+    description: >-
+      Optioneel (standaard 30 s). Hoe lang de sessie tijdens een discussie op de volgende woorden wacht.
+  discussion_follow_up_ms:
+    name: "🗂️ Discussies · Nalisteren apparaat"
+    description: >-
+      Optioneel (standaard 10000 ms). Hoe lang het apparaat na elk antwoord blijft luisteren tijdens een discussie.
   live_task_delivery:
     name: "🧺 Lange taken · Resultaatroutes"
     description: >-

@@ -477,6 +477,22 @@ configuration:
     name: "🧺 Long tasks · Session hold bound"
     description: >-
       Optional (default 90 s). Hard bound on how long a slow lookup may keep the open (billed) session; past it the session closes normally and the result arrives later.
+  discussions_enabled:
+    name: "🗂️ Discussions · Enabled"
+    description: >-
+      Optional (default off). Lets the owner hear and talk through the open items their agent bridge tracks ("what needs me?"). A decision is read back, staged by the bridge, and only counts once the owner confirms it by text.
+  discussion_max_session_s:
+    name: "🗂️ Discussions · Session bound"
+    description: >-
+      Optional (default 900 s). How long a session may last once a discussion is open; the daily caps still apply.
+  discussion_quiet_s:
+    name: "🗂️ Discussions · Quiet window"
+    description: >-
+      Optional (default 30 s). How long the session waits for the next words during a discussion.
+  discussion_follow_up_ms:
+    name: "🗂️ Discussions · Device follow-up"
+    description: >-
+      Optional (default 10000 ms). How long the device keeps listening after each reply during a discussion.
   live_task_delivery:
     name: "🧺 Long tasks · Result routes"
     description: >-

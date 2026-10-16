@@ -234,6 +234,23 @@ The integration is agent-agnostic — any agent behind a small bridge works. Ful
 contracts and examples:
 [Agent Integration](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/agent-integration.md).
 
+### Discussions by voice (optional, off by default)
+
+With `discussions_enabled` and an agent bridge that supports it, the owner can
+ask "what needs me?" and talk an open item through: the bridge keeps the items
+(questions, decisions, blockers its projects are waiting on), and the add-on
+offers three generic tools, `list_open_discussions`, `open_discussion` and
+`propose_decision`. The device is a room speaker, so only an item's topic and
+question are said unless the owner asks for the details, and a decision is
+never final from voice: the voice reads it back, stages it after a clear yes,
+and the bridge texts the owner to confirm. While a discussion is open the
+session may run up to `discussion_max_session_s` (900 s) with a
+`discussion_quiet_s` (30 s) quiet window, and the device listens for
+`discussion_follow_up_ms` (10 s) after each reply; the daily caps still apply.
+A 10-minute discussion costs about $0.50 of voice time plus backend calls. The
+bridge contract is `{"discuss": {"action": "list" | "brief" | "stage", ...}}`
+on the agent URL.
+
 ## 10. False-wake flagging & HA sensors
 
 Flag a false trigger by **double-pressing the center button**, pressing it

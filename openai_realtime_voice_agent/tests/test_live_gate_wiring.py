@@ -53,6 +53,7 @@ class FakeLiveService(FrameProcessor):
         self.on_backend_activity = None
         self.on_reply_finished = None
         self.on_background_conversation = None
+        self.on_discussion = None
 
         class Socket:
             async def ping(self_inner):
@@ -285,6 +286,33 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.send(connection, {"type": "wake", "turn": "k2", "src": "wake_word"})
         await self.settle(lambda: connection.session_gate.state == OPEN)
         self.assertEqual(connection.openai_service.opens, 2)
+
+    async def test_a_discussion_raises_the_bounds_and_the_device_follow_up(self):
+        """Discussions by voice: the gate runs on discussion bounds and the
+        device keeps listening longer after each reply, until the close."""
+        connection = self.build(policy=LiveSessionPolicy(
+            idle_s=10.0, followup_s=8.0, max_silent_s=45.0, max_session_s=90.0, tick_s=0.01),
+            ledger=LiveSpendLedger(path=None, max_session_minutes_per_day=60.0, max_usd_per_day=10.0))
+        sent = []
+
+        async def capture(obj):
+            sent.append(obj)
+            return True
+
+        connection.send_json = capture
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        connection.openai_service.on_discussion()
+        await asyncio.sleep(0.02)
+        self.assertTrue(connection.session_gate.discussion_active)
+        self.assertGreater(connection.session_gate.policy.max_session_s, 90.0)
+        hellos = [m for m in sent if m.get("type") == "hello"]
+        self.assertEqual(hellos[-1]["follow_up_ms"], 10000)
+        await connection.session_gate.close("test")
+        await asyncio.sleep(0.02)
+        hellos = [m for m in sent if m.get("type") == "hello"]
+        self.assertEqual(hellos[-1]["follow_up_ms"], self.handler.follow_up_ms, "restored at close")
+        self.assertEqual(connection.session_gate.policy.max_session_s, 90.0)
 
     async def test_a_self_wake_during_an_announcement_opens_nothing(self):
         """The two repairs compose: an echo wake buys no session either."""

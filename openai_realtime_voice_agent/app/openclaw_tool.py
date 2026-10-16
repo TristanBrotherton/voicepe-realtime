@@ -540,3 +540,124 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
     llm.register_function("ask_openclaw", _ask)
     llm.register_function("recall_memory", _recall)
     llm.register_function("deliver_by_text", _text)
+
+
+# ---------------------------------------------------------------------------
+# Discussions by voice (option `discussions_enabled`, off by default)
+# ---------------------------------------------------------------------------
+# Open items an owner's project sessions are waiting on (questions, decisions,
+# blockers) are kept by the agent bridge. These three tools only carry generic
+# words: every item's text comes from the bridge at runtime. The device is a
+# room speaker, so a decision is never final from voice: it is read back, then
+# staged, and the owner confirms it by text.
+DISCUSS_TIMEOUT_S = 20
+
+
+def discussions_enabled() -> bool:
+    return os.environ.get("DISCUSSIONS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_discussion_tool_definitions() -> list:
+    return [
+        {
+            "type": "function",
+            "name": "list_open_discussions",
+            "description": (
+                "The open items the owner's projects are waiting on: questions, decisions "
+                "and blockers, newest first. Use for 'what needs me?', 'what did my "
+                "projects send me?'. Say only each item's spoken name, topic and "
+                "question, briefly; never read anything else aloud from the list."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
+            "type": "function",
+            "name": "open_discussion",
+            "description": (
+                "Load one open item to talk it through, by its spoken name (for example "
+                "'Project 4') or a few words of its topic. Say the topic and the question, "
+                "then discuss it with the owner. The options are fine to say. Read the "
+                "'details' (recommendation and context) aloud ONLY when the owner asks for "
+                "the details or the recommendation; call this again to get them back."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Spoken name or topic words"}},
+                "required": ["query"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "propose_decision",
+            "description": (
+                "Record the owner's decision on an open item, as a PROPOSAL only. Call it "
+                "ONLY after you have read the decision back in one sentence ('So the "
+                "decision is …; shall I record that?') and the owner clearly said yes. "
+                "Never call it for anyone else's words or on a guess. It is not final: "
+                "tell the owner a text is coming and the decision counts once they "
+                "confirm it there with a thumbs-up."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string", "description": "The item's id from open_discussion"},
+                    "decision": {"type": "string", "description": "The decision, one or two plain sentences"},
+                },
+                "required": ["item_id", "decision"],
+            },
+        },
+    ]
+
+
+def register_discussion_tools(llm) -> None:
+    async def _call(action: str, **fields) -> dict:
+        async with httpx.AsyncClient(timeout=DISCUSS_TIMEOUT_S) as client:
+            r = await client.post(openclaw_url(), json={"discuss": {"action": action, **fields}})
+            if r.status_code == 403:
+                return {"error": "Discussions are not switched on for this assistant."}
+            r.raise_for_status()
+            return r.json() or {}
+
+    def _started() -> None:
+        hook = getattr(llm, "on_discussion_started", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(f"discussion hook failed: {e!r}")
+
+    async def _run(params, action: str, **fields) -> None:
+        try:
+            out = await _call(action, **fields)
+        except Exception as e:
+            logger.warning(f"⚠️ discussion {action} failed: {e!r}")
+            await params.result_callback({"error": "The project list could not be reached right now."})
+            return
+        # Counts and outcomes only; never the items' words.
+        logger.info(f"🗂️ discussion {action}: " + ", ".join(
+            f"{k}={out[k]}" for k in ("count", "found", "staged") if k in out))
+        if action in ("list", "brief") and not out.get("error"):
+            _started()
+        await params.result_callback(out)
+
+    async def _list(params) -> None:
+        await _run(params, "list")
+
+    async def _brief(params) -> None:
+        query = str((params.arguments or {}).get("query") or "").strip()
+        if not query:
+            await params.result_callback({"found": False, "error": "say which item"})
+            return
+        await _run(params, "brief", query=query[:120])
+
+    async def _propose(params) -> None:
+        args = params.arguments or {}
+        item, decision = str(args.get("item_id") or "").strip(), str(args.get("decision") or "").strip()
+        if not item or not decision:
+            await params.result_callback({"staged": False, "error": "item and decision required"})
+            return
+        await _run(params, "stage", item=item[:80], decision=decision[:600])
+
+    llm.register_function("list_open_discussions", _list)
+    llm.register_function("open_discussion", _brief)
+    llm.register_function("propose_decision", _propose)
