@@ -55,6 +55,27 @@ class CutLine(unittest.TestCase):
                          fx.samples_of(pcm[ms(40):ms(840)])[100:110].tolist(),
                          "the kept bytes are the line's own audio")
 
+    def test_a_transcript_clock_ahead_of_the_audio_does_not_cut_the_first_word(self):
+        """2026-10-16: cached "Sure, one moment." held only "...ment" (heard as
+        "st"): the transcript said the line began 400 ms into its own speech.
+        The cut walks back to the speech's onset."""
+        # 0-500 quiet, 500-1700 the line, then quiet; transcript claims 900 ms.
+        timeline = fx.silence(500) + fx.tone(1200, freq=330) + fx.silence(600)
+        pcm = cut_line(timeline, [transcript("Sure, one moment.", 900, 1500)], "Sure, one moment.")
+        self.assertIsNotNone(pcm)
+        self.assertGreaterEqual(len(pcm), ms(1200), "the whole line, from its onset")
+        self.assertEqual(fx.samples_of(timeline[ms(500):ms(520)])[100:110].tolist(),
+                         fx.samples_of(pcm[ms(80):ms(100)])[100:110].tolist(),
+                         "the cut starts at the onset's block, plus the lead (80 ms before the speech)")
+
+    def test_the_onset_walk_stops_at_a_quiet_gap(self):
+        """An interjection before a pause stays out even when the start is walked back."""
+        timeline = fx.tone(400) + fx.silence(400) + fx.tone(800, freq=330) + fx.silence(600)
+        pcm = cut_line(timeline, [transcript("Hmm.", 0, 200), transcript(" One moment.", 1000, 1400)],
+                       "One moment.")
+        self.assertIsNotNone(pcm)
+        self.assertLess(len(pcm), ms(400 + 800 + 600))
+
     def test_the_cut_runs_past_the_last_block_until_the_output_is_quiet(self):
         # Transcript says the line ends at 600 ms; the voice keeps going to 1100.
         timeline = fx.tone(1100) + fx.silence(800)

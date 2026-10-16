@@ -116,6 +116,14 @@ TAIL_MAX_MS = 1500
 BLOCK_MS = 50
 MIN_AUDIBLE_MS = 150
 FADE_MS = 10
+# The transcript's session clock and the received-audio timeline drift apart
+# (the server does not stream every quiet stretch), so a cut placed by the
+# transcript alone can start inside the first word: cached "Sure, one
+# moment." held only "...ment", heard as "st" (2026-10-16). The start is
+# walked back to the onset of the speech it lands in: back while audible,
+# until ONSET_QUIET_MS of quiet, at most ONSET_MAX_MS.
+ONSET_QUIET_MS = 100
+ONSET_MAX_MS = 1500
 
 SILENCE_CHUNK_MS = 100
 
@@ -165,6 +173,27 @@ def verbatim_suffix(transcripts: List[Tuple[str, object, object]], line: str) ->
     return None
 
 
+def _speech_onset(timeline: bytes, lo: int) -> int:
+    """``lo`` moved back to where the speech it lands in begins (see ONSET_*)."""
+    block = _ms_to_bytes(BLOCK_MS)
+    lo = max(0, min(lo, len(timeline)))
+    lo -= lo % 2
+    floor = max(0, lo - _ms_to_bytes(ONSET_MAX_MS))
+    quiet_ms, cut = 0.0, lo
+    pos = lo
+    while pos - block >= floor:
+        stats = pcm16_stats(timeline[pos - block:pos])
+        pos -= block
+        if stats.peak > AUDIBLE_PEAK:
+            quiet_ms = 0.0
+            cut = pos
+        else:
+            quiet_ms += stats.duration_ms
+            if quiet_ms >= ONSET_QUIET_MS:
+                break
+    return max(0, cut - _ms_to_bytes(LEAD_MS)) if cut < lo else lo
+
+
 def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
              line: str) -> Optional[bytes]:
     """The PCM of ``line`` inside a session's output timeline, or None.
@@ -185,6 +214,7 @@ def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
     span = (float(min(starts)), float(max(ends)))
     start_ms, end_ms = span
     lo = _ms_to_bytes(start_ms - LEAD_MS)
+    lo = _speech_onset(timeline, lo)
     hi = _ms_to_bytes(end_ms)
     quiet_ms = 0.0
     block = _ms_to_bytes(BLOCK_MS)
