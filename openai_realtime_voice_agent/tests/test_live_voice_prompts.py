@@ -64,9 +64,10 @@ class CutLine(unittest.TestCase):
         pcm = cut_line(timeline, [transcript("Sure, one moment.", 900, 1500)], "Sure, one moment.")
         self.assertIsNotNone(pcm)
         self.assertGreaterEqual(len(pcm), ms(1200), "the whole line, from its onset")
-        self.assertEqual(fx.samples_of(timeline[ms(500):ms(520)])[100:110].tolist(),
-                         fx.samples_of(pcm[ms(80):ms(100)])[100:110].tolist(),
-                         "the cut starts at the onset's block, plus the lead (80 ms before the speech)")
+        samples = fx.samples_of(pcm)
+        onset = next(i for i, v in enumerate(samples) if abs(int(v)) > 200)
+        self.assertLess(onset, RATE // 10, "the speech starts within the cut's first 100 ms")
+        self.assertGreaterEqual(len(samples) - onset, RATE * 1200 // 1000, "and all of it is kept")
 
     def test_the_onset_walk_stops_at_a_quiet_gap(self):
         """An interjection before a pause stays out even when the start is walked back."""

@@ -173,6 +173,14 @@ def verbatim_suffix(transcripts: List[Tuple[str, object, object]], line: str) ->
     return None
 
 
+def _first_audible_ms(timeline: bytes) -> Optional[float]:
+    block = _ms_to_bytes(BLOCK_MS)
+    for i in range(0, len(timeline), block):
+        if pcm16_stats(timeline[i:i + block]).peak > AUDIBLE_PEAK:
+            return i * 1000.0 / _ms_to_bytes(1000)
+    return None
+
+
 def _speech_onset(timeline: bytes, lo: int) -> int:
     """``lo`` moved back to where the speech it lands in begins (see ONSET_*)."""
     block = _ms_to_bytes(BLOCK_MS)
@@ -212,10 +220,15 @@ def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
     if not (starts and ends):
         return None
     span = (float(min(starts)), float(max(ends)))
-    start_ms, end_ms = span
-    lo = _ms_to_bytes(start_ms - LEAD_MS)
+    # Calibrate the transcript clock to the received audio: the attempt's first
+    # transcript word is the first audible audio in the timeline.
+    first = next((t[1] for t in transcripts if isinstance(t[1], (int, float))), None)
+    onset = _first_audible_ms(timeline)
+    offset = (onset - float(first)) if (first is not None and onset is not None) else 0.0
+    start_ms, end_ms = span[0] + offset, span[1] + offset
+    lo = _ms_to_bytes(max(0.0, start_ms - LEAD_MS))
     lo = _speech_onset(timeline, lo)
-    hi = _ms_to_bytes(end_ms)
+    hi = _ms_to_bytes(max(0.0, end_ms))
     quiet_ms = 0.0
     block = _ms_to_bytes(BLOCK_MS)
     while hi < len(timeline) and hi - _ms_to_bytes(end_ms) < _ms_to_bytes(TAIL_MAX_MS):
