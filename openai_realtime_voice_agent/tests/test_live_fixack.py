@@ -216,6 +216,33 @@ class TheClipIsTheOnlyAcknowledgement(_Fast):
             await asyncio.sleep(0.1)
             self.assertEqual(h.heard(), b"", "the held acknowledgement is dropped at the result")
 
+    async def test_the_voices_acknowledgement_during_the_clip_is_not_heard(self):
+        """Workshop 2026-10-16 (and the Kitchen's "st", then cut): the clip
+        was still being sent when the voice's own "One moment, Jordan." and
+        then the result arrived; the voice's acknowledgement was released at
+        the result and played after the clip: two acknowledgements."""
+        backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Sunny.")))
+        backend.gate.clear()
+        async with RouterHarness(self, backend) as h:
+            playing, finish = asyncio.Event(), asyncio.Event()
+
+            async def slow_clip(device_id):
+                playing.set()
+                await finish.wait()  # the clip's paced send is still going
+                return True
+
+            h.service.on_fallback_ack = slow_clip
+            await h.user_says("What's the weather tomorrow?")
+            await asyncio.wait_for(playing.wait(), 2.0)
+            h.voice_says("One moment.", ms=300)
+            await asyncio.sleep(0.2)
+            backend.gate.set()  # the result lands while the clip plays
+            await asyncio.sleep(0.2)
+            finish.set()
+            await h.wait_commentary()
+            await asyncio.sleep(0.1)
+            self.assertEqual(h.heard(), b"", "only the clip acknowledged; the voice's is dropped")
+
 
 class TheVoiceAcknowledgesOnItsOwn(unittest.TestCase):
     def _bullet(self):

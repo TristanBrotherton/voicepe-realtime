@@ -4903,6 +4903,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._filler_playing = True
         self._filler_done.clear()
         ms = self._since_speech_end_ms()
+        if self._op is op and self._gate == "pre" and not self._gate_blocked:
+            # The clip is the acknowledgement. The voice's own "One moment."
+            # arriving behind it would be a second one, and its tail got cut
+            # at the result (Kitchen, 0.18.33): the voice's pre-result speech
+            # is held like a guess from the moment the clip STARTS. Blocking
+            # only once the clip's paced send ended let a result landing
+            # during the clip release the voice's acknowledgement after it
+            # (Workshop 2026-10-16: clip, then "One moment, Jordan.").
+            self._gate_held = [chunk for _, chunk, _end in self._gate_lag] + list(self._gate_held)
+            self._gate_lag.clear()
+            self._gate_blocked = True
         try:
             played = await player(self.device_id)
         except Exception as e:
@@ -4915,14 +4926,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self.router_stats["fallback_acks"] += 1
             if self._turn_heard_mono is None:
                 self._turn_heard_mono = time.monotonic()
-            if self._op is op and self._gate == "pre" and not self._gate_blocked:
-                # The clip was the acknowledgement. The voice's own "One
-                # moment." arriving behind it would be a second one, and its
-                # tail got cut at the result (Kitchen, 0.18.33): from here the
-                # voice's pre-result speech is held like a guess.
-                self._gate_held = [chunk for _, chunk, _end in self._gate_lag] + list(self._gate_held)
-                self._gate_lag.clear()
-                self._gate_blocked = True
             if meta is not None:
                 meta.setdefault("ack_source", "fallback")
                 meta.setdefault("speech_end_to_heard_ms", ms)
