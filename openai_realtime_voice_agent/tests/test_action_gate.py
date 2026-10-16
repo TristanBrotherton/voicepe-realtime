@@ -69,6 +69,15 @@ class TestClassification(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(corrected["domain"], ["input_boolean"])
 
+    async def test_device_class_dropped_for_an_entity_without_one(self):
+        g = gate()
+        corrected = await g.reconcile_arguments(
+            "intent__HassTurnOff",
+            {"name": "Vacation Mode", "domain": ["switch"], "device_class": ["switch"]},
+        )
+        self.assertEqual(corrected["domain"], ["input_boolean"])
+        self.assertNotIn("device_class", corrected)
+
     async def test_generic_room_light_resolves_to_unique_area_main(self):
         async def room_states():
             return [

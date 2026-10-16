@@ -292,7 +292,18 @@ class ActionGate:
         supplied_classes = {
             device_class.lower() for device_class in _as_list(args.get("device_class"))
         }
-        if (supplied_classes and actual_device_class
+        if supplied_classes and not actual_device_class:
+            # An entity without a device class (an input_boolean, a plain
+            # switch) never matches a supplied one: Home Assistant answers
+            # MatchFailedReason.DEVICE_CLASS ("Turn off the test switch" with
+            # device_class "switch", Workshop 2026-10-16).
+            args.pop("device_class", None)
+            logger.info(
+                "dropped Home Assistant target device class for %s: %s (the entity has none)",
+                canonical_name,
+                sorted(supplied_classes),
+            )
+        elif (supplied_classes and actual_device_class
                 and supplied_classes != {actual_device_class.lower()}):
             args["device_class"] = [actual_device_class]
             logger.info(
