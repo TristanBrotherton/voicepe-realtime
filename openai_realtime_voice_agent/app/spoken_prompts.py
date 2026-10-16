@@ -144,9 +144,9 @@ class TTSCache:
         return bool(self.live_voice) and self.live_renderer is not None
 
     def _key(self, text: str, *, live: bool = False) -> str:
-        # "live3": Live renders before the onset fix in cut_line could miss
+        # "live4": Live renders before the onset fix in cut_line could miss
         # their first word; the new key renders every Live line again.
-        engine, voice = ("live3", self.live_voice) if live else (self.model, self.voice)
+        engine, voice = ("live4", self.live_voice) if live else (self.model, self.voice)
         return hashlib.sha256(f"{engine}|{voice}|{self.style}|{text}".encode()).hexdigest()[:32]
 
     def _path(self, key: str) -> str:

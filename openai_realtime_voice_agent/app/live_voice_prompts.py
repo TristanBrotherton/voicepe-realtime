@@ -173,9 +173,10 @@ def verbatim_suffix(transcripts: List[Tuple[str, object, object]], line: str) ->
     return None
 
 
-def _first_audible_ms(timeline: bytes) -> Optional[float]:
+def _first_audible_ms(timeline: bytes, start: int = 0) -> Optional[float]:
     block = _ms_to_bytes(BLOCK_MS)
-    for i in range(0, len(timeline), block):
+    start = max(0, start - start % 2)
+    for i in range(start, len(timeline), block):
         if pcm16_stats(timeline[i:i + block]).peak > AUDIBLE_PEAK:
             return i * 1000.0 / _ms_to_bytes(1000)
     return None
@@ -203,7 +204,7 @@ def _speech_onset(timeline: bytes, lo: int) -> int:
 
 
 def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
-             line: str) -> Optional[bytes]:
+             line: str, attempt_start: int = 0) -> Optional[bytes]:
     """The PCM of ``line`` inside a session's output timeline, or None.
 
     ``transcripts`` are this attempt's ``session.output_transcript.delta``
@@ -221,9 +222,10 @@ def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
         return None
     span = (float(min(starts)), float(max(ends)))
     # Calibrate the transcript clock to the received audio: the attempt's first
-    # transcript word is the first audible audio in the timeline.
+    # transcript word is the first audible audio of THIS attempt (from
+    # ``attempt_start``, its byte offset in the session timeline).
     first = next((t[1] for t in transcripts if isinstance(t[1], (int, float))), None)
-    onset = _first_audible_ms(timeline)
+    onset = _first_audible_ms(timeline, attempt_start)
     offset = (onset - float(first)) if (first is not None and onset is not None) else 0.0
     start_ms, end_ms = span[0] + offset, span[1] + offset
     lo = _ms_to_bytes(max(0.0, start_ms - LEAD_MS))
@@ -804,6 +806,7 @@ class LiveVoiceRenderer:
                 )
                 return None
             attempt_state = _Attempt()
+            attempt_start = len(session.timeline)
             await self._send(session, context_append("commentary", line, None,
                                                      event_id=new_event_id("line")))
             # The attempt ends at the line timeout or the session deadline;
@@ -822,7 +825,8 @@ class LiveVoiceRenderer:
                         # An error or close after the line was spoken: the
                         # verbatim line is kept, the caller sees ``lost``.
                         pcm = await asyncio.to_thread(cut_line, bytes(session.timeline),
-                                                      list(attempt_state.transcripts), line)
+                                                      list(attempt_state.transcripts), line,
+                                                      attempt_start)
                         if pcm is None:
                             raise
                         session.lines += 1
@@ -846,7 +850,7 @@ class LiveVoiceRenderer:
             # Python, and a device session may be live on this loop (Workshop
             # canary: reply audio paced at 0.64x real time while a warm-up ran).
             pcm = await asyncio.to_thread(cut_line, bytes(session.timeline),
-                                          list(attempt_state.transcripts), line)
+                                          list(attempt_state.transcripts), line, attempt_start)
             if drain_error is not None and pcm is None:
                 raise drain_error
             if pcm is not None:

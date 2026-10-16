@@ -69,6 +69,24 @@ class CutLine(unittest.TestCase):
         self.assertLess(onset, RATE // 10, "the speech starts within the cut's first 100 ms")
         self.assertGreaterEqual(len(samples) - onset, RATE * 1200 // 1000, "and all of it is kept")
 
+    def test_a_later_line_in_the_session_is_cut_from_its_own_attempt(self):
+        """2026-10-16: calibrating against the session's first audio made every
+        line in a render session a copy of the first one ("On it." held
+        "One moment."). The calibration starts at the attempt's own audio."""
+        first = fx.tone(600) + fx.silence(400)          # an earlier line, 0-600 ms
+        second = fx.silence(300) + fx.tone(800, freq=330) + fx.silence(600)
+        timeline = first + second
+        attempt_start = len(first)                      # 1000 ms
+        pcm = cut_line(timeline, [transcript("On it.", 1800, 2400)], "On it.", attempt_start)
+        self.assertIsNotNone(pcm)
+        samples = fx.samples_of(pcm)
+        onset = next(i for i, v in enumerate(samples) if abs(int(v)) > 200)
+        own = fx.samples_of(timeline[ms(1300):ms(1320)])[100:110].tolist()
+        window = samples[onset + 90:onset + 125].tolist()
+        self.assertTrue(any(window[i:i + 10] == own for i in range(len(window) - 9)),
+                        "the second line's own audio (within a few samples of the fade)")
+        self.assertLess(len(samples), RATE * 1600 // 1000, "nothing of the earlier line")
+
     def test_the_onset_walk_stops_at_a_quiet_gap(self):
         """An interjection before a pause stays out even when the start is walked back."""
         timeline = fx.tone(400) + fx.silence(400) + fx.tone(800, freq=330) + fx.silence(600)
