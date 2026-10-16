@@ -76,8 +76,8 @@ def mat(rader):
             vak[r] = t
         if till == "THINKING":
             tank[r], senast_tank = t, r
-        if till == "SPEAKING" and r in tank:
-            d["forsta_ljud"].append(t - tank[r])
+        if till == "SPEAKING" and r in tank:  # once per THINKING: a VAD flap THINKING -> LISTENING -> SPEAKING still
+            d["forsta_ljud"].append(t - tank.pop(r))  # counts, a later SPEAKING of the same reply does not
         if fran == "SPEAKING" and till == "LISTENING":
             d["avbrott"] += 1
         if till == "CLOSING" and handelse == "close":

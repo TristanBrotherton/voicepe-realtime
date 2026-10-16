@@ -43,6 +43,24 @@ def test_per_rum_siffror_stammer_med_journalen():
     assert q["forsta_ljud_s"]["n"] == 0 and q["forsta_ljud_s"]["p95"] is None
 
 
+def test_forsta_ljud_en_gang_per_tankande():
+    # Journal 2026-10-10 (attrapp 08:23): THINKING -> SPEAKING, then LISTENING -> SPEAKING again with no new THINKING.
+    # The second was counted from the old THINKING, so P95 read 2.6 s where the first sounds said 1.7. A VAD flap
+    # (THINKING -> LISTENING -> SPEAKING, koket 2026-10-09 10:07) is still a first sound.
+    logg = [
+        rad("10:00:00,000", "🧭 kontoret: LISTENING -> THINKING (thinking: phase)"),
+        rad("10:00:01,000", "🧭 kontoret: THINKING -> SPEAKING (replying: phase)"),
+        rad("10:00:02,000", "🧭 kontoret: SPEAKING -> LISTENING (listening: phase)"),
+        rad("10:00:03,000", "🧭 kontoret: LISTENING -> SPEAKING (replying: phase)"),
+        rad("10:00:10,000", "🧭 koket: LISTENING -> THINKING (thinking: phase)"),
+        rad("10:00:11,000", "🧭 koket: THINKING -> LISTENING (listening: phase)"),
+        rad("10:00:12,000", "🧭 koket: LISTENING -> SPEAKING (replying: phase)"),
+    ]
+    ut = matvarden.mat(logg)
+    assert ut["kontoret"]["forsta_ljud_s"] == {"p50": 1.0, "p95": 1.0, "n": 1}
+    assert ut["koket"]["forsta_ljud_s"] == {"p50": 2.0, "p95": 2.0, "n": 1}
+
+
 def test_inget_av_det_som_sades_hamnar_i_utskriften():
     import json
     assert "hemligt" not in json.dumps(matvarden.mat(LOGG), ensure_ascii=False)
