@@ -31,6 +31,28 @@ All notable changes to this add-on. Newest first.
   request that was not completed (correct per contract, wrong for a bridge
   that had the answer).
 
+### Fixed
+
+- **One acknowledgement, not two.** When the static fallback clip ("One
+  moment.") was still being sent and the result arrived, the voice's own
+  acknowledgement was released after the clip: two in a row, the second
+  starting as the first ended. The voice's pre-result speech is now held from
+  the moment the clip starts.
+- **Local Home Assistant recognition no longer stays "busy".** The intent
+  socket's lock could stay taken (a timeout landing as the acquire completed),
+  after which every turn waited 1.2 s and took the slower backend path. The
+  lock is taken through a wait that releases a late acquire, and a lock held
+  with no holder or past any real holder's bound is replaced with the socket.
+- **A device class is dropped for an entity that has none.** "Turn off the
+  test switch" (an `input_boolean`) failed when the model also sent
+  `device_class: switch`.
+- **Room conversation after a false wake closes the session silently.** People
+  talking near the device kept a falsely woken session open until its 90 s cap
+  while the voice answered the room. A session now closes without a reply when
+  one unanswered request has been extended four times past 160 characters, or
+  when a second utterance with no request in it arrives within 90 s (across
+  sessions); after such a close only a wake word opens the next session.
+
 ## 0.19.1 (fork)
 
 
