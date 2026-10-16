@@ -928,6 +928,58 @@ class NothingMeansSilence(Patched):
             self.assertEqual(h.executed, [])
 
 
+class RoomTalkClosesTheSession(Patched):
+    """Workshop rig 2026-10-16: a monologue spoken after a wake came in as
+    separate utterances, each answered "Sorry, I didn't catch that". The
+    second utterance with no request in one session closes it silently."""
+
+    async def _closes(self, h):
+        closed = []
+
+        async def close():
+            closed.append(1)
+
+        h.service.on_background_conversation = close
+        return closed
+
+    async def test_a_second_utterance_with_no_request_closes_silently(self):
+        backend = FakeBackend(response(message("NO_REQUEST")), response(message("NO_REQUEST")))
+        async with RouterHarness(self, backend) as h:
+            closed = await self._closes(h)
+            await h.user_says("and then the weather was fine all weekend")
+            await asyncio.sleep(0.3)
+            self.assertEqual(closed, [], "one utterance with no request is not a conversation")
+            with self.assertLogs("app.live_service", level="WARNING") as logs:
+                await h.user_says("we walked along the cliffs for a couple of hours")
+                await asyncio.sleep(0.3)
+            self.assertEqual(closed, [1])
+            self.assertTrue(any("background conversation" in m for m in logs.output))
+            self.assertFalse(any("cliffs" in m for m in logs.output), "never the words")
+            self.assertEqual(h.heard(), b"")
+
+    async def test_a_backend_say_it_again_counts_as_not_caught(self):
+        backend = FakeBackend(response(message("NO_REQUEST")),
+                              response(message("Sorry, could you say that again?")))
+        async with RouterHarness(self, backend) as h:
+            closed = await self._closes(h)
+            await h.user_says("and then the weather was fine all weekend")
+            await asyncio.sleep(0.3)
+            await h.user_says("we walked along the cliffs for a couple of hours")
+            await asyncio.sleep(0.3)
+            self.assertEqual(closed, [1])
+
+    async def test_a_request_between_does_not_close(self):
+        backend = FakeBackend(response(message("NO_REQUEST")),
+                              response(call("todo__get_items", {}, "c1")), response(message("Milk.")))
+        async with RouterHarness(self, backend) as h:
+            closed = await self._closes(h)
+            await h.user_says("and then the weather was fine all weekend")
+            await asyncio.sleep(0.3)
+            await h.user_says("What's on the shopping list?")
+            await h.wait_commentary()
+            self.assertEqual(closed, [])
+
+
 class OnlyAWaitingPhraseIsAnAcknowledgement(Patched):
     """candidate-v33 seventh review B6: a bag of acknowledgement words let a
     count or an affirmative through ("Just one.", "Mm hmm.", "Absolutely.").

@@ -164,6 +164,15 @@ USER_FRAGMENT_MERGE_S = 2.0
 # four times; a long question that does is far under the length.
 BACKGROUND_MIN_MERGES = 4
 BACKGROUND_MIN_CHARS = 160
+# The same room talk can also arrive as separate utterances, each routed and
+# answered "Sorry, I didn't catch that" (Workshop rig 2026-10-16: a spoken
+# monologue got two not-caught replies and a chat reply). The second utterance
+# in one session with no request in it closes the session silently: a person
+# who was misheard heard the first "say it again" and can wake it again.
+BACKGROUND_MAX_NOT_CAUGHT = 2
+_NOT_CAUGHT_REPLY = re.compile(
+    r"\b(?:didn'?t|did not|couldn'?t|could not) (?:catch|hear|get) (?:that|you|it)\b"
+    r"|\b(?:say|repeat) (?:it|that) again\b", re.IGNORECASE)
 # After a user turn ends: no speech, no delegation → treat as a silent
 # (admission) response so the phase machine can close the turn early.
 #
@@ -947,6 +956,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.on_background_conversation: Optional[Callable[[], Awaitable[Any]]] = None
         self._merged_fragments = 0
         self._background_closing = False
+        self._not_caught = 0
         self._session_started_mono: Optional[float] = None
         self._task_opened_session = False
         if self.router is not None:
@@ -1127,6 +1137,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._routing_suspended = False
         self._merged_fragments = 0
         self._background_closing = False
+        self._not_caught = 0
         if self.router is not None:
             self._gate_reset("idle")
             self._gate_idle_dropped = 0
@@ -2711,18 +2722,26 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         be ignored because the session is closing."""
         if self._background_closing:
             return True
-        if (self._merged_fragments < BACKGROUND_MIN_MERGES or chars < BACKGROUND_MIN_CHARS
-                or self.on_background_conversation is None):
+        if self._merged_fragments < BACKGROUND_MIN_MERGES or chars < BACKGROUND_MIN_CHARS:
+            return False
+        return self._close_for_background(
+            f"{self._merged_fragments + 1} fragments, {chars} characters with nothing answered")
+
+    def _close_for_background(self, why: str) -> bool:
+        """Close the session silently: what it hears is a conversation in the
+        room, not a request. Lengths and counts only, never the words."""
+        if self._background_closing:
+            return True
+        if self.on_background_conversation is None:
             return False
         self._background_closing = True
         self._routing_suspended = True  # a half conversation is not a request
+        self._suppress_output = True  # nothing more is said to the room
         op = self._op
         if op is not None and not op.done and op.task is not None and not op.tools_started:
             op.abandoned = True
             op.task.cancel()
-        logger.warning(
-            "🙉 background conversation: %d fragments, %d characters with nothing "
-            "answered; closing the session without replying", self._merged_fragments + 1, chars)
+        logger.warning(f"🙉 background conversation: {why}; closing the session without replying")
         self._spawn(self.on_background_conversation(), "live-background-close")
         return True
 
@@ -3809,6 +3828,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                            "saying it was not caught")
             result = op.result = RouteResult(ROUTE_REPLY, NOT_CAUGHT_TEXT, result.source, [],
                                              result.timings)
+        if result is not None and (result.kind == ROUTE_NOTHING or (
+                result.kind == ROUTE_REPLY and not result.tools
+                and _NOT_CAUGHT_REPLY.search(result.commentary() or ""))):
+            self._not_caught += 1
+            if self._not_caught >= BACKGROUND_MAX_NOT_CAUGHT and self._close_for_background(
+                    f"{self._not_caught} utterances with no request in them"):
+                await self._task_complete(op)
+                return
         text = result.commentary() if result is not None else None
         if result is not None and result.kind == ROUTE_PENDING and result.explain and not result.deferred:
             # The explain acknowledgement, with the identified speaker's name.
