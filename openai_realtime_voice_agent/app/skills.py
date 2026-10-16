@@ -1,4 +1,4 @@
-"""The speaker's tools through comms' skill catalogue (raawr US-095, E-07/D-27 point 5).
+"""The speaker's tools through comms' skill catalogue (raawr US-098, E-07/D-27 point 5).
 
 Gemini Live cannot change its tools inside a session (pipecat only does it by reconnecting), so with
 ROST_SKILLS on the session carries a fixed few: comms' `las_skill` and `anvand_verktyg` (raawr US-089) and
@@ -6,7 +6,7 @@ the speaker's own skills, which act on the speaker itself and not on the house. 
 through `anvand_verktyg`, and its locks (lock, alarm, garage, the rules per channel) sit in comms, never here.
 
 ROST_SKILLS: empty/`av` = today's tools; `b` = only the two meta tools; `c` = the two plus `hus_lage` and
-`styr` directly (the measurement of US-095 picks b or c). The catalogue (`<room's comms>/skills`, one line per
+`styr` directly (the measurement of US-098 picks b or c). The catalogue (`<room's comms>/skills`, one line per
 skill) is fetched when a session is built and goes last in the instruction; when it cannot be had, the last good
 one is used, else one sentence that the house cannot be reached right now.
 """

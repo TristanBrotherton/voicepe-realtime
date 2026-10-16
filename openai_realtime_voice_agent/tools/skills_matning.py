@@ -1,4 +1,4 @@
-"""raawr US-095: the same questions through today's tools (a), the two meta tools (b), and (c), measured alike.
+"""raawr US-098: the same questions through today's tools (a), the two meta tools (b), and (c), measured alike.
 
 Runs the satellite stand-in once per question and rep against one agent instance and reads that instance's
 journal: time to first sound (tools/forstaljud.py's split), the tools the model called (for `anvand_verktyg`,
@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from forstaljud import PY, dela  # noqa: E402
 
 ANROP = re.compile(r"Calling function \[([^:\]]+)[^\]]*\] with arguments (\{.*\})")
+TID = re.compile(r"⏱ tool (\S+) (\d+) (\S+)")
 SA = re.compile(r"(?:🤖 assistant|💬 Björn sa): (.*)")
 
 
@@ -43,6 +44,17 @@ def anropade(rader: list[str]) -> list[str]:
             except (ValueError, SyntaxError):
                 namn += ":?"
         ut.append(namn)
+    return ut
+
+
+def verktygstider(rader: list[str], anrop: list[str]) -> list[list]:
+    """[name, ms, outcome] per finished tool, `anvand_verktyg` named by the comms tool it ran (in call order)."""
+    inre = iter(a for a in anrop if a.startswith("anvand_verktyg"))
+    ut = []
+    for r in rader:
+        if m := TID.search(r):
+            namn = m.group(1).rsplit("__", 1)[-1]
+            ut.append([next(inre, namn) if namn == "anvand_verktyg" else namn, int(m.group(2)), m.group(3)])
     return ut
 
 
@@ -69,7 +81,8 @@ def kor(fraga: dict, a) -> dict:
                             "--since", t0.strftime("%Y-%m-%d %H:%M:%S")], capture_output=True, text=True).stdout.splitlines()
     verktyg = anropade(rader)
     sagt = " ".join(m.group(1).strip() for r in rader if (m := SA.search(r)))
-    rad = {"vag": a.vag, "id": fraga["id"], "verktyg": verktyg, "sagt": sagt[:400]}
+    rad = {"vag": a.vag, "id": fraga["id"], "verktyg": verktyg, "tider": verktygstider(rader, verktyg),
+           "sagt": sagt[:400]}
     if "forsta_svarsljud" not in h:
         return {**rad, "fel": "inget svarsljud", "ratt": False}
     return {**rad, **dela(h, rader), "ratt": ratt(fraga, verktyg, sagt)}
@@ -100,9 +113,14 @@ def main() -> int:
                 ut.flush()
                 print(json.dumps(r, ensure_ascii=False)[:300], flush=True)
     tider = [r["totalt"] for r in rader if r.get("totalt") is not None]
+    per_verktyg: dict = {}
+    for r in rader:
+        for namn, ms, _ in r.get("tider", []):
+            per_verktyg.setdefault(namn, []).append(ms)
     print(json.dumps({"vag": a.vag, "turer": len(rader), "ratt": sum(r["ratt"] for r in rader),
                       "forsta_ljud_median": statistics.median(tider) if tider else None,
-                      "forsta_ljud_p95": p95(tider) if tider else None}, ensure_ascii=False))
+                      "forsta_ljud_p95": p95(tider) if tider else None,
+                      "verktyg_p95_ms": {n: p95(v) for n, v in sorted(per_verktyg.items())}}, ensure_ascii=False))
     return 0
 
 

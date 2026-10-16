@@ -304,7 +304,7 @@ class Application:
     """Main application class using Pipecat."""
 
     dorr_client = None  # comms' own MCP door, see CommsDoorMCPService
-    skills_katalog = None  # skills.Katalog, made on first use (US-095)
+    skills_katalog = None  # skills.Katalog, made on first use (US-098)
     skills_text: dict = {}  # room -> the catalogue block of its last session build
     karna = None  # bjorn_karna.Karna, made in initialize() (tests that skip it get one without an environment text)
 
@@ -881,7 +881,7 @@ class Application:
         # No EARLY_ACK_INSTRUCTION: Grok said "Jag kollar." before every answer,
         # jokes included (owner 2026-10-02 23:07). The slow tools' descriptions
         # carry it instead (early_ack.with_ack_hint, 0.25.6).
-        if skills.lage():  # memory is a skill in comms then, not the agent's own tools (US-095)
+        if skills.lage():  # memory is a skill in comms then, not the agent's own tools (US-098)
             return self.instructions + SPRAKLAS + avbrott_for(rum) + self.skills_text.get(rum, "") + self.idag.block()
         return self.instructions + SPRAKLAS + avbrott_for(rum) + memory_instructions() + self.idag.block()
 
@@ -1051,7 +1051,7 @@ class Application:
             options = self.provider_options(provider, rum)
             if not options.api_key:
                 logger.error(f"❌ no API key configured for {provider}")
-            if skills.lage():  # US-095: the house only through comms' two meta tools, plus the speaker's own
+            if skills.lage():  # US-098: the house only through comms' two meta tools, plus the speaker's own
                 all_tools = [t for t in all_tools if skills.behall(t.get("name", ""))]
             logger.info(
                 f"🔧 Creating {provider} session with {len(all_tools)} tools: "
@@ -1228,10 +1228,10 @@ class Application:
             # Allow/deny for what the model is offered: app/tool_selection.py.
             if not tool_selection.shown(name, self.mcp_tool_allowlist):
                 continue
-            if skills.lage() and not skills.behall(name):  # US-095: the wake refetch goes through here too
+            if skills.lage() and not skills.behall(name):  # US-098: the wake refetch goes through here too
                 continue
             if not skills.lage() and name in dorr_namn and not skills.visa_fran_dorren(name):
-                continue  # US-095: the door's new tools reach the speaker through the skills path, not on top of HA's
+                continue  # US-098: the door's new tools reach the speaker through the skills path, not on top of HA's
             # Comms hands tools out as `<domain>__<name>`, HA itself bare.
             base = name.rsplit("__", 1)[-1]
             if openclaw_url() and base == "ask_openclaw":

@@ -1,4 +1,4 @@
-"""The speaker's tools through comms' skill catalogue (raawr US-095, E-07/D-27 point 5)."""
+"""The speaker's tools through comms' skill catalogue (raawr US-098, E-07/D-27 point 5)."""
 import types
 
 import pytest
@@ -151,6 +151,11 @@ def test_matningen_laser_verktyg_och_ratt_svar():
     assert ratt({"vantat": ["-"], "ord": ["34"]}, [], "Det blir 34.")
     assert not ratt({"vantat": ["-"], "ord": ["34"]}, [], "Det blir 35.")
     assert not ratt({"vantat": ["-"]}, ["HassTurnOn"], "Tänt.")
+    from skills_matning import verktygstider
+    tid = ["x - INFO - ⏱ tool las_skill 40 ok", "x - INFO - ⏱ tool rost__anvand_verktyg 610 ok",
+           "x - INFO - ⏱ tool homeassistant__GetLiveContext 300 fel"]
+    assert verktygstider(tid, anropade(rader)) == [["las_skill", 40, "ok"], ["anvand_verktyg:styr", 610, "ok"],
+                                                    ["GetLiveContext", 300, "fel"]]
 
 
 @pytest.mark.asyncio
@@ -162,3 +167,14 @@ async def test_av_far_dorrens_nya_verktyg_inte_ovanpa_has(monkeypatch):
     namn = set(_tool_names(service))
     assert {"lage_drift", "hamta_svar", "HassTurnOn"} <= namn
     assert not namn & {"styr", "hus_lage", "las_skill", "kostnad"}
+
+
+def test_ljuslaget_aterstalls_som_det_var():
+    """tools/ljus_lage.py (B's review of #90): each light whose on/off changed goes back; the rest is left alone."""
+    import sys
+    sys.path.insert(0, "tools")
+    from ljus_lage import andringar
+
+    fore = {"light.kontor_fonster": "off", "light.hall": "on", "light.ute": "on", "light.elsa": "unavailable"}
+    efter = {"light.kontor_fonster": "on", "light.hall": "off", "light.ute": "on", "light.elsa": "on"}
+    assert sorted(andringar(fore, efter)) == [("light.hall", "turn_on"), ("light.kontor_fonster", "turn_off")]
