@@ -153,6 +153,10 @@ See the GPT-Live section of the add-on documentation for what differs.
 | `openclaw_callback_url` | (unset) | Router mode. Sent to the agent bridge as `callback_url` with every `ask_openclaw` call, so an accepted long task reports back with `POST /task-result`. |
 | `live_task_promote_s` | `3.5` | Seconds before a routed request becomes a background task (minimum 1). It is never cancelled; its result is delivered when it lands. |
 | `live_task_hold_session_s` | `90` | Cost bound: the longest a slow lookup keeps the open, billed session (from its start). A deferred watch never holds a session. `0` = never. |
+| `discussions_enabled` | `false` | Discussions by voice: three generic tools that list, load and propose decisions on the open items an agent bridge keeps. A decision is read back, staged, and confirmed by the owner by text. |
+| `discussion_max_session_s` | `900` | Session bound once a discussion is open; the daily caps still apply. |
+| `discussion_quiet_s` | `30` | Quiet window during a discussion. |
+| `discussion_follow_up_ms` | `10000` | How long the device listens after each reply during a discussion. |
 | `live_task_delivery` | `session,reopen,announce,imessage` | Delivery order for a finished lookup: the open session, a short new session through the spend gate, the announcement lane, a text. |
 | `live_task_deferred_delivery` | `session,announce,reopen,imessage` | Delivery order for a deferred result ("tell me when ..."). |
 | `live_task_quiet_hours` | (unset) | `HH:MM-HH:MM`. During these hours no session is reopened and nothing is announced for any task result; it waits for the end (or goes by text if configured). |
