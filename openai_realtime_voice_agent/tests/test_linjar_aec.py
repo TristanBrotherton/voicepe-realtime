@@ -47,6 +47,16 @@ def test_tar_ekot():
     assert _db(mic[s]) - _db(ut[s]) > 15
 
 
+def test_vakten_bromsar_inte_nar_bara_ekot_hors():
+    # Only his echo: the guard must learn as fast as no guard. With the leak estimate floored at 0.005 it throttled the
+    # step while the filter was still improving (28 dB against 37 at 4-6 s here; on the saved Kontor pairs 9 dB
+    # against 17, raawr US-060 trim/jamfor_1000.txt).
+    ref, mic = _par()
+    s = slice(4 * RATE, 6 * RATE)
+    med, utan = (_db(mic[s]) - _db(_kor(mic, ref, golv_db=0.0, vakt=v)[s]) for v in (True, False))
+    assert med > utan - 3, (med, utan)
+
+
 def _over_ekot(vakt, golv_db, gg=1.0):
     """Someone speaks for 2 s over his echo, `gg` times as loud. Returns (dB of echo taken in the 0.5 s after, dB the
     voice lost)."""

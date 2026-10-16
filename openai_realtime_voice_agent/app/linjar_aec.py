@@ -14,7 +14,8 @@ filter without a suppressor let "Tänd i köket. Björn." out of one clip (mild_
   * The guard (Valin 2007, as in Speex): the step is scaled by the residual echo the filter expects over the error it
     gets. The expected residual is a leak factor times the echo estimate, the leak read off how the error's power
     follows the estimate's from block to block; a voice that is not his does not follow it, so the error grows and the
-    step falls. Before the filter has once taken 10 dB the estimate means nothing, and it adapts freely. Synthetic, a
+    step falls (never below LACKA_MIN of it). Before the filter has once taken 10 dB the estimate means nothing, and it adapts
+    freely. Synthetic, a
     voice 6 dB over his echo for 2 s: 15 dB right after with the guard, 2 dB without. On the real clips, at or under
     his echo, the guard changed little (16-17 dB after his words with it, 12-19 without); the suppressor did the work.
   * The suppressor: per frequency bin, gain max(floor, 1 - lack * |echo estimate|^2 / |error|^2), falling at once and
@@ -27,13 +28,19 @@ The output is 10 ms late (the suppressor's overlap).
 import numpy as np
 
 N = 160   # one 10 ms frame at 16 kHz
+# The leak estimate's floor. While the filter still improves, the error falls as the estimate rises, so the estimate goes
+# negative and was floored at Speex's 0.005: the step was throttled with only his echo playing. Saved Kontor pairs
+# (raawr US-060, trim/ on the Mac): 0.3 takes 24-26 dB on the true references against 15-16, 17.7 against 16.3 on the
+# live one, holds after someone spoke over him, and the local STT read as many of Henrik's words (0.39 against 0.40).
+LACKA_MIN = 0.3
 
 
 class LinjarAec:
     FORDROJNING = N   # samples the output lags the input (MjukAec pairs its levels with the frame before)
 
-    def __init__(self, P: int = 26, mu: float = 0.5, golv_db: float = -24.0, lack: float = 1.0, vakt: bool = True) -> None:
-        self.P, self.mu, self.vakt = P, mu, vakt
+    def __init__(self, P: int = 26, mu: float = 0.5, golv_db: float = -24.0, lack: float = 1.0, vakt: bool = True,
+                 lacka_min: float = LACKA_MIN) -> None:
+        self.P, self.mu, self.vakt, self.lacka_min = P, mu, vakt, lacka_min
         self.W = np.zeros((P, N + 1), complex)
         self.X = np.zeros((P, N + 1), complex)     # the last P reference blocks, newest first
         self.xprev = np.zeros(N)
@@ -71,7 +78,7 @@ class LinjarAec:
         self.cey = a * self.cey + (1 - a) * (pe - self.me) * (py - self.my)
         self.cyy = a * self.cyy + (1 - a) * (py - self.my) ** 2
         if self.vakt and self.lart:
-            lacka = min(1.0, max(0.005, self.cey / (self.cyy + 1e-9)))
+            lacka = min(1.0, max(self.lacka_min, self.cey / (self.cyy + 1e-9)))
             mu *= min(1.0, lacka * py / (pe + 1.0))
         E = np.fft.rfft(np.concatenate([np.zeros(N), e]))
         G = mu / self.P * np.conj(self.X) * E / (self.pw + 1e-6 * self.pw.mean() + 1.0)
