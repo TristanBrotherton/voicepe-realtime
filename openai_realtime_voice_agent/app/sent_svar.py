@@ -70,18 +70,28 @@ def svar_url() -> str:
     return (b[:-4] if b.endswith("/api") else b) + "/svar"
 
 
+class EjNu(Exception):
+    """The answer may still be there but could not be fetched now (refused, comms down, a timeout)."""
+
+
 async def hamta_svar(result_id: str, timeout: float = 5.0) -> Optional[str]:
-    """The answer text from comms, or None (404 inget_svar, a refused key, a timeout)."""
+    """The answer text from comms; None when it is gone (404 inget_svar). EjNu for anything else: a 403 nekad_roll,
+    a 5xx, a timeout. Then nothing about it is said and it stays to be asked about."""
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.post(svar_url(), headers=ha_api.headers(), json={"result_id": result_id})
-        if r.status_code != 200:
-            logger.info(f"📬 sent svar: comms gave {r.status_code} for {result_id}")
-            return None
-        return (r.json().get("text") or "").strip() or None
     except Exception as e:
         logger.warning(f"📬 sent svar: fetching {result_id} failed: {e!r}")
+        raise EjNu(repr(e))
+    if r.status_code == 404:
         return None
+    if r.status_code != 200:
+        logger.info(f"📬 sent svar: comms gave {r.status_code} for {result_id}")
+        raise EjNu(str(r.status_code))
+    try:
+        return (r.json().get("text") or "").strip() or None
+    except Exception as e:   # a broken body on a 200 is comms' fault, not a gone answer (B on #84)
+        raise EjNu(repr(e))
 
 
 class Lyssnare:
@@ -123,14 +133,15 @@ class SentSvar:
         self._tala, self._stt, self._enhet, self._hamta = tala, stt, enhet, hamta
         self.sparade: dict[str, list[dict]] = {}   # held notices per room: the morning question reads these
         self._pagar: set[str] = set()              # rooms with a question under way
-        self._morgon_fragad: dict[str, datetime.date] = {}  # the day each room was asked the morning question
         self._uppgifter: set = set()
 
     def _spara(self, rum: str, notis: dict) -> None:
         lista = self.sparade.setdefault(rum, [])
+        # the first time it was held counts: saving it again must not restart the 24 h (B on #84)
+        t0 = next((n["_t"] for n in lista if n["result_id"] == notis["result_id"]), notis.get("_t", time.time()))
         lista[:] = [n for n in lista if n["result_id"] != notis["result_id"]
                     and time.time() - n["_t"] < TAK_SVAR_S][-(SPARA_MAX - 1):]
-        lista.append({**notis, "_t": time.time()})
+        lista.append({**notis, "_t": t0})
 
     async def notis(self, body: dict) -> dict:
         """The answer to Comms' POST. Never raises."""
@@ -174,31 +185,41 @@ class SentSvar:
             text, svar = await self._hor_ja_nej(rum, serializer, fraga_text(g["agent"], g["amne"]))
             logger.info(f"📬 sent svar {rid} ({rum}): hörde {text!r} -> {svar or 'inget svar'}")
             if svar == "ja":
-                await self._las(rum, rid)
+                if await self._las(rum, rid) is None:
+                    self._spara(rum, {**g, "_fragad": nu().date()})   # not fetched now: it stays
             else:
-                self._spara(rum, g)  # a no or silence leaves it unread: the morning question may ask again
+                # a no or silence leaves it unread; not asked again today, the next morning may
+                self._spara(rum, {**g, "_fragad": nu().date()})
         except Exception as e:
             logger.warning(f"📬 sent svar {rid} ({rum}) failed: {e!r}")
         finally:
             self._pagar.discard(rum)
 
-    async def _las(self, rum: str, rid: str) -> bool:
-        läst = await self._hamta(rid)
+    async def _las(self, rum: str, rid: str) -> Optional[bool]:
+        """True read, False gone (404), None not fetched now (EjNu): nothing of it is said, it stays."""
+        try:
+            läst = await self._hamta(rid)
+        except EjNu:
+            await self._tala("Jag kommer inte åt det svaret just nu.", rum)
+            return None
         await self._tala(läst or "Det svaret finns inte kvar.", rum)
         return bool(läst)
 
     async def morgon(self, rum: str) -> bool:
-        """AC-6 (decision C 2026-10-11, Henrik may change it): after the first reply of a session at or after 07:00,
-        once per room and day, ask "Ska jag ge dig det jag sparat?" if unread answers are held. Yes: read at most three,
-        the oldest first, one at a time; no or silence: they stay. Never raises; True when a question was asked."""
+        """AC-6 (decision C 2026-10-11, Henrik may change it): after the first reply of a session at or after 07:00, ask
+        "Ska jag ge dig det jag sparat?" if unread answers are held that were not asked about today. Each notice is
+        asked about at most once a day (`_fragad`), not each room: a notice held for a conversation after the morning
+        question is asked at the next wake (decision C 2026-10-09). Yes: read at most three, the oldest first, one at a
+        time; no or silence: they stay. Never raises; True when a question was asked."""
         try:
             enhet = self._enhet(rum)
             idag = nu().date()
             nya = [n for n in self.sparade.get(rum, []) if time.time() - n["_t"] < TAK_SVAR_S]
-            if (enhet is None or self._stt is None or tyst_timme() or not nya or rum in self._pagar
-                    or self._morgon_fragad.get(rum) == idag):
+            if (enhet is None or self._stt is None or tyst_timme() or rum in self._pagar
+                    or all(n.get("_fragad") == idag for n in nya)):
                 return False
-            self._morgon_fragad[rum] = idag  # asked once, whatever the answer
+            for n in nya:
+                n["_fragad"] = idag  # asked once today, whatever the answer
             self._pagar.add(rum)
             try:
                 text, svar = await self._hor_ja_nej(rum, enhet[0], MORGON_FRAGA)
@@ -206,7 +227,8 @@ class SentSvar:
                 if svar == "ja":
                     nya.sort(key=lambda n: n["_t"])
                     for n in nya[:MORGON_TAK]:
-                        await self._las(rum, n["result_id"])
+                        if await self._las(rum, n["result_id"]) is None:
+                            break   # comms out of reach: the rest stay too
                         self.sparade[rum] = [m for m in self.sparade[rum] if m["result_id"] != n["result_id"]]
                     if len(nya) > MORGON_TAK:
                         await self._tala("Det finns fler.", rum)

@@ -201,8 +201,8 @@ def test_ac6_frågas_en_gång_per_dag():
     assert asyncio.run(morgon(v)) is True and asyncio.run(morgon(v)) is False
     assert v.hamtat == [] and len(v.s.sparade["kontoret"]) == 2  # a no leaves them to ask for later
     v2 = Varld(hort="ja")
-    v2.s._morgon_fragad = {"kontoret": sent_svar.nu().date() - sent_svar.datetime.timedelta(days=1)}
     _spara(v2, 1)
+    v2.s.sparade["kontoret"][0]["_fragad"] = sent_svar.nu().date() - sent_svar.datetime.timedelta(days=1)
     assert asyncio.run(morgon(v2)) is True
 
 
@@ -246,3 +246,104 @@ def test_ac6_efter_svar_hooken_vantar_pa_idle():
         await t
     asyncio.run(go())
     assert anrop == [("kontoret", "idle")]
+
+
+def test_ac3_en_notis_som_hölls_under_ett_samtal_frågas_vid_nästa_väckning_även_efter_morgonfrågan():
+    """Beslut C 2026-10-09: en notis som hölls för att ett samtal pågick frågas en gång vid nästa väckning. Med en
+    morgonfråga per rum och dag blev en sådan notis efter morgonfrågan aldrig frågad (C 2026-10-16)."""
+    v = Varld(hort="nej")
+    _spara(v, 1)
+    assert asyncio.run(morgon(v)) is True                 # 08: the morning question, he says no
+    v.samtal = True
+    assert asyncio.run(kor(v, {**NOTIS, "result_id": "dag1"}))["fragar"] is False   # 15: held, a conversation
+    v.samtal, v.hort = False, "ja"
+    v.sagt.clear()
+    assert asyncio.run(morgon(v)) is True                 # the next wake after it
+    assert "dag1" in v.hamtat
+    v.sagt.clear()
+    assert asyncio.run(morgon(v)) is False                # and only once
+
+
+def test_ett_nej_på_frågan_frågas_inte_om_samma_dag():
+    v = Varld(hort="nej")
+    asyncio.run(kor(v))
+    v.sagt.clear()
+    assert asyncio.run(morgon(v)) is False and v.sagt == []
+
+
+def test_ac2_ja_men_comms_svarar_inte_sager_inget_om_svaret_och_det_ligger_kvar():
+    """Förut: ett nätfel eller en 403 lät som 'Det svaret finns inte kvar.' och notisen glömdes (C 2026-10-16)."""
+    v = Varld(hort="ja")
+
+    async def nere(rid):
+        v.hamtat.append(rid)
+        raise sent_svar.EjNu("503")
+    v.s._hamta = nere
+    asyncio.run(kor(v))
+    assert v.sagt[-1] == "Jag kommer inte åt det svaret just nu."
+    assert [n["result_id"] for n in v.s.sparade["kontoret"]] == ["r1"]
+
+
+def test_ac6_comms_nere_på_morgonen_lämnar_alla_kvar():
+    v = Varld(hort="ja")
+    _spara(v, 2)
+
+    async def nere(rid):
+        raise sent_svar.EjNu("timeout")
+    v.s._hamta = nere
+    assert asyncio.run(morgon(v)) is True
+    assert len(v.s.sparade["kontoret"]) == 2 and v.sagt[-1] == "Jag kommer inte åt det svaret just nu."
+
+
+@pytest.mark.parametrize("kod, ut", [(404, None), (200, "Tre två.")])
+def test_hamta_svar_skiljer_borta_fran_ej_nu(monkeypatch, kod, ut):
+    import httpx
+
+    class K:
+        def __init__(self, **_k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+        async def post(self, *_a, **_k):
+            return httpx.Response(kod, json={"text": "Tre två."} if kod == 200 else {"fel": "inget_svar"})
+    monkeypatch.setattr(sent_svar.httpx, "AsyncClient", K)
+    assert asyncio.run(sent_svar.hamta_svar("r1")) == ut
+
+
+@pytest.mark.parametrize("kod", [403, 500, 401])
+def test_hamta_svar_nekad_eller_trasig_ar_ej_nu(monkeypatch, kod):
+    import httpx
+
+    class K:
+        def __init__(self, **_k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+        async def post(self, *_a, **_k):
+            return httpx.Response(kod, json={"fel": "x"})
+    monkeypatch.setattr(sent_svar.httpx, "AsyncClient", K)
+    with pytest.raises(sent_svar.EjNu):
+        asyncio.run(sent_svar.hamta_svar("r1"))
+
+
+def test_ett_nej_startar_inte_om_24_timmarna(monkeypatch):
+    """B på #84: _spara skrev om _t, så ett svar som sparades igen frågades om varje dag i evighet."""
+    v = Varld(hort="nej")
+    v.samtal = True
+    asyncio.run(kor(v))                                   # held: saved the first time
+    forst = v.s.sparade["kontoret"][0]["_t"]
+    monkeypatch.setattr(sent_svar.time, "time", lambda: forst + 3600)
+    v.s._spara("kontoret", {**NOTIS, "_fragad": sent_svar.nu().date()})   # a no an hour later saves it again
+    assert v.s.sparade["kontoret"][0]["_t"] == forst
+
+
+def test_hamta_svar_trasig_kropp_pa_200_ar_ej_nu(monkeypatch):
+    import httpx
+
+    class K:
+        def __init__(self, **_k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+        async def post(self, *_a, **_k):
+            return httpx.Response(200, content=b"inte json")
+    monkeypatch.setattr(sent_svar.httpx, "AsyncClient", K)
+    with pytest.raises(sent_svar.EjNu):
+        asyncio.run(sent_svar.hamta_svar("r1"))
