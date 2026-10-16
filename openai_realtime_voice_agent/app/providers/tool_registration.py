@@ -16,6 +16,7 @@ import logging
 import os
 import time
 
+from app import bana0
 from app.early_ack import paa as early_ack_paa
 
 logger = logging.getLogger(__name__)
@@ -376,6 +377,12 @@ class ToolRegistrationMixin:
                 if skal:
                     logger.warning(f"🛡️ tool {function_name} NOT run: {skal}")
                     await params.result_callback({"result": skal})
+                    return
+                fraga = getattr(self, "fragevakt", None)  # a question is no order (raawr US-098, 2026-10-17)
+                nej = bana0.fraga_inte_order(fraga(), function_name, getattr(params, "arguments", None)) if fraga else None
+                if nej:
+                    logger.warning(f"🛡️ tool {function_name} NOT run: {nej}")
+                    await params.result_callback({"result": nej})
                     return
                 # Speaker gate (fork): tools listed in male_only_tools only execute
                 # when the last voice-type verdict is "male". Enforced HERE — below

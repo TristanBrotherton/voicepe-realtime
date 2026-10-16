@@ -1096,6 +1096,9 @@ class Application:
                 )
                 logger.info(f"✅ Registered web_search tool handler (model={self.web_search_model})")
 
+            # A question is no order (raawr US-098): the tool layer reads what bana 0 heard this turn before a switching
+            # tool runs. ponytail: the latest turn's text; a tool call faster than bana 0's STT reads the turn before.
+            service.fragevakt = lambda: connection.bana0_heard or (getattr(service, "tur_text", lambda: "")() or "")
             service.register_function("search_home", create_search_home_tool_handler())
             logger.info("✅ Registered search_home tool handler")
 

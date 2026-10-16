@@ -120,10 +120,37 @@ _AV = re.compile(r"\b(släck\w*|stäng(?:er)? av|slå av|sätt av|stäng)\b|\bav
 _PA = re.compile(r"\b(tänd\w*|slå på|sätt på|starta)\b|\bpå\b", re.I)
 
 
+# A question about the state is not an order, also when it names the verb ('Är det tänt?', 'Vilka lampor är
+# tända?'). Live 2026-10-17 00:20: 'Är det tänt i kontoret?' turned the whole office on ('tänt' and 'tänd' sound
+# alike). A polite request is an order ('Kan du tända...', 'Var snäll och...').
+# ponytail: the first word decides; "Vad bra, tänd lampan" reads as a question (refused, he says it again).
+_FRAGA = re.compile(r"^\W*(är|vad|vilka|vilken|vilket|hur|finns|lyser|står|när|var|varför|har)\b", re.I)
+_BON = re.compile(r"^\W*((kan|kunde|skulle|vill|får|orkar)\s+(du|ni)|(är|var)\s+(du\s+|ni\s+)?snäll)\b", re.I)
+# The tools that switch something; a question may read with every other tool.
+SKRIV_VERKTYG = frozenset({"HassTurnOn", "HassTurnOff", "HassLightSet", "styr"})
+
+
+def ar_fraga(text: Optional[str]) -> bool:
+    t = text or ""
+    return bool(_FRAGA.search(t)) and not _BON.search(t)
+
+
+def fraga_inte_order(turtext: Optional[str], namn: str, argument: Optional[dict]) -> Optional[str]:
+    """Why a switching tool must not run on this turn, or None: the turn (bana 0's local text) was a question."""
+    bas = namn.rsplit("__", 1)[-1]
+    if bas == "anvand_verktyg":  # comms' generic tool (raawr US-089): judged by the tool it runs
+        bas = str((argument or {}).get("namn", "")).rsplit("__", 1)[-1]
+    if bas not in SKRIV_VERKTYG or not ar_fraga(turtext):
+        return None
+    return (f"ignored: he asked a question ('{turtext}'), he did not ask you to change anything. Answer the "
+            "question from what you can read; switch nothing.")
+
+
 def verb_ur(text: str) -> Optional[str]:
     """'Off' or 'On' for a plain light order, else None. Off wins ('släck' before 'på'). Anything that
-    names a timer, music or the like is not a light order (the parallel track is for lights only)."""
-    if _INTE_LAMPA.search(text or ""):
+    names a timer, music or the like is not a light order (the parallel track is for lights only), and a
+    question is no order at all."""
+    if ar_fraga(text) or _INTE_LAMPA.search(text or ""):
         return None
     if _AV.search(text or ""):
         return "Off"
