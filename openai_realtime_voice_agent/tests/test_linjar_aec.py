@@ -78,3 +78,18 @@ def test_mjuk_aec_valjer_linjar(monkeypatch):
     monkeypatch.setenv("SOFT_AEC_MOTOR", "linjar")
     from app.mjuk_aec import MjukAec
     assert isinstance(MjukAec().ap, LinjarAec)
+
+
+def test_matt_parar_utgangen_med_ramen_fore(monkeypatch):
+    # The output is the previous frame: where his echo starts, the first loud frame in must not be measured against
+    # the quiet frame out before it (that read as 60 dB taken off).
+    monkeypatch.setenv("SOFT_AEC", "1")
+    monkeypatch.setenv("SOFT_AEC_MOTOR", "linjar")
+    from app.mjuk_aec import MjukAec
+    a = MjukAec(klocka=lambda: 0.0)
+    a.ref_slut = 10.0                                    # the speaker is playing: the canceller runs
+    tyst, hogt = np.zeros(N, np.int16), np.full(N, 8000, np.int16)
+    a.process(tyst.tobytes(), t=0.01)
+    a.process(hogt.tobytes(), t=0.02)
+    _, in_db, ut_db, _ = a.matt[-1]
+    assert in_db < -80 and ut_db < -80                   # the quiet frame, in and out

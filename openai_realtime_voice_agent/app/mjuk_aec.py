@@ -97,6 +97,9 @@ class MjukAec:
             # AEC3's suppressor takes the words of a person speaking over his echo. SOFT_AEC_GOLV_DB: how far it may dim.
             from app.linjar_aec import LinjarAec
 
+            # It takes ~19 dB, under eko_vakt.ERLE_TILLIT_DB (20, set for AEC3's ~30): the canceller is not trusted, so
+            # person() says no and only a stop word cuts him off. On purpose -- more of his echo is left -- until a sound
+            # test says what the threshold should be for this one (B on #85).
             self.ap = LinjarAec(golv_db=float(os.environ.get("SOFT_AEC_GOLV_DB", "-24")))
         elif soft_aec_paa():
             from aec_audio_processing import AudioProcessor
@@ -173,6 +176,9 @@ class MjukAec:
         self.folj_mic: List[np.ndarray] = []
         self.folj_ref: List[np.ndarray] = []
         self.folj_forra: Optional[float] = None   # the last estimate that said the reference lags
+        # LinjarAec gives back the PREVIOUS frame (its suppressor overlaps by 10 ms): the in- and out-levels are paired
+        # with that frame's mic and reference, or the ERLE is off where his echo starts and stops (B on #85).
+        self.forra_ram: Optional[Tuple[float, float]] = None
 
     def _agc(self, ram: np.ndarray) -> np.ndarray:
         """Gain one 10 ms frame (int16). Up only when the frame is speech-like, else hold and drift back to 0 dB."""
@@ -420,7 +426,11 @@ class MjukAec:
                     ren = self.ap.process_stream(ram.tobytes())
                     renad = np.frombuffer(ren, dtype=np.int16)
                     slut = t - (tot - i - FRAME) / RATE
-                    self.matt.append((slut, self._db(ram), self._db(renad), self._db(refr)))
+                    in_db, ref_db = self._db(ram), self._db(refr)
+                    if getattr(self.ap, "FORDROJNING", 0):
+                        (in_db, ref_db), self.forra_ram = self.forra_ram or (in_db, ref_db), (in_db, ref_db)
+                        slut -= FRAME / RATE
+                    self.matt.append((slut, in_db, self._db(renad), ref_db))
                     if len(self.matt) > self.matt_max:
                         del self.matt[:-self.matt_max]
                     if self.rest_s and slut - self.svar_start < self.rest_s:

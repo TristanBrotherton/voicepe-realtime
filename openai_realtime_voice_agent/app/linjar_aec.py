@@ -30,6 +30,8 @@ N = 160   # one 10 ms frame at 16 kHz
 
 
 class LinjarAec:
+    FORDROJNING = N   # samples the output lags the input (MjukAec pairs its levels with the frame before)
+
     def __init__(self, P: int = 26, mu: float = 0.5, golv_db: float = -24.0, lack: float = 1.0, vakt: bool = True) -> None:
         self.P, self.mu, self.vakt = P, mu, vakt
         self.W = np.zeros((P, N + 1), complex)
