@@ -513,6 +513,11 @@ class ConnectionRecovery(FrameProcessor):
                 logger.debug(f"turn-error observer failed: {e!r}")
 
 
+# A wake this recent means the device is already in its next turn: a session
+# close must not send it to idle.
+WAKE_SUPERSEDES_IDLE_S = 1.5
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, "") or default)
@@ -674,7 +679,14 @@ class WebSocketHandler:
             # `replying`; without an explicit idle the physical ring spun
             # forever after the session itself was gone.
             phase_emitter = connection.phase_emitter
-            if phase_emitter is not None:
+            woke = getattr(connection, "last_wake_mono", None)
+            if woke is not None and time.monotonic() - woke < WAKE_SUPERSEDES_IDLE_S:
+                # A wake arrived as this session closed: the device has already
+                # started the next turn, and an idle now would stop its mic
+                # (rig 2026-10-16: the wake landed 1 ms after a close; the
+                # forced idle followed it and the turn heard nothing).
+                logger.info("📞 not forcing idle at close: a new wake just started the next turn")
+            elif phase_emitter is not None:
                 self._spawn(phase_emitter.force_idle(
                     f"GPT-Live session closed: {getattr(charge, 'reason', 'closed')}"
                 ))
@@ -1085,6 +1097,7 @@ class WebSocketHandler:
                     await gate.close("follow-up cut-off")
 
         async def _on_device_wake(meta=None):
+            connection.last_wake_mono = time.monotonic()
             meta = dict(meta or {})
             source = meta.get("src") or "wake_word"
             # A wake is the ONLY thing that buys a GPT-Live session (with the

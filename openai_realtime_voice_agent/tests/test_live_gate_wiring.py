@@ -255,9 +255,29 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
             phases.append((value, extra))
 
         connection.phase_emitter._send_phase = capture
+        connection.last_wake_mono = 0.0  # the wake was long ago
         await connection.session_gate.close("idle")
         await self.settle(lambda: bool(phases))
         self.assertEqual(phases[-1], ("idle", {}))
+
+    async def test_a_close_right_after_a_new_wake_does_not_force_idle(self):
+        """Rig 2026-10-16: a wake landed 1 ms after a session closed; the
+        close's forced idle followed it and stopped the new turn's mic."""
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        connection.phase_emitter._current = "replying"
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append((value, extra))
+
+        connection.phase_emitter._send_phase = capture
+        import time as _time
+        connection.last_wake_mono = _time.monotonic()  # the next turn's wake, just now
+        await connection.session_gate.close("follow-up cut-off")
+        await asyncio.sleep(0.05)
+        self.assertNotIn(("idle", {}), phases)
 
     async def test_a_new_wake_after_a_stop_opens_a_fresh_session(self):
         connection = self.build()

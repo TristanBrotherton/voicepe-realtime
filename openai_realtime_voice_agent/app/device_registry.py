@@ -101,6 +101,9 @@ class DeviceConnection:
     # On-demand GPT-Live session owner (app/live_session_gate.py). None on the
     # Realtime runtime, where the session is the connection's own lifetime.
     session_gate: Any = None
+    # Monotonic time of the last wake frame (a close right after it must not
+    # send the device to idle).
+    last_wake_mono: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""
