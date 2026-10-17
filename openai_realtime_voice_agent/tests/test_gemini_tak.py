@@ -133,3 +133,9 @@ async def test_the_probe_cannot_call_an_engine_without_money_healthy():
     router2._broke_at["gemini"] = klocka.t
     klocka.t += MONEY_HOLD_S + 1
     assert await router2._known_healthy("gemini") is True
+
+
+def test_a_bare_depleted_is_not_money():
+    from app.provider_failures import Failure, classify
+    assert classify("the buffer is depleted") != Failure.MONEY
+    assert classify(UTAN_PENGAR[2]) == Failure.MONEY

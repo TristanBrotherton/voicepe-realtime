@@ -40,7 +40,7 @@ _MONEY = (
     "resource_exhausted",
     "quota exceeded",
     "spending cap",  # Google AI Studio: "Your project has exceeded its monthly spending cap" (1011, 2026-10-13)
-    "depleted",      # prepaid accounts: "Your prepayment credits are depleted"
+    "credits are depleted",  # prepaid accounts: "Your prepayment credits are depleted" (not a bare "depleted": a battery or a quota-less word would match)
 )
 _MONEY_CODES = (r"\b402\b",)
 _AUTH = (
