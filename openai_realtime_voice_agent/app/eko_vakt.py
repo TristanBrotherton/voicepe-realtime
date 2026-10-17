@@ -55,6 +55,15 @@ def egen_tur(rum: str = "") -> bool:
     return v == "1" or (bool(rum) and rum.lower() in [r.strip() for r in v.split(",")])
 
 
+def ingen_avbrott(rum: str = "") -> bool:
+    """GEMINI_NO_INTERRUPTION (US-060 AC-17, Henrik 2026-10-17): the engine never cuts him on its own (ActivityHandling
+    NO_INTERRUPTION); only our guard does (stop words, and loud speech that is no back-channel). Without it Google's
+    own barge-in cut him on 4 of 10 back-channels. Same syntax as GEMINI_EGEN_TUR: "1" = every room, else room names.
+    Off by default: the engine's own detection is the safety net for what the guard misses (a quiet voice)."""
+    v = os.environ.get("GEMINI_NO_INTERRUPTION", "0").strip().lower()
+    return v == "1" or (bool(rum) and rum.lower() in [r.strip() for r in v.split(",")])
+
+
 def svans_s() -> float:
     """Seconds after his reply ended during which the room still carries it."""
     try:

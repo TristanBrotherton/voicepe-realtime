@@ -1103,7 +1103,15 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
     # that could not answer.
     vagran = None
 
+    ingen_avbrott = False   # set by build(): GEMINI_NO_INTERRUPTION covers this room
+
     async def _connection_task_handler(self, config):
+        if self.ingen_avbrott and config is not None:
+            from google.genai.types import ActivityHandling, RealtimeInputConfig
+            ric = config.realtime_input_config or RealtimeInputConfig()
+            ric.activity_handling = ActivityHandling.NO_INTERRUPTION
+            config.realtime_input_config = ric
+            logger.info("🔇 the engine's own barge-in is off (NO_INTERRUPTION): only our guard cuts him")
         try:
             await super()._connection_task_handler(config)
         except Exception as e:
@@ -1356,6 +1364,7 @@ def build(options, tools: List[Dict[str, Any]]) -> GeminiLiveLLMService:
         http_options=http_options,
     )
     service._turns = turns
+    service.ingen_avbrott = _eko.ingen_avbrott(options.rum)
     if egen_tur(options.rum):
         service._fas_vad = LocalTurns.create(int(options.gemini_turn_silence_ms) or 800)
     if drop_language:
