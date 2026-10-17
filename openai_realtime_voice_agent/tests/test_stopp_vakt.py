@@ -15,7 +15,7 @@ HANS = "Det här är ett ljudprov på svenska. Jag berättar en lång historia o
     ("Stå.", "stopp"), ("Tis.", "stopp"), ("Välta?", "stopp"),            # how the local speech-to-text spells a short stop word
     ("Ja.", "medhall"), ("Okej.", "medhall"), ("Aa!", "medhall"), ("Precis.", "medhall"),
     ("M. M.", "medhall"), ("Åååååå.", "medhall"), ("Mmmm.", "medhall"), ("Åh åh.", "medhall"), ("Mm.", "medhall"),      # 'M. M.' and 'Åh åh.' were cut before (measured 2026-10-17)
-    ("Anta.", "stopp"), ("Tack till elever och personal", "eko"),      # Henrik's own "vänta" was written 'Änta'/'Anta'; noise phrases are no speech
+    ("Anta.", "stopp"), ("Det är bra, stå inte där.", "annat"), ("Vi kan anta det.", "annat"),   # a misspelling counts only as the FIRST word ("Tack till elever och personal", "eko"),      # Henrik's own "vänta" was written 'Änta'/'Anta'; noise phrases are no speech
     ("Det här är ett ljudprov", "eko"), ("Böj en klock.", "annat"), ("", "inget"),
 ])
 def test_stopp_dom(hort, dom):
@@ -60,6 +60,18 @@ async def test_a_stop_word_over_his_reply_cuts_him(monkeypatch):
     assert any(isinstance(f, InterruptionFrame) for f in pushed) and any(isinstance(f, UserStartedSpeakingFrame) for f in pushed)
     assert klipp == [True]                                    # the engine is still generating: the tail is muted
     assert len(sent) == 37                                    # the engine still hears all of it
+
+
+@pytest.mark.asyncio
+async def test_an_unwritable_sound_must_be_louder_than_speech_to_cut(monkeypatch):
+    service, sent, pushed = _bygg(monkeypatch, ["start"] + [None] * 60)
+    service.STOPP_NIVA_INGET_DBFS = -5.0      # the test frames are -12 dBFS: a bang that loud is not enough, speech is
+    anrop, klipp = await _tala(service, "inget")
+    assert klipp == [] and not any(isinstance(f, InterruptionFrame) for f in pushed)
+    service2, sent2, pushed2 = _bygg(monkeypatch, ["start"] + [None] * 60)
+    service2.STOPP_NIVA_INGET_DBFS = -5.0
+    anrop2, klipp2 = await _tala(service2, "annat")
+    assert klipp2 == [True]
 
 
 @pytest.mark.asyncio
@@ -133,3 +145,49 @@ async def test_quiet_room_noise_over_his_reply_is_not_a_stop_word(monkeypatch):
         await asyncio.sleep(0)
     await service._send_user_audio(InputAudioRawFrame(audio=bytes([3, 0]) * 320, sample_rate=16000, num_channels=1))
     assert not any(isinstance(f, InterruptionFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_the_mute_also_ends_with_an_empty_turn_complete_after_a_tool_call(monkeypatch):
+    """G on #95: the early return for the empty turn_complete skipped the end of the mute; the answer to the new turn was swallowed."""
+    service, sent, pushed = _bygg(monkeypatch, ["start"] + [None] * 60)
+    slut = []
+    service.on_stopp_slut = lambda: slut.append(1)
+    await _tala(service, "stopp")
+    assert service._stopp_tyst is True
+    service._answer_after_tool = True
+
+    class Msg:
+        pass
+    await service._handle_msg_turn_complete(Msg())
+    assert slut == [1] and service._stopp_tyst is False
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_after_a_cut_ends_the_mute(monkeypatch):
+    service, sent, pushed = _bygg(monkeypatch, ["start"] + [None] * 60)
+    slut = []
+    service.on_stopp_slut = lambda: slut.append(1)
+    await _tala(service, "stopp")
+
+    async def inget(m):
+        return None
+    from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+    monkeypatch.setattr(GeminiLiveLLMService, "_handle_msg_tool_call", lambda self, m: inget(m))
+    await service._handle_msg_tool_call(object())
+    assert slut == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_short_stop_word_that_ended_before_the_verdict_still_closes_the_turn(monkeypatch):
+    """G on #95: 'vänta' (0.4 s) ends before the speech-to-text answers. The cut reopens 'listening'; the engine-cut rule
+    (AVBROTT_UTAN_TAL_S with no local speech) must close it again, or the device would stay in 'listening'."""
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+    service, sent, pushed = _bygg(monkeypatch, ["start"] + [None] * 30 + ["end"] + [None] * 80)
+    service.STOPP_MIN_S = 0.2
+    anrop, klipp = await _tala(service, "stopp", antal=34)
+    assert klipp == [True]
+    import time as _t
+    service._avbrott_t = _t.monotonic() - 2.0     # the 1.2 s without local speech have passed
+    await service._send_user_audio(_hogt(100))
+    assert any(isinstance(f, UserStoppedSpeakingFrame) for f in pushed)

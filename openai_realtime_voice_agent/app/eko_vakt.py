@@ -121,7 +121,9 @@ def stopp_dom(hort: "str | None", ok: bool, hans: str) -> str:
         return "medhall"
     if ar_eko(hort, hans) or any(l in (hort or "").lower() for l in LUDD):
         return "eko"
-    if any(w in STOPPORD or w in STOPP_SKRIVS for w in h) or bool(difflib.get_close_matches(h[0], STOPPORD, n=1, cutoff=0.75)):
+    # A real stop word counts anywhere; a MISSPELLING only as the first word ('stå', 'tis', 'anta' are common words in
+    # a sentence), and the first word is what a stop word is (B on #94).
+    if any(w in STOPPORD for w in h) or h[0] in STOPP_SKRIVS or bool(difflib.get_close_matches(h[0], STOPPORD, n=1, cutoff=0.75)):
         return "stopp"
     return "annat"
 
