@@ -355,6 +355,12 @@ async def transkribera_tydligt(pcm16k: bytes, host: str, port: int, timeout: flo
     return (None, False) if text is None else (text, True)
 
 
+class Svar(str):
+    """HA's spoken reply, plus whether comms marked it as an answer to be told (`raawr_bana0.tala`, raawr US-069/US-116:
+    the time, a reading, the weather). A str, so every caller that only wants the text is unchanged."""
+    tala = False
+
+
 async def prova(text: str, timeout: float) -> Optional[str]:
     """Ask HA's conversation agent via comms. HA's spoken reply on a hit, else None.
 
@@ -371,10 +377,13 @@ async def prova(text: str, timeout: float) -> Optional[str]:
             )
         if r.status_code != 200:
             return None
-        speech = r.json()["response"]["speech"]["plain"]["speech"]
-        if not isinstance(speech, str):
+        body = r.json()
+        speech = body["response"]["speech"]["plain"]["speech"]
+        if not isinstance(speech, str) or not speech.strip():
             return None
-        return speech.strip() or None
+        svar = Svar(speech.strip())
+        svar.tala = bool((body.get("raawr_bana0") or {}).get("tala"))
+        return svar
     except Exception as e:
         logger.warning(f"bana0: comms failed: {e!r}")
         return None
@@ -545,6 +554,11 @@ async def tur(
 
 def gjort(text: str, svar: str) -> str:
     """What the model is told after a hit: the order, HA's reply, and what to do."""
+    if getattr(svar, "tala", False):  # a reading or the weather: nothing was done, the question is answered
+        return (
+            f"Användaren frågade: \"{text}\". Home Assistant svarade: \"{svar}\". Det är svaret på frågan: "
+            "säg det kort med egna ord, en mening. Det är inget du har gjort. Anropa inga verktyg."
+        )
     return (
         f"Användaren sa: \"{text}\". Huset har REDAN gjort det; Home Assistant svarade: "
         f"\"{svar}\". Bekräfta kort med egna ord, en mening. Anropa inga verktyg och gör inget mer."

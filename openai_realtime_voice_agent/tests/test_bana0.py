@@ -925,3 +925,30 @@ async def test_the_clear_stt_tells_a_miss_from_no_words(monkeypatch):
     assert await bana0.transkribera_tydligt(b"", "h", 1, 1.0) == (None, False)
     monkeypatch.setattr(bana0, "_transkribera", fel)
     assert await bana0.transkribera_tydligt(b"", "h", 1, 1.0) == (None, False)
+
+
+@pytest.mark.asyncio
+async def test_tala_markningen_fran_comms_foljer_med_svaret(comms):
+    """raawr US-116: comms marks a reading or the weather `raawr_bana0.tala`; the answer carries it."""
+    comms.svar = httpx.Response(200, json={"response": {"speech": {"plain": {"speech": "23.7 °C"}}},
+                                           "raawr_bana0": {"intent": "HassGetState", "tala": True}})
+    svar = await bana0.prova("hur varmt är det i kontoret", 4.0)
+    assert svar == "23.7 °C" and svar.tala is True
+    comms.svar = _ha("Tände lampan")  # no mark: an action
+    assert (await bana0.prova("tänd lampan", 4.0)).tala is False
+    comms.svar = httpx.Response(200, json={"response": {"speech": {"plain": {"speech": "  "}}},
+                                           "raawr_bana0": {"tala": True}})
+    assert await bana0.prova("hur varmt är det", 4.0) is None  # an empty answer is a miss
+
+
+@pytest.mark.asyncio
+async def test_ett_las_svar_sags_som_svar_inte_som_en_handling(comms):
+    comms.svar = httpx.Response(200, json={"response": {"speech": {"plain": {"speech": "23.7 °C"}}},
+                                           "raawr_bana0": {"tala": True}})
+    las = await bana0.prova("hur varmt är det i kontoret", 4.0)
+    sagt = bana0.gjort("hur varmt är det i kontoret", las)
+    assert "23.7 °C" in sagt and "frågade" in sagt and "inget du har gjort" in sagt
+    assert "REDAN gjort" not in sagt
+    comms.svar = _ha("Tände lampan")
+    handling = bana0.gjort("tänd lampan", await bana0.prova("tänd lampan", 4.0))
+    assert "REDAN gjort" in handling and "frågade" not in handling
