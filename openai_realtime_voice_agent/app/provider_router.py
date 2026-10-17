@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 TRANSIENT_RETRIES = 1
 
 
+# An engine that said its money is used is not "known healthy" for this long, whatever the probe says: the probe is a GET
+# on the model list, and that answers 200 for an account with no money (Google 2026-10-13: every wake refused with
+# "exceeded its monthly spending cap" while the model list was fine). A completed turn on it clears this at once.
+# ponytail: a fixed hold; ask the provider's billing API instead if one engine ever gets its money back often.
+MONEY_HOLD_S = 6 * 3600.0
+
+
 class ProviderRouter:
     """Decides which engine the next session is built with."""
 
@@ -62,6 +69,8 @@ class ProviderRouter:
         self._strikes: Dict[str, int] = {}
         # When each engine last completed a turn: the proof that it works.
         self._healthy_at: Dict[str, float] = {}
+        # When each engine last said its money is used (see MONEY_HOLD_S).
+        self._broke_at: Dict[str, float] = {}
         self._probe = probe
 
     def current(self) -> str:
@@ -100,6 +109,8 @@ class ProviderRouter:
             return active
 
         failure = classify(message)
+        if failure is Failure.MONEY:
+            self._broke_at[provider] = self._clock()
         if failure in (Failure.APP, Failure.RATE_LIMIT):
             # A rate limit clears in seconds on the same engine; the caller
             # waits and asks again. Switching would cost half an hour.
@@ -119,10 +130,15 @@ class ProviderRouter:
     def note_success(self, provider: str) -> None:
         """A turn completed on this engine, so forget its earlier hiccups."""
         self._strikes.pop(provider, None)
+        self._broke_at.pop(provider, None)
         self._healthy_at[provider] = self._clock()
 
     async def _known_healthy(self, provider: str) -> bool:
-        """Proved itself within the cooldown, or passes the probe now."""
+        """Proved itself within the cooldown, or passes the probe now -- and has not just said its money is used."""
+        broke = self._broke_at.get(provider)
+        if broke is not None and self._clock() - broke < MONEY_HOLD_S:
+            logger.info(f"💸 {provider} said its money is used {self._clock() - broke:.0f}s ago: not counted as healthy")
+            return False
         seen = self._healthy_at.get(provider)
         if seen is not None and self._clock() - seen < self.cooldown_s:
             return True
@@ -150,6 +166,7 @@ class ProviderRouter:
             "reason": self._reason,
             "switched_at": self._switched_at,
             "retry_primary_in_s": round(remaining, 1),
+            "out_of_money": sorted(e for e, t in self._broke_at.items() if self._clock() - t < MONEY_HOLD_S),
         }
 
     async def _switch(self, failure: Failure, message: str) -> str:

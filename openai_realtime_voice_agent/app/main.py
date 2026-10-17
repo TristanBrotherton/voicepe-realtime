@@ -162,8 +162,11 @@ async def probe_engine(provider: str) -> bool:
 
     Asked only when a switch to the backup is on the table. A 200 on the
     model list proves the key and the network, not that a realtime session
-    will hear -- the cheapest honest signal there is. Awaited: the same GET
-    used to block the event loop for the whole timeout, once per backup.
+    will hear -- and NOT that the account has money: Google answered 200 here
+    all evening 2026-10-13 while it refused every session ("exceeded its
+    monthly spending cap"). The router therefore does not ask about an engine
+    that just said its money is used (provider_router.MONEY_HOLD_S). Awaited:
+    the same GET used to block the event loop for the whole timeout.
     """
     import httpx
 
