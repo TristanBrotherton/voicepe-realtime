@@ -178,3 +178,24 @@ def test_ljuslaget_aterstalls_som_det_var():
     fore = {"light.kontor_fonster": "off", "light.hall": "on", "light.ute": "on", "light.elsa": "unavailable"}
     efter = {"light.kontor_fonster": "on", "light.hall": "off", "light.ute": "on", "light.elsa": "on"}
     assert sorted(andringar(fore, efter)) == [("light.hall", "turn_on"), ("light.kontor_fonster", "turn_off")]
+
+
+def test_ljuslagets_aterstallning_gar_genom_mcp_dorren_med_namn(monkeypatch):
+    """US-098: the room's door has no light service, so the put-back is a HassTurnOn/Off MCP call by name; a name two
+    lights share is reported, not guessed."""
+    import sys
+    sys.path.insert(0, "tools")
+    import ljus_lage
+
+    fore = {"light.a": "on", "light.b": "off", "light.c": "on", "_namn": {"light.a": "Fönster", "light.b": "Hall", "light.c": "Hall"}}
+    nu = {"light.a": "off", "light.b": "on", "light.c": "off", "_namn": {"light.a": "Fönster", "light.b": "Hall", "light.c": "Hall"}}
+    anrop = []
+    monkeypatch.setattr(ljus_lage, "lagen", lambda: nu)
+    monkeypatch.setattr(ljus_lage, "_mcp", lambda namn, arg: anrop.append((namn, arg)))
+    monkeypatch.setattr(ljus_lage, "_anrop", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the light service must not be used")))
+    import json, tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(fore, f)
+    monkeypatch.setattr(ljus_lage.sys, "argv", ["x", "aterstall", f.name])
+    assert ljus_lage.main() == 1                       # Hall is ambiguous: reported, exit 1
+    assert anrop == [("intent__HassTurnOn", {"name": "Fönster", "domain": ["light"]})]
