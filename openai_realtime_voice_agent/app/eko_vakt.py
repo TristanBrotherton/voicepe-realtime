@@ -95,6 +95,37 @@ def har_stoppord(text: "str | None") -> bool:
     return any(w in STOPPORD for w in ord_(text))
 
 
+# Back-channel (US-060 AC-17, Henrik 2026-10-17): these never cut him. Includes what the local speech-to-text writes for a
+# hummed "mm" and a drawn-out "aa" ('M. M.', 'Åh åh.', measured 2026-10-17 on rendered clips).
+MEDHALL = {"ja", "jaa", "jo", "jodå", "japp", "jaha", "jaså", "javisst", "okej", "ok", "okey", "mm", "m", "mhm", "mmm", "hm", "hmm",
+           "aha", "ah", "åh", "aa", "a", "precis", "visst", "absolut", "exakt", "gärna"}
+# What the local speech-to-text writes for a SHORT stop word (0.4-0.7 s of audio is little for it; rendered clips
+# 2026-10-17: "stopp" -> 'Stå.', "tyst" -> 'Tis.'; Henrik's live "vänta" -> 'Välta?', 'Änta!'), plus his name: he is addressed.
+# To be re-measured on Henrik's own recordings; the list is code with a test, not the model's reading.
+STOPP_SKRIVS = {"stå", "stål", "tis", "välta", "änta", "anta", "vänt", "björn"}   # "anta"/"änta": Henrik's own "vänta" in his recorded clip ("Änta, varför?")
+
+
+def _humm(w: str) -> bool:
+    """A drawn-out "aa" / "mm" / "hmm" the speech-to-text writes as one letter repeated ('Åååååå.', 'Mmmm')."""
+    return len(w) >= 2 and len(set(w)) == 1 and w[0] in "aåämhe"
+
+
+def stopp_dom(hort: "str | None", ok: bool, hans: str) -> str:
+    """The stop-word guard's verdict on the first ~0.5 s of speech over his reply (US-060 AC-17, AC-18):
+    "stopp" (cut him now), "medhall" (a back-channel: he goes on), "eko" (his own words), "annat" (anything else:
+    the engine's own turn detection decides) or "inget" (nothing intelligible)."""
+    h = ord_(hort)
+    if not ok or not h:
+        return "inget"
+    if all(w in MEDHALL or _humm(w) for w in h):
+        return "medhall"
+    if ar_eko(hort, hans) or any(l in (hort or "").lower() for l in LUDD):
+        return "eko"
+    if any(w in STOPPORD or w in STOPP_SKRIVS for w in h) or bool(difflib.get_close_matches(h[0], STOPPORD, n=1, cutoff=0.75)):
+        return "stopp"
+    return "annat"
+
+
 def under_tal(sedan_svar_s: float, kandidat_s: float, fas_svarar: bool) -> bool:
     """The candidate STARTED while his voice was in the room: he is replying now, or the last reply audio was sent no
     longer ago than the candidate is long plus UNDER_TAL_S."""

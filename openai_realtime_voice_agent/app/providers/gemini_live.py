@@ -338,6 +338,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             logger.info("⏳ empty turn_complete after a tool call — the answer comes in a new turn")
             return
         self._reply_awaited_at = None
+        self._genererar = False
+        self._stopp_tystnad_slut()
         if self._svar_text.strip():
             logger.info(f"💬 Björn sa: {self._svar_text.strip()[:400]}")
         self._svar_text = ""
@@ -520,6 +522,8 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             if event != "start" or not await self._vaken_for_tur():
                 return
             frame = type(frame)(audio=self._take_preroll(), sample_rate=frame.sample_rate, num_channels=frame.num_channels)
+        if self.stopp_dom is not None:
+            await self._stopp_vakt(frame, event)
         if event == "start":
             self._avbrott_t = 0.0   # the local detector hears the speech too: its own "end" closes it
         if event == "start" and not (self.svarar is not None and self.svarar()):
@@ -537,11 +541,107 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
             await self.push_frame(UserStoppedSpeakingFrame())
         await super()._send_user_audio(frame)
 
+    # Stop-word guard (US-060 AC-17, AC-18, Henrik 2026-10-17). Only in rooms where the engine runs the turns. The engine
+    # hears everything as before and may cut him on its own (a whole sentence); this is a second, faster way that can only
+    # CUT: the first ~0.5 s of speech over his reply is written out locally, and a stop word or his name ("vänta", "stopp",
+    # "tyst", "Björn", also as the speech-to-text misspells them) silences him at once. A back-channel ("mm", "ja", "okej",
+    # "aa") never does. The reply the engine goes on generating is not spoken until its turn ends (on_stopp_slut).
+    stopp_dom = None        # set by the handler: async (pcm, rate) -> "stopp" | "medhall" | "eko" | "annat" | "inget"
+    on_stopp_klipp = None   # called (plain, tyst: bool) when this guard cut him: the handler mutes the tail if tyst
+    on_stopp_slut = None    # called (plain) when the cut reply's turn is over: the next reply is wanted again
+    STOPP_MIN_S = float(os.environ.get("STOPP_MIN_S", "0.6"))  # speech collected before it is written out (shorter = faster, less exact)
+    _stopp_kand = None
+    _stopp_efter = 0
+    _stopp_t0 = 0.0
+    _stopp_task = None
+    _stopp_slut = False
+    _stopp_tyst = False
+    _genererar = False      # the engine is sending (or may still send) the audio of a reply: set by model audio, cleared at turn end
+
+    def _stopp_nollstall(self) -> None:
+        if self._stopp_task is not None and not self._stopp_task.done():
+            self._stopp_task.cancel()
+        self._stopp_kand = self._stopp_task = None
+        self._stopp_efter, self._stopp_slut = 0, False
+
+    @staticmethod
+    def _pcm_for_tyst(pcm: bytes) -> bool:
+        from app.avbrott import dbfs
+        steg = [dbfs(pcm[i:i + 8000]) for i in range(0, max(len(pcm) - 8000, 1), 8000)]
+        return bool(steg) and max(steg) < _eko.niva_dbfs()
+
+    STOPP_NIVA_DBFS = float(os.environ.get("STOPP_NIVA_DBFS", "-30"))
+    STOPP_FORE_S = 0.3
+
+    @classmethod
+    def _pcm_hogt(cls, pcm: bytes) -> bool:
+        from app.avbrott import dbfs
+        steg = [dbfs(pcm[i:i + 8000]) for i in range(0, max(len(pcm) - 8000, 1), 8000)]
+        return bool(steg) and max(steg) >= cls.STOPP_NIVA_DBFS
+
+    async def _stopp_vakt(self, frame, event) -> None:
+        if self.svarar is None or not self.svarar():
+            if self._stopp_kand is not None:
+                self._stopp_nollstall()
+            return
+        self._keep_preroll(frame)
+        nu = time.monotonic()
+        if self._stopp_kand is None:
+            if event != "start":
+                return
+            fore = int(self.STOPP_FORE_S * frame.sample_rate) * 2   # the last 0.3 s before the speech, this frame included
+            self._stopp_kand = bytearray(self._preroll[-fore:])
+            self._stopp_efter, self._stopp_t0, self._stopp_slut = len(frame.audio), nu, False
+            return
+        self._stopp_kand += frame.audio
+        self._stopp_efter += len(frame.audio)
+        if event == "end":
+            self._stopp_slut = True
+        if self._stopp_task is None:
+            if self._stopp_slut or self._stopp_efter >= self.STOPP_MIN_S * frame.sample_rate * 2:
+                self._stopp_task = asyncio.get_running_loop().create_task(
+                    self.stopp_dom(bytes(self._stopp_kand), frame.sample_rate))
+            return
+        if not self._stopp_task.done():
+            return
+        try:
+            dom = self._stopp_task.result()
+        except Exception as e:  # a failing guard leaves the engine's own detection as it was
+            logger.warning(f"⚠️ stop-word guard failed ({e!r}): the engine decides")
+            dom = "inget"
+        pcm, t0 = bytes(self._stopp_kand), self._stopp_t0
+        self._stopp_nollstall()
+        # A stop word cuts him above the echo floor (-36 dBFS: his echo is -41..-52, Henrik -12..-20). Anything else that
+        # is not a back-channel and not his own words ("annat", or unintelligible) is a person talking over him -- also an
+        # interruption, which the engine would take too -- but only well above the floor (-30), since a stop word the
+        # speech-to-text could not spell ('Tack.') must still cut, and room noise must not.
+        if (dom == "stopp" and not self._pcm_for_tyst(pcm)) or (dom in ("annat", "inget") and self._pcm_hogt(pcm)):
+            await self._stopp_klipp(time.monotonic() - t0)
+
+    async def _stopp_klipp(self, ms_s: float) -> None:
+        logger.info(f"🛑 stop word over his reply: cut, {ms_s * 1000:.0f} ms after the speech began (to the decision)")
+        self._stopp_tyst = self._genererar   # the engine has already sent the whole reply: nothing more is on its way
+        if self.on_stopp_klipp is not None:
+            self.on_stopp_klipp(self._stopp_tyst)
+        await self._handle_interruption()
+        await self.push_frame(InterruptionFrame())
+        self._fas_talar = True
+        self._avbrott_t = 0.0 if getattr(self._fas_vad, "_speaking", False) else time.monotonic()
+        await self.push_frame(UserStartedSpeakingFrame())
+
+    def _stopp_tystnad_slut(self) -> None:
+        if self._stopp_tyst:
+            self._stopp_tyst = False
+            if self.on_stopp_slut is not None:
+                self.on_stopp_slut()
+
     async def _motor_avbrott(self) -> None:
         """serverContent.interrupted: the engine heard speech over its reply and stopped. pipecat 0.0.97 does nothing
         with that message, so the reply's queued audio (the engine sends about four times faster than it is played)
         would play on. Drop it here, and tell the device: "listening" makes it flush its own buffer."""
         logger.info("🔊 interrupted by the engine: it heard speech over his reply")
+        self._genererar = False
+        self._stopp_tystnad_slut()
         if self.on_motor_avbrott is not None:
             self.on_motor_avbrott()
         await self._handle_interruption()
@@ -881,6 +981,7 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         parts = list(msg.server_content.model_turn.parts or [])
         if any(p.inline_data and p.inline_data.data for p in parts):
             self._answer_after_tool = False
+            self._genererar = True
         if self._settings.get("modalities") != GeminiModalities.AUDIO:
             return await super()._handle_msg_model_turn(msg)
         for part in parts:

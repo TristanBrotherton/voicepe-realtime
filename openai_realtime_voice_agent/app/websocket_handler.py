@@ -109,6 +109,7 @@ def koppla_egen_tur(service, connection, phase_emitter, serializer) -> None:
 
 
 VANTA_LYSSNAR_S = float(os.environ.get("VANTA_LYSSNAR_S", "10"))  # after a bare "vänta" over his reply: silent, mic open, this long
+STOPP_TYST_S = 8.0  # the stop-word guard's mute of the cut reply's tail: at most this long, and ends with the reply's turn
 VANTA_TYST_S = 90.0  # ...and the rest of the reply that was cut, which the engine goes on generating, is not spoken (until the next turn ends)
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
@@ -2087,6 +2088,21 @@ class WebSocketHandler:
                                 f"{'ignored' if eko else 'a person, interrupts'}")
                     return eko
 
+                async def _stopp_dom(pcm, rate):
+                    """US-060 AC-17/AC-18: the first ~0.5 s of speech over his reply, written out locally and judged as a
+                    stop word (cut him), a back-channel (never), his own words, or something else (the engine decides)."""
+                    if rate != 16000:
+                        import numpy as _np
+                        a = _np.frombuffer(pcm, dtype=_np.int16).astype(_np.float32)
+                        n = int(len(a) * 16000 / rate)
+                        pcm = _np.interp(_np.linspace(0, len(a) - 1, n), _np.arange(len(a)), a).astype(_np.int16).tobytes()
+                    t_stt = time.monotonic()
+                    hort, ok = await bana0.transkribera_tydligt(pcm, host, port, timeout_stt)
+                    svar_obj = getattr(openai_service, "svar", None)
+                    dom = eko_vakt.stopp_dom(hort, ok, svar_obj.text() if svar_obj is not None else "")
+                    logger.info(f"🛑 over his reply: heard {hort!r} ({time.monotonic() - t_stt:.2f} s to write out) -> {dom}")
+                    return dom
+
                 if eko_vakt.nat_paa():
                     # Not while his reply is muted (after an interruption): nothing of him is in the room then, and
                     # what the person says next ("vänta ... vad sa du om huset?") is a turn, not a candidate.
@@ -2110,6 +2126,16 @@ class WebSocketHandler:
                     openai_service.svar.text() if getattr(openai_service, "svar", None) is not None else "")
                 if getattr(openai_service, "_fas_vad", None) is not None:
                     koppla_egen_tur(openai_service, connection, phase_emitter, serializer)
+                    if os.environ.get("STOPP_VAKT", "1") != "0" and hasattr(openai_service, "stopp_dom"):
+                        def _stopp_klipp(tyst: bool):
+                            connection.barge_in_t = time.monotonic()
+                            connection.barge_tur = True
+                            if tyst:
+                                serializer.tysta_svar(STOPP_TYST_S)   # the tail the engine goes on generating is not spoken
+
+                        openai_service.stopp_dom = _stopp_dom
+                        openai_service.on_stopp_klipp = _stopp_klipp
+                        openai_service.on_stopp_slut = lambda: serializer.tysta_slut(0.3)
             if hasattr(openai_service, "on_user_turn_pre_end"):
                 openai_service.on_user_turn_pre_end = _pre_end
             serializer.is_replying = lambda: phase_emitter.phase == "replying"
