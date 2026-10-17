@@ -513,10 +513,26 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
     svarar = None            # set by the handler: True while his reply is playing
     on_motor_avbrott = None  # called (plain) when the engine says it was interrupted
 
+    # AC-19 (US-060, 2026-10-17): after an interruption the follow-up question got no answer and the journal could not say
+    # why. These lines are what the next test needs: whether the room audio reached the engine (the gate), when the local
+    # detector heard speech start and end, when the engine's first audio came, and what an interrupted reply had said.
+    _stangda = 0
+    _tal_slut_t = 0.0
+
     async def _egen_tur_ljud(self, frame):
         if self.slapp_ljud is not None and not self.slapp_ljud():
+            self._stangda += 1
             return
+        if self._stangda:
+            logger.info(f"🚪 audio gate was closed: {self._stangda} frames of room audio were not sent to the engine")
+            self._stangda = 0
         event = self._fas_vad.feed(frame.audio)
+        if event in ("start", "end"):
+            if event == "end":
+                self._tal_slut_t = time.monotonic()
+            logger.info(f"🎙️ local detector: speech {event} "
+                        f"(replying={bool(self.svarar is not None and self.svarar())}, "
+                        f"engine generating={self._genererar}, muted tail={self._stopp_tyst})")
         if getattr(self, "sover", False):
             # The engine was put to sleep and somebody speaks (a follow-up; the wake word wakes it by itself): wake it
             # at the first speech and send what was said meanwhile (kitchen 2026-10-09: a turn into a sleeping engine).
@@ -628,6 +644,7 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
 
     async def _stopp_klipp(self, ms_s: float) -> None:
         logger.info(f"🛑 stop word over his reply: cut, {ms_s * 1000:.0f} ms after the speech began (to the decision)")
+        self._logg_avbruten_text("stoppvakten")
         self._stopp_tyst = self._genererar   # the engine has already sent the whole reply: nothing more is on its way
         if self.on_stopp_klipp is not None:
             self.on_stopp_klipp(self._stopp_tyst)
@@ -636,6 +653,13 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         self._fas_talar = True
         self._avbrott_t = 0.0 if getattr(self._fas_vad, "_speaking", False) else time.monotonic()
         await self.push_frame(UserStartedSpeakingFrame())
+
+    def _logg_avbruten_text(self, skal: str) -> None:
+        """What he had said when he was cut (the 'Björn sa' line only comes at a finished turn)."""
+        text = self._svar_text.strip()
+        if text:
+            logger.info(f"💬 Björn sa (avbruten, {skal}): {text[:400]}")
+        self._svar_text = ""
 
     def _stopp_tystnad_slut(self) -> None:
         if self._stopp_tyst:
@@ -648,6 +672,7 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         with that message, so the reply's queued audio (the engine sends about four times faster than it is played)
         would play on. Drop it here, and tell the device: "listening" makes it flush its own buffer."""
         logger.info("🔊 interrupted by the engine: it heard speech over his reply")
+        self._logg_avbruten_text("motorn")
         self._genererar = False
         self._stopp_tystnad_slut()
         if self.on_motor_avbrott is not None:
@@ -989,6 +1014,9 @@ class ResilientGeminiLiveService(SovlageMixin, LocalTurnsMixin, ToolRegistration
         parts = list(msg.server_content.model_turn.parts or [])
         if any(p.inline_data and p.inline_data.data for p in parts):
             self._answer_after_tool = False
+            if not self._genererar:
+                sedan = f"{time.monotonic() - self._tal_slut_t:.1f} s after the last speech end" if self._tal_slut_t else "no speech end seen"
+                logger.info(f"🔈 engine audio starts ({sedan})")
             self._genererar = True
         if self._settings.get("modalities") != GeminiModalities.AUDIO:
             return await super()._handle_msg_model_turn(msg)
