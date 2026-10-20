@@ -11,6 +11,11 @@ All notable changes to this add-on. Newest first.
   earlier attempt at the wake word that the model missed, which is the most
   useful audio for retraining it. Earlier firmware never sent a trigger clip
   at all (it announced the wake before copying the audio).
+- Every way a wake's turn ends is now written to the wake log (answered,
+  declined as not addressed to the assistant, no speech, interrupted,
+  disconnected). Only the normal end of a turn was recorded, so a wake that
+  nobody spoke after (the usual false wake) had no outcome, and wake-word
+  training could not label it without someone saying "that was a false alarm".
 
 ## 0.19.4 (fork)
 
