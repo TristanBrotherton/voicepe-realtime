@@ -9,6 +9,7 @@ Embeds each file in ~3 s chunks, averages, normalizes, writes
 import json
 import os
 import sys
+import time
 import wave
 
 import numpy as np
@@ -42,6 +43,10 @@ def build(name: str, files: list) -> dict:
     c = c / np.linalg.norm(c)
     os.makedirs(voiceprint.PRINTS_DIR, exist_ok=True)
     out = os.path.join(voiceprint.PRINTS_DIR, f"{name}.json")
+    if os.path.exists(out):
+        # A new session replaces the print; keep the old one so a worse
+        # recording can be undone by renaming the backup back.
+        os.replace(out, f"{out}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
     json.dump({"name": name, "embedding": c.tolist(), "chunks": len(vecs)}, open(out, "w"))
     return {"ok": True, "chunks": len(vecs), "path": out}
 

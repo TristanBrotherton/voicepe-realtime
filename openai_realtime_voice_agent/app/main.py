@@ -1206,6 +1206,13 @@ class Application:
             await self.spoken_prompts.warm()
         except Exception as e:
             logger.debug(f"prompt warm-up failed: {e!r}")
+        conductor = getattr(self, "enrollment_conductor", None)
+        if conductor is not None:
+            try:
+                ready = await conductor.prepare()
+                logger.info(f"🎓 voice training guidance ready ({ready} lines)")
+            except Exception as e:
+                logger.warning(f"⚠️ voice training guidance not prepared: {e!r}")
 
     async def _play_prompt(self, pcm: bytes, device_id: str) -> bool:
         """Play a cached prompt on one device with the inbound mic suppressed."""
