@@ -79,6 +79,13 @@ class TestEnrollmentConductor(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("record", events)
         self.assertNotIn("start", events)
 
+    async def test_prepare_counts_distinct_lines_and_misses(self):
+        c = Conductor([], fail={"Keep going."})
+        total = len({t for t, _ in c.script()})
+        self.assertEqual(await c.prepare(), total - 1)
+        c.fail.clear()
+        self.assertEqual(await c.prepare(), total)
+
     async def test_lines_prepared_at_startup_are_not_rendered_again(self):
         events = []
         c = Conductor(events)

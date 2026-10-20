@@ -391,10 +391,12 @@ class EnrollmentConductor:
         rendered before recording starts (see prepare), so the pacing never
         waits on speech synthesis."""
         p = self.phrase
-        steps = [(
-            f"Voice training. Each time I say 'next', say '{p}' once, the way you "
-            f"normally would. Thirty in all, from a few different spots. Press the "
-            f"button on top at any time to stop. To begin, stand close to me.", 1.0)]
+        steps = [
+            (f"Voice training. Each time I say next, say {p} once, the way you "
+             f"normally would.", 0.5),
+            ("Thirty in all, from a few different spots. Press the button on top "
+             "to stop. To begin, stand close to me.", 1.0),
+        ]
         sections = {
             7: "Now go across the room and say it at your normal volume. Don't shout.",
             13: "Now stand wherever you usually are when you talk to me.",
@@ -421,7 +423,7 @@ class EnrollmentConductor:
         slow or failing voice renderer can delay the start but never stretch
         the gaps between reps (it once took 10-40 s per line mid-session)."""
         ready = 0
-        for text, _pause in self.script():
+        for text in dict.fromkeys(t for t, _ in self.script()):
             if text in self._lines:
                 ready += 1
                 continue
