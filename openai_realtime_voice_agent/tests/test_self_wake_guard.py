@@ -90,9 +90,11 @@ class TestFastLocalReadsAreSilent(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.played = []
+        self.ack_heard = asyncio.Event()
 
         async def play(pcm, device_id):
             self.played.append(device_id)
+            self.ack_heard.set()
             return True
 
         tts = TTSCache("", "alloy", cache_dir=tempfile.mkdtemp())
@@ -167,7 +169,16 @@ class TestFastLocalReadsAreSilent(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.played, [])
 
     async def test_a_genuinely_slow_tool_is_unaffected(self):
-        self.register("web_search", 0.15)
+        # The tool stays busy until the acknowledgement plays (capped at 5 s)
+        # instead of racing a fixed 0.15 s against the 0.05 s ack delay, which
+        # lost whenever a loaded CI runner stalled the ack task's start.
+        async def handler(params):
+            try:
+                await asyncio.wait_for(self.ack_heard.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            await params.result_callback("results")
+        self.service.register_function("web_search", handler)
         await self.call("web_search")
         self.assertEqual(self.played, ["workshop"])
 
