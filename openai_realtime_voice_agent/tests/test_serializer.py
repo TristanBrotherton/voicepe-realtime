@@ -102,6 +102,20 @@ class TestControlDispatch(unittest.IsolatedAsyncioTestCase):
                          "b64": base64.b64encode(pcm[half:]).decode()})
         self.assertEqual(self.calls, [("trigger", ("t-2", pcm, 16000))])
 
+    async def test_five_second_trigger_in_firmware_sized_chunks(self):
+        # Firmware sends a 5 s pre-roll as 2048-sample (128 ms) text frames.
+        self.ser.set_trigger_audio_handler(self.record("trigger"))
+        pcm = b"\x01\x00" * (5 * 16000)
+        chunk = 2048 * 2
+        parts = [pcm[i:i + chunk] for i in range(0, len(pcm), chunk)]
+        for seq, part in enumerate(parts):
+            msg = {"type": "trigger_audio", "turn": "t-5", "seq": seq, "rate": 16000,
+                   "b64": base64.b64encode(part).decode()}
+            if seq == len(parts) - 1:
+                msg["last"] = 1
+            await self.send(msg)
+        self.assertEqual(self.calls, [("trigger", ("t-5", pcm, 16000))])
+
     async def test_trigger_audio_size_limit_and_bad_base64(self):
         self.ser.set_trigger_audio_handler(self.record("trigger"))
         big = base64.b64encode(b"\x00" * (MAX_TRIGGER_AUDIO_BYTES + 2)).decode()

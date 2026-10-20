@@ -265,8 +265,9 @@ configuration:
   trigger_capture:
     name: "🔐 Privacy · Keep the sound that triggered a wake"
     description: >-
-      Also keep the ~1.5 seconds BEFORE each wake (what the device thought was
-      the wake word) — the most useful audio for fixing false wakes. Needs
+      Also keep the 5 seconds BEFORE each wake (what the device thought was
+      the wake word, and any earlier attempt it missed) — the most useful
+      audio for retraining the wake word. Needs
       "Wake data kept" = audio AND the device's own "Share wake trigger audio"
       switch. Stays on this host.
   log_transcripts:

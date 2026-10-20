@@ -107,6 +107,25 @@ class TestTurnTimeline(unittest.TestCase):
         self.timeline.finish("replied")
         self.assertEqual(self.timeline.ensure_active().turn_id, "d1-9.f2")
 
+    def test_every_finish_path_reports_the_outcome(self):
+        # The wake log labels wakes for wake-word training from this hook, so
+        # a turn that ends with no speech must report it like any other.
+        seen = []
+        self.timeline.on_finish = lambda t: seen.append((t.turn_id, t.outcome))
+        self.timeline.begin("w1")
+        self.timeline.finish("no_speech")
+        self.timeline.begin("w2")
+        self.timeline.begin("w3")  # supersedes w2
+        self.assertEqual(seen, [("w1", "no_speech"), ("w2", "superseded")])
+
+    def test_a_failing_finish_hook_does_not_break_the_turn(self):
+        def boom(_turn):
+            raise RuntimeError("hook")
+        self.timeline.on_finish = boom
+        self.timeline.begin("w1")
+        self.assertIsNotNone(self.timeline.finish("replied"))
+        self.assertEqual(self.timeline.find("w1").outcome, "replied")
+
     def test_new_wake_supersedes_an_open_turn(self):
         self.timeline.begin("a")
         self.timeline.begin("b")

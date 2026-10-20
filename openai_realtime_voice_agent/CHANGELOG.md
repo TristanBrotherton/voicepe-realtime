@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.5 (fork)
+
+### Fixed: wake trigger capture
+
+- Accepts the 5 s pre-wake clip that firmware 36678d9 and later sends (the
+  limit was 3 s, so the clip was discarded). The longer clip also holds an
+  earlier attempt at the wake word that the model missed, which is the most
+  useful audio for retraining it. Earlier firmware never sent a trigger clip
+  at all (it announced the wake before copying the audio).
+- Every way a wake's turn ends is now written to the wake log (answered,
+  declined as not addressed to the assistant, no speech, interrupted,
+  disconnected). Only the normal end of a turn was recorded, so a wake that
+  nobody spoke after (the usual false wake) had no outcome, and wake-word
+  training could not label it without someone saying "that was a false alarm".
+
 ## 0.19.4 (fork)
 
 ### Fixed: the speaker's name in router mode

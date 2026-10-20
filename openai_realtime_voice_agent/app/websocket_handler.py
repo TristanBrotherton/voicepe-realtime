@@ -1164,7 +1164,6 @@ class WebSocketHandler:
             if turn is None or turn.done:
                 return
             timeline.finish(outcome)
-            self.wake_events.set_outcome(connection.device_id, turn.turn_id.split(".f")[0], outcome)
 
         phase_emitter.on_turn_end = _on_turn_end
         def _on_bot_started():
@@ -1602,6 +1601,15 @@ class WebSocketHandler:
         )
         connection.transport = self.create_transport(websocket, serializer)
         connection.turn_timeline = TurnTimeline(device_id, publish=PUBLISHER.latency)
+
+        def _record_wake_outcome(turn):
+            # Every way a wake's own turn ends (answered, declined as not
+            # addressed, no speech, interrupted, disconnected) labels the wake
+            # for wake-word training; nobody has to flag false wakes. A
+            # follow-up turn (".f<n>") never relabels the wake.
+            if ".f" not in turn.turn_id:
+                self.wake_events.set_outcome(connection.device_id, turn.turn_id, turn.outcome)
+        connection.turn_timeline.on_finish = _record_wake_outcome
         connection.wake_capture = WakeAudioCapture(self.wake_events)
         serializer.add_audio_tap(connection.wake_capture)
 

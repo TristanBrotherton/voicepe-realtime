@@ -186,6 +186,8 @@ class TurnTimeline:
         self._clock = clock
         self.stats = stats or LatencyStats()
         self.current: Optional[Turn] = None
+        # Called with every finished turn, whichever path finished it.
+        self.on_finish: Optional[Callable[[Turn], None]] = None
         self.history: Deque[Turn] = deque(maxlen=history)
         self._follow_ups = 0
         self._emit_handles: Dict[str, asyncio.TimerHandle] = {}
@@ -265,6 +267,11 @@ class TurnTimeline:
         turn.outcome = turn.outcome or outcome
         self.history.append(turn)
         self._schedule_emit(turn)
+        if self.on_finish is not None:
+            try:
+                self.on_finish(turn)
+            except Exception as e:  # never let bookkeeping break a turn
+                logger.warning(f"⚠️ turn finish hook failed: {e!r}")
         return turn
 
     def set_outcome(self, turn_id: str, outcome: str) -> None:
