@@ -189,12 +189,13 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
             "Start or stop a guided voice-training (enrollment) recording session "
             "for a household member. Use when someone asks to train, teach, or "
             "enroll their voice (e.g. 'teach the assistant my voice', 'voice "
-            "training', 'continue voice training'). Call start IMMEDIATELY and "
-            "WITHOUT a person name — the system identifies the speaker by voice "
-            "automatically (never ask who is enrolling unless the tool says it "
-            "could not identify them, or they are enrolling someone else). Then "
-            "follow the returned protocol exactly. Recording captures everything "
-            "the microphone hears until stopped."
+            "training', 'continue voice training'). Call start IMMEDIATELY. If "
+            "the user said whose voice it is ('voice training for Sam'), pass "
+            "that name as person; otherwise leave person out and the system "
+            "identifies the speaker by voice (never ask who is enrolling unless "
+            "the tool says it could not identify them). Then follow the "
+            "returned protocol exactly. Recording captures everything the "
+            "microphone hears until stopped."
         ),
         "parameters": {
             "type": "object",
@@ -207,10 +208,9 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
                 "person": {
                     "type": "string",
                     "description": (
-                        "First name of the person enrolling. OPTIONAL: leave it out "
-                        "and the system uses the voice-identified speaker "
-                        "automatically. Only provide it when enrolling someone "
-                        "other than the current speaker."
+                        "First name of the person enrolling, exactly as the user "
+                        "said it. Leave it out only when the user named nobody; "
+                        "the voice-identified speaker is used then."
                     ),
                 },
             },
