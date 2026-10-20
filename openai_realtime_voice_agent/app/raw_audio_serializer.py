@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # validated and size-limited before they reach logs, sensors or filenames.
 WAKE_META_STRINGS = ("turn", "src", "model", "model_sha", "tier", "fw")
 WAKE_META_NUMBERS = ("cutoff", "cutoff_uint8", "window", "fire_age_ms", "v")
-MAX_TRIGGER_AUDIO_BYTES = 3 * 16000 * 2  # 3 s of 16 kHz mono PCM16
+MAX_TRIGGER_AUDIO_BYTES = 6 * 16000 * 2  # firmware sends up to 5 s of 16 kHz mono PCM16
 MAX_TRIGGER_CHUNKS = 64
 
 # Wake sources the microphone produces. The firmware runs micro_wake_word

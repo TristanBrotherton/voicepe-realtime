@@ -152,7 +152,7 @@ options:
   # metadata; off = nothing (guest mode); metadata = counters + wake metadata;
   # audio = metadata + short post-wake clips for false-wake review.
   wake_capture: "auto"
-  # Also ask the firmware for the ~1.5 s BEFORE a wake (the sound that
+  # Also ask the firmware for the 5 s BEFORE a wake (the sound that
   # triggered it). Needs wake_capture=audio AND the device's own switch.
   trigger_capture: false
   # Write what was said into the add-on log. Off by default (personal data).
