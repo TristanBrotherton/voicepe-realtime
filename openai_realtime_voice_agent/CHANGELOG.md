@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.6 (fork)
+
+### Fixed: voice training
+
+- Under the Live voice every guidance line was rendered when it was spoken
+  (10-40 s, retried each time a render was not verbatim), so "Next, please"
+  came minutes apart and a session could not finish. All lines are rendered
+  at startup (retried until every line is ready) and checked again before a
+  session records anything; a session never starts with a line missing.
+- 30 repetitions from several spots: close up, across the room at a normal
+  volume, where the speaker usually stands, turned away, quickly in passing.
+- A name the user says ("voice training for Sam") is passed to the tool;
+  voice identification is only used when nobody is named.
+- Rebuilding a voice print keeps the previous one as a .bak file.
+
 ## 0.19.5 (fork)
 
 ### Fixed: wake trigger capture
