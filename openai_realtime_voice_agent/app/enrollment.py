@@ -189,12 +189,13 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
             "Start or stop a guided voice-training (enrollment) recording session "
             "for a household member. Use when someone asks to train, teach, or "
             "enroll their voice (e.g. 'teach the assistant my voice', 'voice "
-            "training', 'continue voice training'). Call start IMMEDIATELY and "
-            "WITHOUT a person name — the system identifies the speaker by voice "
-            "automatically (never ask who is enrolling unless the tool says it "
-            "could not identify them, or they are enrolling someone else). Then "
-            "follow the returned protocol exactly. Recording captures everything "
-            "the microphone hears until stopped."
+            "training', 'continue voice training'). Call start IMMEDIATELY. If "
+            "the user said whose voice it is ('voice training for Sam'), pass "
+            "that name as person; otherwise leave person out and the system "
+            "identifies the speaker by voice (never ask who is enrolling unless "
+            "the tool says it could not identify them). Then follow the "
+            "returned protocol exactly. Recording captures everything the "
+            "microphone hears until stopped."
         ),
         "parameters": {
             "type": "object",
@@ -207,10 +208,9 @@ def get_enrollment_tool_definition() -> Dict[str, Any]:
                 "person": {
                     "type": "string",
                     "description": (
-                        "First name of the person enrolling. OPTIONAL: leave it out "
-                        "and the system uses the voice-identified speaker "
-                        "automatically. Only provide it when enrolling someone "
-                        "other than the current speaker."
+                        "First name of the person enrolling, exactly as the user "
+                        "said it. Leave it out only when the user named nobody; "
+                        "the voice-identified speaker is used then."
                     ),
                 },
             },
@@ -309,6 +309,7 @@ class EnrollmentConductor:
 
     CHUNK = 4800          # 100 ms of 24 kHz mono PCM16
     REP_GAP_S = 4.5
+    REPS = 30
 
     def __init__(self, recorder, send_json, send_bytes, api_key,
                  phrase="hey leonard", tts_voice="fable", tts_style=""):
@@ -325,6 +326,7 @@ class EnrollmentConductor:
         self.tts = TTSCache(api_key, self.tts_voice, tts_style or DEFAULT_STYLE,
                             cache_dir="/data/enroll_prompts")
         self._task = None
+        self._lines: Dict[str, bytes] = {}   # rendered script lines, by text
         self.device_id: Optional[str] = None
         self.on_finished = None   # async callback(info: dict) after stop
 
@@ -380,38 +382,88 @@ class EnrollmentConductor:
         self.device_id = None
         return info
 
-    async def _run(self, person):
+    def script(self):
+        """The guided session: (spoken line, pause after it in seconds).
+
+        Reps are spread over the ways the wake word is really used: close up,
+        from across the room at a normal volume, from wherever the speaker
+        usually stands, turned away, quickly and casually. Every line is
+        rendered before recording starts (see prepare), so the pacing never
+        waits on speech synthesis."""
         p = self.phrase
+        steps = [
+            (f"Voice training. Each time I say next, say {p} once, the way you "
+             f"normally would.", 0.5),
+            ("Thirty in all, from a few different spots. Press the button on top "
+             "to stop. To begin, stand close to me.", 1.0),
+        ]
+        sections = {
+            7: "Now go across the room and say it at your normal volume. Don't shout.",
+            13: "Now stand wherever you usually are when you talk to me.",
+            19: "Now turn away from me, or keep doing something with your hands.",
+            25: "Last few. Say it quickly and casually, as if in passing.",
+        }
+        for rep in range(1, self.REPS + 1):
+            if rep in sections:
+                steps.append((sections[rep], 3.0))  # time to walk somewhere
+            steps.append(("Next, please.", self.REP_GAP_S))
+        steps += [
+            ("Well done. Now talk normally for about ninety seconds, from anywhere "
+             "in the room. Describe your day, read something nearby, or simply "
+             "ramble. Starting now.", 45),
+            ("Keep going.", 45),
+            ("That's everything. Session complete. Thank you.", 2),
+        ]
+        return steps
+
+    async def prepare(self) -> int:
+        """Render every script line once; returns how many are ready.
+
+        Called at startup and again before a session records anything, so a
+        slow or failing voice renderer can delay the start but never stretch
+        the gaps between reps (it once took 10-40 s per line mid-session)."""
+        ready = 0
+        for text in dict.fromkeys(t for t, _ in self.script()):
+            if text in self._lines:
+                ready += 1
+                continue
+            try:
+                self._lines[text] = await self._tts(text)
+                ready += 1
+            except Exception as e:
+                logger.warning(f"⚠️ enrollment line not ready ({e!r}): {text[:40]}")
+        return ready
+
+    async def _say_line(self, text):
+        pcm = self._lines.get(text)
+        if pcm is None:
+            return await self._say(text)
+        for i in range(0, len(pcm), self.CHUNK):
+            if not await self.send_bytes(pcm[i:i + self.CHUNK], self.device_id):
+                return False
+            await asyncio.sleep(0.095)
+        return True
+
+    async def _run(self, person):
         try:
+            steps = self.script()
+            await self.prepare()
+            missing = {t for t, _ in steps} - set(self._lines)
+            if missing:
+                # Never start a session that would stall halfway.
+                logger.error(f"❌ enrollment not started: {len(missing)} guidance line(s) unavailable")
+                try:
+                    await self._say("Voice training can't start right now. Please try again in a minute.")
+                except Exception:
+                    pass
+                await self._finish()
+                return
             self.recorder.start(person, self.device_id)
             await self.send_json({"type": "enroll", "mode": "start"}, self.device_id)
             await asyncio.sleep(0.8)
-            await self._say(
-                f"Voice training. Each time I say 'next', say '{p}' once, "
-                f"naturally. Twenty-five in all, in a few different styles. "
-                f"Press the button on top at any time to stop. Here we go."
-            )
-            await asyncio.sleep(1.0)
-            styles = {9: "Now quickly, as if walking past.",
-                      14: "Now lazily. Mumble it.",
-                      19: "Now from across the room, louder.",
-                      25: "Last one. Any way you like."}
-            for rep in range(1, 26):
-                if rep in styles:
-                    await self._say(styles[rep])
-                    await asyncio.sleep(0.6)
-                await self._say("Next, please.")
-                await asyncio.sleep(self.REP_GAP_S)
-            await self._say(
-                "Well done. Now talk normally for about ninety seconds. "
-                "Describe your day, read something nearby, or simply ramble. "
-                "Starting now."
-            )
-            await asyncio.sleep(45)
-            await self._say("Keep going.")
-            await asyncio.sleep(45)
-            await self._say("That's everything. Session complete. Thank you.")
-            await asyncio.sleep(2)
+            for text, pause in steps:
+                await self._say_line(text)
+                await asyncio.sleep(pause)
             await self._finish()
             logger.info("🎓 enrollment conductor finished normally")
         except asyncio.CancelledError:
