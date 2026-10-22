@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.9 (fork)
+
+### The bridge learns who spoke
+
+- `ask_openclaw` requests carry `speaker` when an enrolled voiceprint matched
+  on this wake (never the pitch-only guess). A bridge can use it to treat the
+  turn as that person's; without it, the turn is the owner's.
+
 ## 0.19.8 (fork)
 
 ### Faster web lookups, shorter "still working" line

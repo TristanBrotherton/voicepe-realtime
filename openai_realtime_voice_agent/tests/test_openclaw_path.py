@@ -185,5 +185,30 @@ class TestNoParallelRequestsOnOneKey(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({p["request_id"] for p in RecordingClient.payloads}, {"call-dup"})
 
 
+class TestIdentifiedSpeaker(unittest.IsolatedAsyncioTestCase):
+    """The speaker goes to the bridge only for a fresh voiceprint match."""
+
+    async def _sent(self, probe):
+        _reset()
+        llm = FakeLLM()
+        llm.speaker_probe = probe
+        with patch.dict("os.environ", ENV), \
+             patch.object(openclaw_tool.httpx, "AsyncClient", RecordingClient):
+            openclaw_tool.register_openclaw_tool(llm, device_id="office")
+            await _ask(llm, "what is on my calendar", "call-s")
+        return RecordingClient.payloads[0]
+
+    async def test_voiceprint_match_is_sent(self):
+        sent = await self._sent(SimpleNamespace(progress_name=lambda: "member-two"))
+        self.assertEqual(sent["speaker"], "member-two")
+
+    async def test_no_match_no_probe_or_a_failing_probe_sends_nothing(self):
+        def broken():
+            raise RuntimeError("probe gone")
+        for probe in (SimpleNamespace(progress_name=lambda: None), None,
+                      SimpleNamespace(progress_name=broken)):
+            self.assertNotIn("speaker", await self._sent(probe))
+
+
 if __name__ == "__main__":
     unittest.main()
