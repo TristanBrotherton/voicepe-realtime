@@ -48,8 +48,8 @@ def _score(spoken: str, real: str) -> float:
 def resolve_list_name(spoken: str, lists: Iterable[str]) -> Optional[str]:
     """The real list name meant by ``spoken``, or None when unclear.
 
-    The backend has passed its guesses as one name ("Tini, Tinny, Tenny,
-    Hardware"); those resolve when every guess that matches a list
+    The backend has passed its guesses as one name ("tini, tinny, tenny,
+    hardware"); those resolve when every guess that matches a list
     matches the same one.
     """
     lists = [name for name in lists if str(name or "").strip()]
