@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.8 (fork)
+
+### Faster web lookups, shorter "still working" line
+
+- A web search that answers is now the result: the backend no longer makes a
+  second call only to rephrase it (about 2 s per lookup).
+- Web search runs with low reasoning effort by default (`WEB_SEARCH_EFFORT`;
+  "default" restores the model's own setting). It answered as well and up to
+  1.5 s sooner in a comparison.
+- When a request runs past the soft budget, the voice now says a few words
+  ("Still checking.") instead of a long line offering to take other questions.
+  The answer often arrived while that line was still playing and waited
+  behind it.
+
 ## 0.19.7 (fork)
 
 ### Fixed: adding to a list whose name was misheard

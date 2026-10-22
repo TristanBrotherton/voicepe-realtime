@@ -344,6 +344,28 @@ def tool_run(name: str, outcome: Any) -> ToolRun:
                    explain=bool(getattr(outcome, "explain", False)))
 
 
+# What web_search returns when it has no answer (app/web_search_tool.py).
+_SEARCH_NON_ANSWERS = (
+    "No search query was given.",
+    "I couldn't find anything online about that.",
+    "The web search didn't work just now.",
+    "The web search took too long and was stopped.",
+)
+
+
+def _search_answer(calls: List[dict], outputs: List[dict], step_runs: List[ToolRun]) -> str:
+    """The search's own answer when a backend step was one web search that
+    answered, else "". The router then skips the backend's rephrasing step."""
+    if len(calls) != 1 or str(calls[0].get("name") or "").rsplit("__", 1)[-1] != "web_search":
+        return ""
+    if len(step_runs) != 1 or not step_runs[0].ok or len(outputs) != 1:
+        return ""
+    text = str(outputs[0].get("output") or "").strip()
+    if not text or text in _SEARCH_NON_ANSWERS or text.startswith(("{", "[")):
+        return ""
+    return text
+
+
 @dataclass
 class RouteResult:
     kind: str
@@ -860,9 +882,17 @@ class BackendRouter:
                            "arguments": c.get("arguments") or "{}"} for c in calls]
             items.extend(call_items)
             new_items.extend(call_items)
+            before = len(runs)
             outputs = await self._execute_step(calls, execute, runs)
             items.extend(outputs)
             new_items.extend(outputs)
+            answer = _search_answer(calls, outputs, runs[before:])
+            if answer:
+                # The search already answers in two speakable sentences; a
+                # second backend call only rephrased it (2 s of an 11 s
+                # weather lookup, 2026-10-22).
+                new_items.append({"role": "assistant", "content": answer})
+                return answer, runs, steps, new_items
         return "", runs, steps, new_items
 
     async def _execute_step(self, calls: List[dict], execute: ExecuteFn,

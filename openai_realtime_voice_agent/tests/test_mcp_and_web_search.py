@@ -118,17 +118,18 @@ class FakeResponses:
         self.delay = delay
         self.text = text
 
-    async def create(self, **_kwargs):
+    async def create(self, **kwargs):
+        self.kwargs = kwargs
         await asyncio.sleep(self.delay)
         return SimpleNamespace(output_text=self.text)
 
 
 class TestWebSearch(unittest.IsolatedAsyncioTestCase):
-    async def run_search(self, query, responses, timeout="0.05"):
+    async def run_search(self, query, responses, timeout="0.05", model="gpt-5.5"):
         with patch.dict("os.environ", {"WEB_SEARCH_TIMEOUT_S": timeout}), \
              patch.object(web_search_tool, "AsyncOpenAI") as openai_cls:
             openai_cls.return_value = SimpleNamespace(responses=responses)
-            handler = web_search_tool.create_web_search_tool_handler("key", "gpt-5.5")
+            handler = web_search_tool.create_web_search_tool_handler("key", model)
             out = []
 
             async def cb(result):
@@ -139,6 +140,13 @@ class TestWebSearch(unittest.IsolatedAsyncioTestCase):
 
     async def test_answer_passes_through(self):
         self.assertEqual(await self.run_search("weather", FakeResponses()), "Sunny, 21 degrees.")
+
+    async def test_low_reasoning_only_for_reasoning_models(self):
+        responses = FakeResponses()
+        await self.run_search("weather", responses)
+        self.assertEqual(responses.kwargs.get("reasoning"), {"effort": "low"})
+        await self.run_search("weather", responses, model="gpt-4o")
+        self.assertNotIn("reasoning", responses.kwargs)
 
     async def test_timeout_is_bounded_and_english(self):
         self.assertEqual(await self.run_search("weather", FakeResponses(delay=3)), web_search_tool.TIMED_OUT)

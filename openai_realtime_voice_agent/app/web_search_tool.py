@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # The search is a second OpenAI call; without a bound it inherited the SDK's
 # 600 s default while the user stood waiting. Override with WEB_SEARCH_TIMEOUT_S.
 DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_EFFORT = "low"  # WEB_SEARCH_EFFORT overrides
 NO_QUERY = "No search query was given."
 NO_RESULT = "I couldn't find anything online about that."
 FAILED = "The web search didn't work just now."
@@ -75,6 +76,12 @@ def create_web_search_tool_handler(
     except ValueError:
         timeout_s = DEFAULT_TIMEOUT_S
     client = AsyncOpenAI(api_key=api_key, timeout=timeout_s, max_retries=0)
+    # "low" answered as well as the default and 0-1.5 s sooner (3 questions,
+    # 2026-10-22); "minimal" is refused with the web_search tool. Empty or
+    # "default" sends no reasoning setting.
+    effort = os.environ.get("WEB_SEARCH_EFFORT", DEFAULT_EFFORT).strip().lower()
+    reasons = model.startswith(("gpt-5", "o"))  # a gpt-4o-style model rejects the setting
+    extra = {"reasoning": {"effort": effort}} if reasons and effort not in ("", "default") else {}
 
     async def web_search_tool_handler(params: "FunctionCallParams") -> None:
         query = (params.arguments or {}).get("query", "").strip()
@@ -97,6 +104,7 @@ def create_web_search_tool_handler(
                         "aloud, in the same language as the question. Do not include "
                         "URLs, citations, or markdown. Question: " + query
                     ),
+                    **extra,
                 ),
                 timeout_s + min(2.0, timeout_s),
             )

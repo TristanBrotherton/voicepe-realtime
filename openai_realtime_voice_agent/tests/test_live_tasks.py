@@ -145,6 +145,7 @@ class TaskPolicyLogic(unittest.TestCase):
 
     def test_the_commentary_is_truthful_and_names_the_earlier_request(self):
         self.assertIn("still working on it", promotion_commentary("What's the weather tomorrow?"))
+        self.assertIn("do not offer to take other questions", promotion_commentary("x"))
         self.assertIn("Do not guess", promotion_commentary("x"))
         text = result_commentary(LOOKUP, "Sunny.", "What's the weather tomorrow?")
         self.assertIn("earlier request", text)
@@ -398,7 +399,7 @@ class PromotedToBackground(Patched):
             self.assertEqual(h.service._gate, "pre")
             await h.wait_commentary(count=1, timeout=2.0)
             self.assertIn("still working on it", commentaries(h)[0])
-            self.assertIn("will tell them", commentaries(h)[0])
+            self.assertIn("Still checking", commentaries(h)[0])
             self.assertEqual(h.service._gate, "open", "the voice may converse while the work goes on")
             self.assertEqual(h.service.router_stats["promoted"], 1)
             # Whatever the voice says now is heard.
