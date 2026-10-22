@@ -246,9 +246,12 @@ def short_request(text: str, limit: int = SHORT_REQUEST_CHARS) -> str:
 # ---------------------------------------------------------------------------
 
 def promotion_commentary(request: str) -> str:
-    return ("This is taking longer than a moment. In a few words, tell the user you are still "
-            f"working on it (their request: \"{short_request(request)}\") and that you will tell them "
-            "as soon as it is done; they can talk to you or ask anything else meanwhile. "
+    # Kept to a few words: the answer often arrives while this is spoken and
+    # waits behind it, and "ask me anything else meanwhile" on every slow
+    # lookup was redundant (owner, 2026-10-22).
+    return ("This is taking longer than a moment. In three or four words, tell the user you are "
+            f"still working on it (their request: \"{short_request(request)}\"), for example "
+            "\"Still checking.\" Say nothing else: do not offer to take other questions. "
             "Do not guess the result and do not say it is done.")
 
 

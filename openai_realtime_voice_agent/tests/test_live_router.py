@@ -492,6 +492,33 @@ class ReadOnlyClaims(unittest.IsolatedAsyncioTestCase):
 from app.live_router import is_state_question  # noqa: E402
 
 
+class SearchAnswerIsTheResult(unittest.IsolatedAsyncioTestCase):
+    """A web search that answered ends the route: no second backend call."""
+
+    async def route(self, answer):
+        from app.tool_results import classify_result
+        backend = FakeBackend(response(call("web_search", {"query": "weather"}, "c1")),
+                              response(message("Rephrased.")))
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post))
+
+        async def execute(name, args):
+            return answer, classify_result(answer)
+        return await router.route("What's the weather in Paris today?", execute), backend
+
+    async def test_the_search_answer_is_spoken_without_rephrasing(self):
+        result, backend = await self.route("12 to 15 degrees with showers.")
+        self.assertEqual(result.kind, LOOKUP)
+        self.assertEqual(result.text, "12 to 15 degrees with showers.")
+        self.assertEqual(len(backend.bodies), 1, "one backend call, not two")
+
+    async def test_a_search_without_an_answer_goes_back_to_the_backend(self):
+        from app import web_search_tool
+        for miss in (web_search_tool.NO_RESULT, web_search_tool.FAILED, web_search_tool.TIMED_OUT,
+                     web_search_tool.NO_QUERY):
+            result, backend = await self.route(miss)
+            self.assertEqual(len(backend.bodies), 2, miss)
+
+
 class DeviceNamesWithHouseholdWordsAreStillQuestions(unittest.TestCase):
     """Workshop real-audio trial, 0.18.34: "Is boost heat downstairs on?"
     turned Boost Heat on. "heat" is a household verb, so the question was
@@ -1083,7 +1110,7 @@ class SlowRequestStaysConversational(Patched):
                 await h.wait_commentary(count=1, timeout=2.0)
                 progress = h.socket.of("session.commentary.append")[0]["content"]
                 self.assertIn("still working on it", progress)
-                self.assertIn("will tell them", progress)
+                self.assertIn("Still checking", progress)
                 h.voice_says("Still working on it, I'll let you know.", ms=300)
                 await h.sink.wait_for(TTSAudioRawFrame, timeout=2.0)
                 self.assertTrue(h.service.backend_work_active,
