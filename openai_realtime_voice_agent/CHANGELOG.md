@@ -2,6 +2,18 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.7 (fork)
+
+### Fixed: adding to a list whose name was misheard
+
+- To-do lists are matched by exact name, but the name arrives through speech
+  recognition: a short, unusual list name heard with a different spelling
+  failed to match and the item was not added. List tools now use the one
+  real list that is clearly closest, by spelling and by sound; curly
+  apostrophes, a trailing "list" and plurals match too. When the backend
+  passes several guesses as one name, they resolve only if they all point to
+  the same list. Anything ambiguous is still left to Home Assistant.
+
 ## 0.19.6 (fork)
 
 ### Fixed: voice training

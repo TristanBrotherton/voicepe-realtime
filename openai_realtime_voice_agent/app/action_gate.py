@@ -39,6 +39,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
+from app.list_names import resolve_list_name
+
 logger = logging.getLogger(__name__)
 
 ALL_RULES = ("lock", "garage", "gate", "door", "alarm")
@@ -166,6 +168,10 @@ class EntityDirectory:
             return exact
         return [e for e in self._entities if needle in e.name.lower() or e.name.lower() in needle]
 
+    async def in_domain(self, domain: str) -> List[EntityInfo]:
+        await self._refresh()
+        return [e for e in self._entities if e.domain == domain]
+
     async def lookup_area(self, area: str, domain: str) -> List[EntityInfo]:
         """Return entities HA itself assigns to an area, when that API is available."""
         await self._refresh()
@@ -218,6 +224,16 @@ class ActionGate:
         canonical_name = _canonical_tool_name(function_name)
         name = str(args.get("name") or "").strip()
         if not canonical_name.startswith("Hass") or not name:
+            return args
+
+        # To-do lists are matched by exact name, and the name was heard
+        # ("teenie" for a list called Tini): use the one clearly closest list.
+        if canonical_name in ("HassListAddItem", "HassListCompleteItem"):
+            lists = [e.name for e in await self.directory.in_domain("todo")]
+            resolved = resolve_list_name(name, lists)
+            if resolved is not None and resolved != name:
+                args["name"] = resolved
+                logger.info("resolved to-do list for %s: %r -> %r", canonical_name, name, resolved)
             return args
 
         # Room voice assistants commonly hear "the light", "kitchen light",
