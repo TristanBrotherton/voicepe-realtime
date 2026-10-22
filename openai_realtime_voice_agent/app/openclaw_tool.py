@@ -435,6 +435,17 @@ def bridge_request_fields(question: str, origin: str, request_id: str = "",
             "answer_only": sent != question}
 
 
+def identified_speaker(llm) -> str:
+    """The speaker for the bridge: a name only for a fresh enrolled-voiceprint
+    match this wake (never the pitch guess), else "" and the bridge treats the
+    turn as the owner's."""
+    probe = getattr(llm, "speaker_probe", None)
+    try:
+        return str((probe.progress_name() if probe is not None else None) or "").strip()
+    except Exception:
+        return ""
+
+
 def register_openclaw_tool(llm, device_id: str = "") -> None:
     async def _ask(params) -> None:
         question = ((params.arguments or {}).get("question") or "").strip()
@@ -459,6 +470,9 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
             payload["task_id"] = request_id
         if device_id:
             payload["device_id"] = device_id
+        speaker = identified_speaker(llm)
+        if speaker:
+            payload["speaker"] = speaker
         callback = openclaw_callback_url()
         if callback:
             payload["callback_url"] = callback
