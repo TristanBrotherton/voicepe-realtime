@@ -49,7 +49,7 @@ def pcm(ms: int, amplitude: int, hz: float = 220.0, sample_rate: int = 16000) ->
 SILENCE = pcm(1000, 0)
 ROOM = pcm(1000, 400)         # RMS ~283: a quiet room on the Voice PE's mic
 SPEECH = pcm(400, 2500)       # RMS ~1770: someone talking near the device
-HUM = pcm(3000, 1100)         # RMS ~778: a fan, louder than the absolute floor
+HUM = pcm(3000, 3000)         # RMS ~2121: a loud fan, above the absolute floor
 
 
 class TestSpeechOnsetDetector(unittest.TestCase):
@@ -80,14 +80,14 @@ class TestSpeechOnsetDetector(unittest.TestCase):
 
     def test_a_short_dip_inside_a_run_is_tolerated_a_long_one_is_not(self):
         detector = SpeechOnsetDetector()
-        burst = pcm(120, 2500)
+        burst = pcm(160, 2500)
         self.assertFalse(detector.feed(burst))
         self.assertFalse(detector.feed(pcm(BLOCK_MS, 0)))
         self.assertTrue(detector.feed(burst), "a 20 ms stop consonant does not reset the run")
         detector.reset()
         self.assertFalse(detector.feed(burst))
         self.assertFalse(detector.feed(pcm(BLOCK_MS * 3, 0)))
-        self.assertFalse(detector.feed(pcm(120, 2500)), "a 60 ms gap starts a new run")
+        self.assertFalse(detector.feed(pcm(160, 2500)), "a 60 ms gap starts a new run")
 
     def test_a_steady_hum_becomes_the_floor_and_speech_must_rise_above_it(self):
         detector = SpeechOnsetDetector()
@@ -95,15 +95,15 @@ class TestSpeechOnsetDetector(unittest.TestCase):
         self.assertGreater(detector.noise, MIN_RMS)
         detector.reset()
         self.assertFalse(detector.feed(HUM), "the hum alone is not speech")
-        self.assertFalse(detector.feed(pcm(400, 1800)), "not three times the hum")
-        self.assertTrue(detector.feed(pcm(400, 4000)))
+        self.assertFalse(detector.feed(pcm(400, 8000)), "not six times the hum")
+        self.assertTrue(detector.feed(pcm(400, 20000)))
 
     def test_speech_with_a_known_floor_is_judged_against_that_floor(self):
         detector = SpeechOnsetDetector()
         detector.observe(ROOM)
-        self.assertGreater(detector.threshold, MIN_RMS, "three times the room, not the absolute floor")
-        self.assertFalse(detector.feed(pcm(400, 900)), "RMS ~636 is above the floor but not above the room")
-        self.assertTrue(detector.feed(pcm(400, 1300)), "RMS ~919 is")
+        self.assertGreater(detector.threshold, MIN_RMS, "six times the room, not the absolute floor")
+        self.assertFalse(detector.feed(pcm(400, 2200)), "RMS ~1556 is above the floor but not above the room")
+        self.assertTrue(detector.feed(pcm(400, 2600)), "RMS ~1838 is")
 
 
 # ---------------------------------------------------------------------------

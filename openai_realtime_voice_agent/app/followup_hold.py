@@ -42,13 +42,15 @@ BLOCK_MS = 20
 # Speech-level sound must be louder than both an absolute floor and a multiple
 # of the room's measured floor. Int16 RMS over 20 ms blocks, measured on a
 # Voice PE's own mic stream: a quiet room sits at 210-440 (5th-75th
-# percentile), speech near the device at 3700-8900 (95th-99th). 600 is about
-# -35 dBFS: above the room, a sixth of quiet speech.
-MIN_RMS = 600.0
-NOISE_RATIO = 3.0
+# percentile), speech near the device at 3700-8900 (95th-99th). On the device
+# 600 / 3x / 200 ms also held for short knocks and clicks (peaks of 900-2400,
+# 12 s false holds in two of three quiet windows); 1500 / 6x / 300 ms let every
+# phrase of that session through and none of the knocks.
+MIN_RMS = 1500.0
+NOISE_RATIO = 6.0
 # How long sound must stay above the threshold before it counts as speech,
 # and how many quiet blocks a run may contain (a stop consonant, a breath).
-ONSET_MS = 200
+ONSET_MS = 300
 MAX_DIPS = 2
 # The room's floor is the quietest block of the last FLOOR_WINDOW_S of mic
 # audio (speech has gaps between words; a fan or a fridge hum never drops, so
