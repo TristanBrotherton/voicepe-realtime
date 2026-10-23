@@ -79,6 +79,15 @@ configuration:
       keep talking — no wake word needed. The LED ring shows the listening
       colour while it waits. 8 feels natural; 0 turns it off (wake word
       before every question).
+  follow_up_hold_on_speech:
+    name: "💬 Conversation · Keep listening while you talk"
+    description: >-
+      The follow-up window normally closes on its timer even if you are
+      mid-sentence, because the cloud only reports what you said once you
+      stop. With this on, the add-on notices speech starting in the window
+      and keeps the microphone open until your sentence is answered (at most
+      12 s without a transcript, so background noise cannot keep a session
+      running). Turn off to get the fixed window back.
   follow_up_open_delay_ms:
     name: "💬 Conversation · Follow-up mic delay (ms)"
     description: >-

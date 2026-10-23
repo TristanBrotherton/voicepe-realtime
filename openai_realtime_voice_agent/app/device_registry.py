@@ -104,6 +104,9 @@ class DeviceConnection:
     # Monotonic time of the last wake frame (a close right after it must not
     # send the device to idle).
     last_wake_mono: Any = None
+    # Holds the follow-up mic window open while the user talks
+    # (app/followup_hold.py). None on the Realtime runtime and when disabled.
+    followup_hold: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""

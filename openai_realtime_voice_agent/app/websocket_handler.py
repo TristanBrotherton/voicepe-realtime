@@ -31,6 +31,7 @@ from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
 from app.audio_recording_service import AudioRecordingService
 from app.phase_emitter import PhaseEmitter
+from app.followup_hold import FollowUpHold
 from app.output_lead_buffer import OutputLeadBuffer
 from app.transcript_logger import TranscriptLogger
 from app.turn_timeline import TurnTimeline
@@ -550,6 +551,7 @@ class WebSocketHandler:
         wake_events: Optional[WakeEventStore] = None,
         device_auth: Optional[DeviceAuth] = None,
         trigger_capture: bool = False,
+        follow_up_hold: bool = True,
     ):
         """
         Initialize WebSocket handler.
@@ -568,6 +570,8 @@ class WebSocketHandler:
             wake_open_delay_ms: How long (ms) the device waits after the wake
                 chime before opening the mic, so the chime's hardware tail can't
                 leak into the fresh mic as a ghost turn. Sent in `hello`.
+            follow_up_hold: Hold the follow-up window open while the user is
+                still talking (app/followup_hold.py). GPT-Live only.
         """
         self.host = host
         self.port = port
@@ -575,6 +579,7 @@ class WebSocketHandler:
         self.audio_recording_service = audio_recording_service
         self.follow_up_ms = max(0, int(follow_up_ms))
         self.follow_up_open_delay_ms = max(0, int(follow_up_open_delay_ms))
+        self.follow_up_hold = bool(follow_up_hold)
         self.wake_open_delay_ms = max(0, int(wake_open_delay_ms))
         self.playback_prebuffer_ms = max(0, int(playback_prebuffer_ms))
         self.output_lead_buffer_ms = max(0, int(output_lead_buffer_ms))
@@ -736,6 +741,38 @@ class WebSocketHandler:
         )
         return gate
 
+    def _build_followup_hold(self, connection: DeviceConnection, gate):
+        """Keep the follow-up mic window open while the user is still talking
+        (app/followup_hold.py). GPT-Live reports an utterance only when it has
+        ended, so without this the device's fixed window timer cut a late
+        follow-up mid-sentence and the cut-off closed the paid session.
+
+        Returns None when the option is off or there is no follow-up window.
+        """
+        if not self.follow_up_hold or self.follow_up_ms <= 0:
+            return None
+        phase_emitter = connection.phase_emitter
+        serializer = connection.serializer
+        if phase_emitter is None or serializer is None:
+            return None
+        from app.live_session_gate import OPEN as GATE_OPEN
+
+        hold = FollowUpHold(
+            hold_listening=phase_emitter.hold_listening,
+            release_idle=phase_emitter.release_hold,
+            # Only a paid session is worth holding; a window streaming into
+            # a closed one is left to the ordinary wake/mic-open paths.
+            may_hold=lambda: gate.state == GATE_OPEN,
+            on_onset=gate.note_speech_onset,
+            on_release=gate.note_hold_released,
+            spawn=self._spawn,
+        )
+        phase_emitter.on_phase_sent = hold.note_phase
+        serializer.add_audio_tap(hold)
+        logger.info(f"🎤 follow-up hold on speech for {connection.device_id}: "
+                    f"at most {hold.hold_max_s:.0f}s without a transcript")
+        return hold
+
     def build_pipeline(
         self,
         connection: DeviceConnection,
@@ -804,6 +841,8 @@ class WebSocketHandler:
         # so recovery can ask it whether a reconnect is justified at all.
         gate = self._build_session_gate(connection)
         connection.session_gate = gate
+        hold = self._build_followup_hold(connection, gate) if gate is not None else None
+        connection.followup_hold = hold
 
         def _should_replay() -> bool:
             # Replay only a request that is still in progress and unanswered.
@@ -996,6 +1035,8 @@ class WebSocketHandler:
         _kill_next_response = {"v": False}
 
         async def _on_device_interrupt():
+            if hold is not None:
+                hold.disarm("stop")  # the device closed its mic on the stop
             turn = timeline.current if timeline is not None else None
             if turn is not None and not turn.done:
                 if "bot_started" in turn.stamps or "first_audio_sent" in turn.stamps:
@@ -1077,6 +1118,15 @@ class WebSocketHandler:
             # Also a turn boundary for the dangling-VAD guard: the follow-up
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
+            if hold is not None and hold.note_flush():
+                # The add-on heard speech in the window but its `listening`
+                # lost the race with the device timer. The mic is closed, but
+                # what was heard is in the cloud and its transcript still
+                # comes: keep the session (the onset moved it to the idle
+                # bounds) and route it, instead of closing on the cut-off.
+                logger.info("🧽 follow-up cut-off after speech was heard: keeping the "
+                            "session for the transcript")
+                return
             try:
                 if await controls.discard_pending_input("follow-up cut-off"):
                     logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
@@ -1100,6 +1150,8 @@ class WebSocketHandler:
             connection.last_wake_mono = time.monotonic()
             meta = dict(meta or {})
             source = meta.get("src") or "wake_word"
+            if hold is not None:
+                hold.note_wake()  # the wake owns the mic now; no held window to release
             # A wake is the ONLY thing that buys a GPT-Live session (with the
             # first mic frame below as a backstop for a lost wake frame).
             # Spawned, not awaited: the receive loop that delivered this wake
@@ -1719,6 +1771,9 @@ class WebSocketHandler:
         phase_emitter = connection.phase_emitter
         if phase_emitter is not None:
             await phase_emitter.close()
+        hold = connection.followup_hold
+        if hold is not None:
+            await hold.close()
         if connection.task is not None:
             try:
                 await connection.task.cancel()

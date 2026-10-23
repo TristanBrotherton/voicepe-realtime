@@ -191,6 +191,9 @@ class PhaseEmitter(FrameProcessor):
         self.on_bot_stopped = None
         self.on_thinking = None
         self.on_user_started = None
+        # on_phase_sent(value, extra) sees every phase handed to the device
+        # (app/followup_hold.py arms on the idle that opens a follow-up window).
+        self.on_phase_sent = None
         self._bot_spoke_this_turn = False
 
     def note_wake(self) -> None:
@@ -255,6 +258,31 @@ class PhaseEmitter(FrameProcessor):
                     await self._send_phase(value)
             except Exception as e:  # never let UI signalling break the audio path
                 logger.warning(f"⚠️ Failed to emit phase '{value}': {e}")
+        if self.on_phase_sent is not None:
+            try:
+                self.on_phase_sent(value, extra or {})
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(f"phase observer failed: {e!r}")
+
+    async def hold_listening(self) -> bool:
+        """The add-on heard speech start in the device's follow-up window
+        (app/followup_hold.py). Send ``listening`` so the firmware cancels its
+        window timer and keeps the mic open. Only from idle: any other phase
+        means a turn is already under way. Nothing else changes here — the
+        dangling-VAD guard and the watchdogs wait for the real speech frames."""
+        if self._closed or self._current != "idle":
+            return False
+        await self._emit("listening")
+        return True
+
+    async def release_hold(self) -> bool:
+        """The hold ran out without a user turn: an ``idle`` closes the mic
+        gate the hold opened (the firmware closes an orphaned mic on an idle
+        that follows listening). Only while that listening is still current."""
+        if self._closed or self._current != "listening":
+            return False
+        await self._emit("idle")
+        return True
 
     def _cancel_pending_idle(self) -> None:
         if self._idle_task is not None and not self._idle_task.done():
