@@ -2,6 +2,25 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.10 (fork)
+
+### Fixed: a follow-up spoken late in the window was cut off
+
+- GPT-Live reports what you said only once you stop talking, and the device
+  closes its follow-up window on a fixed timer that only a `listening` phase
+  cancels. A follow-up begun late in the window was therefore cut
+  mid-sentence, the half utterance dropped, and the session closed on the
+  cut-off. The add-on now hears speech begin in the window itself (an energy
+  onset over the mic stream, judged against the room's own floor), sends
+  `listening` at once so the device keeps the mic open, and keeps the session
+  under its ordinary idle bounds until the transcript arrives. If nothing is
+  transcribed within 12 s the mic is released and the session closes a few
+  seconds later, so background noise cannot keep a session running. New
+  option `follow_up_hold_on_speech` (default on); `false` restores the fixed
+  window. No firmware change: 1.3.1 already honours the phase.
+- A follow-up cut-off that lands after speech was heard no longer closes the
+  session; what was heard is still routed.
+
 ## 0.19.9 (fork)
 
 ### The bridge learns who spoke

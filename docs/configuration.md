@@ -40,6 +40,7 @@ Two places hold configuration:
 | Option | Default | Purpose / when to change |
 |---|---|---|
 | `follow_up_listen_seconds` | `8` | How long the mic stays open after each reply, so you can keep talking without the wake word. `0` disables follow-ups. |
+| `follow_up_hold_on_speech` | `true` | Keeps the follow-up mic open once the add-on hears you start talking in the window, instead of closing on the timer mid-sentence (the cloud reports an utterance only when it ends). Released after 12 s if nothing is transcribed, so noise cannot keep a session billed. Set `false` for the fixed window. |
 | `follow_up_open_delay_ms` | `700` | Echo guard: pause between the end of a reply and the mic re-opening, so the speaker's tail can't become a ghost question. Lower (300–500) is snappier but risks the assistant answering its own echo — raise it back if it "answers nobody" or repeats itself. |
 | `wake_open_delay_ms` | `700` | The same echo guard after the wake chime, before the mic opens. Lower for a snappier wake; raise if a wake sometimes triggers an answer to nothing. |
 | `vad_eagerness` | `low` | How quickly it decides you're done talking. `low` waits patiently (best if you pause mid-sentence), `high` answers faster but may cut you off, `auto` lets OpenAI decide. |

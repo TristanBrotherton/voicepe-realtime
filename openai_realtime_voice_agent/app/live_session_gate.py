@@ -70,6 +70,10 @@ CLOSED = "closed"
 OPENING = "opening"
 OPEN = "open"
 
+# After a follow-up hold is released without a transcript, the session gets
+# this long for a late transcript before it closes (app/followup_hold.py).
+HOLD_RELEASE_QUIET_S = 3.0
+
 
 @dataclass(frozen=True)
 class LiveSessionPolicy:
@@ -362,6 +366,28 @@ class LiveSessionGate:
         if self._state != CLOSED:
             self._turn_in_flight = True
             self._touch(self._mono())
+
+    def note_speech_onset(self) -> None:
+        """The add-on heard speech begin in the follow-up window
+        (app/followup_hold.py). The transcript that proves an utterance comes
+        only at its end, so the follow-up-quiet bound would close the session
+        mid-sentence; hold it under the ordinary idle bounds instead. Mic
+        audio then extends the idle deadline as in any turn; the hold's own
+        release closes the mic, so this cannot run on."""
+        if self._state == CLOSED:
+            return
+        self._touch(self._mono())
+
+    def note_hold_released(self) -> None:
+        """The hold ran out with no user turn: the device mic is closed
+        again. Give a transcript that may still be in flight a few seconds,
+        then close as a quiet follow-up window would have."""
+        if self._state == CLOSED or self._turn_in_flight:
+            return
+        now = self._mono()
+        self._idle_deadline = min(self._idle_deadline or now + HOLD_RELEASE_QUIET_S,
+                                  now + HOLD_RELEASE_QUIET_S)
+        self._idle_reason = "follow-up quiet"
 
     def note_audible_output(self) -> None:
         """Audible reply audio reached the device. Silence deliberately does not."""

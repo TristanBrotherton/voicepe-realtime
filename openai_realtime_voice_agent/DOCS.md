@@ -87,6 +87,7 @@ Configuration tab is grouped: **🔑 Basics → 🗣️ Model & voice → 💬 C
 | `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language (the transcript is logged only with `log_transcripts`) |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
 | `follow_up_listen_seconds` | `8` | mic stays open this long so you can answer back |
+| `follow_up_hold_on_speech` | `true` | keeps the follow-up mic open once you start talking in the window (the cloud reports an utterance only when it ends); released after 12 s without a transcript |
 | `follow_up_open_delay_ms` | `700` | echo guard before the follow-up mic opens; lower = snappier but risks ghost turns |
 | `wake_open_delay_ms` | `700` | the same echo guard right after the wake chime |
 | `vad_eagerness` | `low` | waits longest before deciding you're done talking |

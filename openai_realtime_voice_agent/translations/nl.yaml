@@ -79,6 +79,15 @@ configuration:
       kunt doorpraten — zonder opnieuw het wake-woord te zeggen. De LED-ring
       toont ondertussen de luisterkleur. 8 voelt natuurlijk; 0 zet het uit
       (wake-woord voor elke vraag).
+  follow_up_hold_on_speech:
+    name: "💬 Gesprek · Blijven luisteren terwijl je praat"
+    description: >-
+      Het naluistervenster sluit normaal op zijn timer, ook als je nog midden
+      in een zin zit, omdat de cloud pas meldt wat je zei als je stopt. Met
+      deze optie aan merkt de add-on dat je begint te praten en houdt hij de
+      microfoon open tot je zin beantwoord is (hooguit 12 s zonder
+      transcriptie, zodat achtergrondgeluid geen sessie kan openhouden). Zet
+      uit voor het vaste venster.
   follow_up_open_delay_ms:
     name: "💬 Gesprek · Naluister-vertraging (ms)"
     description: >-
