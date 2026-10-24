@@ -1664,8 +1664,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     async def _send_or_queue(self, payload: dict) -> None:
         if self._session_started:
             await self._send(payload)
-        else:
-            self._pending_context.append(payload)
+            return
+        if payload.get("delegation_id"):
+            # A delegation lives and dies with its session. A result that
+            # lands after the session closed (a slow tool, a turn the user
+            # abandoned) must not be queued for the NEXT session, where its
+            # delegation id means nothing and its text ("the user did not
+            # hear what you said...") is about a conversation that is over.
+            # Seen on the rig 2026-10-23: the stale commentary was the first
+            # event after session.start of the following wake.
+            logger.debug(f"live: dropping {payload.get('type')} for delegation "
+                         f"{payload.get('delegation_id')} of a session that has ended")
+            return
+        self._pending_context.append(payload)
 
     # ------------------------------------------------------------------
     # receive loop
@@ -4032,8 +4043,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._gate_idle_dropped += 1
             self._need_segment_start = True
             if self._gate_idle_dropped == 1:
-                logger.info("🔇 live audio before any user speech in this session dropped "
-                            "(nobody asked anything yet)")
+                # GPT-Live is speaking although it has transcribed no request in
+                # this session. Either it is acting on something that is not a
+                # request (seeded history, an unprompted greeting), or it heard
+                # the request but did not treat it as one addressed to it: a
+                # quiet or thin voice right after the loud wake chime (a
+                # loudspeaker across the room, a soft speaker) is answered but
+                # never transcribed (measured 2026-10-23 by replaying device
+                # audio). Without the transcript the turn never opens and the
+                # user hears nothing, so say what happened.
+                logger.warning("🔇 GPT-Live is replying without having transcribed a request in "
+                               "this session; dropping its audio (nobody asked anything yet, or "
+                               "the request was too quiet or unclear after the wake chime to be "
+                               "treated as one: check the level at the device)")
             return
         if self._gate == "pre":
             if self._gate_blocked:

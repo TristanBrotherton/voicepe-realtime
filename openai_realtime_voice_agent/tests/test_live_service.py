@@ -90,6 +90,21 @@ class TestSessionStart(unittest.IsolatedAsyncioTestCase):
             evt = h.socket.of("session.thinking.append")[0]
             self.assertEqual((evt["delegation_id"], evt["content"]), (None, "[voice check] matches Alex"))
 
+    async def test_delegation_bound_context_is_not_carried_into_the_next_session(self):
+        """A commentary for a delegation of a session that has ended is dropped;
+        session-wide context queued at the same time still reaches the next
+        session (rig, 2026-10-23: a late router result for the previous wake
+        was the first event GPT-Live received after the next session.start)."""
+        async with LiveHarness(self) as h:
+            await h.service._send_commentary("The user did not hear what you said.", "item_c0ffee01")
+            await h.service.inject_context("[voice check] matches Alex")
+            self.assertEqual(h.socket.of("session.commentary.append"), [])
+            await h.start_session()
+            await h.socket.wait_for_sent("session.thinking.append")
+            await asyncio.sleep(0.05)
+            self.assertEqual(h.socket.of("session.commentary.append"), [])
+            self.assertEqual(h.socket.of("session.thinking.append")[0]["content"], "[voice check] matches Alex")
+
 
 class TestAudioOut(unittest.IsolatedAsyncioTestCase):
     """Only the turn bookkeeping here; the audio itself has its own modules."""

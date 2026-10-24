@@ -2,6 +2,26 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.12 (fork)
+
+### Fixed: a late result for a closed session was sent into the next one
+
+- A router result that landed after its GPT-Live session had closed (a slow
+  tool, a turn the user walked away from) was queued and became the first
+  event of the next wake's session, carrying a delegation id that session
+  had never seen and text about a conversation that was over. Delegation-bound
+  context is now dropped once its session has ended; session-wide context
+  (the voice check) is still carried over.
+
+### Changed: the log names a reply without a transcript
+
+- When GPT-Live replies although it has transcribed no request in the session,
+  the dropped audio is logged as a warning that says so. Measured by replaying
+  device audio: a quiet or thin voice right after the loud wake chime is
+  heard and answered but never transcribed, so the add-on's turn never opens
+  and the user hears nothing; the old "no speech 12s after wake" was the only
+  trace.
+
 ## 0.19.11 (fork)
 
 ### Fixed: a new question was sometimes never heard after a wake
