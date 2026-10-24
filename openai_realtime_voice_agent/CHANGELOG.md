@@ -2,6 +2,31 @@
 
 All notable changes to this add-on. Newest first.
 
+## Unreleased (fork)
+
+### Fixed: a device disconnect mid-session was logged as a handshake timeout
+
+- When a device's connection dropped during a GPT-Live session, cancelling its
+  pipeline dropped the Live socket before the teardown closed the session, and
+  the session supervisor saw a session that was not ready and called it
+  `handshake timeout`, in the log line and the close counters. The gate now
+  learns of the disconnect before the pipeline is cancelled and closes with
+  `device disconnected`; a session that had started and then lost its socket
+  for any other reason closes as `connection lost`. `handshake timeout` now
+  means only that `session.started` never arrived.
+
+### Fixed: the output recording did not hold what the device played
+
+- With `enable_recording` on, output audio was recorded by a pipeline stage,
+  so everything sent to the device around the pipeline was missing: spoken
+  prompts, the fallback acknowledgement clip, announcements and timer lines.
+  Output is now recorded at the device socket, for every audio frame that was
+  actually sent, whichever path sent it. A frame for a device that has gone
+  away is not recorded.
+- The WAV header is kept current on every write, so a recording read while
+  the add-on is still running shows everything recorded so far instead of
+  claiming to be empty.
+
 ## 0.19.10 (fork)
 
 ### Fixed: a follow-up spoken late in the window was cut off
