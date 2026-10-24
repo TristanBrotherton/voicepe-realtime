@@ -921,19 +921,21 @@ class WebSocketHandler:
         # (Constructed above, before ConnectionRecovery.)
         pipeline_components.append(connection.phase_emitter)
 
-        # Add output audio recorder to capture ONLY OutputAudioRawFrame
-        output_recorder = (
-            self.audio_recording_service.get_output_recorder()
-            if (self.audio_recording_service and connection.records_audio) else None
-        )
-        if output_recorder:
-            pipeline_components.append(output_recorder)
+        # Output audio is recorded where it leaves for the device: every
+        # binary frame the client actually sent, whichever path sent it. A
+        # recorder here missed everything sent around the pipeline (spoken
+        # prompts, acknowledgement clips, announcements) and recorded audio a
+        # dropped socket never delivered.
+        if self.audio_recording_service and connection.records_audio:
+            client = getattr(transport, "client", None)
+            if client is not None:
+                client.on_audio_sent = self._output_recording_tap(connection)
 
         # Prime the device's playout buffer against the resampler cold-start
         # starve: hold the first LEAD_MS of each reply's audio and burst it so the
         # device gets a buffer lead even on a cold turn. Placed LAST, right before
         # transport.output(), so it acts on the final audio stream the device
-        # receives (the recorder above still captures the true, un-delayed frames).
+        # receives.
         # Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
         pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_buffer_ms))
 
@@ -946,7 +948,8 @@ class WebSocketHandler:
         pipeline = Pipeline(pipeline_components)
         logger.info("✅ Pipeline created for WebSocket connection")
         
-        # Audio recording is handled by AudioFrameRecorder processors in the pipeline
+        # Input audio is recorded by an AudioFrameRecorder in the pipeline,
+        # output audio at the device socket (_output_recording_tap).
         if self.audio_recording_service:
             logger.info("🎙️ Audio recording enabled - will record input and output audio")
         
@@ -1575,6 +1578,18 @@ class WebSocketHandler:
         )
         return False
 
+    def _output_recording_tap(self, connection: DeviceConnection):
+        """Record audio sent to this connection while it owns the recording.
+
+        Checked per frame: a connection that lost ownership (its device
+        disconnected and another one claimed the recorder) must not write into
+        the new owner's file.
+        """
+        def _record(audio: bytes) -> None:
+            if connection.records_audio and self._recording_owner == connection.device_id:
+                self.audio_recording_service.record_output(audio)
+        return _record
+
     def _release_recording(self, device_id: str) -> None:
         """Give up recording ownership when that device disconnects.
 
@@ -1701,6 +1716,14 @@ class WebSocketHandler:
                 # running: its recorder then pushes into torn-down processors
                 # ("no attribute _FrameProcessor__input_queue") until
                 # push_error_frame recurses past the stack limit.
+                #
+                # Tell the session gate first: cancelling the pipeline drops
+                # the Live socket before _teardown shuts the gate, and a
+                # supervisor tick in between must close it as a disconnect,
+                # not as a handshake timeout.
+                gate = connection.session_gate
+                if gate is not None:
+                    gate.note_device_disconnected()
                 await task.cancel()
 
             displaced = await self.devices.add(connection)
@@ -1721,6 +1744,9 @@ class WebSocketHandler:
         except Exception as e:
             logger.error(f"❌ connection for {device_id} failed: {e!r}", exc_info=True)
         finally:
+            gate = connection.session_gate
+            if gate is not None:
+                gate.note_device_disconnected()
             removed = await self.devices.remove(connection)
             if not removed and connection.openai_service is not None and self.session_manager:
                 self.session_manager.handle_client_disconnect(

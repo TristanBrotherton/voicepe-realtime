@@ -43,6 +43,7 @@ class AudioRecorder:
         )
         self._input_file = open(input_filename, "wb")
         self._write_wav_header(self._input_file, sample_rate=24000, channels=1, bits_per_sample=16)
+        self._input_file.flush()
         self._input_bytes = 0
         
         # Output audio (from OpenAI) - 24kHz, 16-bit, mono
@@ -52,6 +53,7 @@ class AudioRecorder:
         )
         self._output_file = open(output_filename, "wb")
         self._write_wav_header(self._output_file, sample_rate=24000, channels=1, bits_per_sample=16)
+        self._output_file.flush()
         self._output_bytes = 0
         
         logger.info(f"🎙️ Started recording: input={input_filename}, output={output_filename}")
@@ -69,8 +71,8 @@ class AudioRecorder:
                 logger.warning(f"⚠️ Input audio has odd byte count: {len(audio_bytes)}, padding with zero")
                 audio_bytes = audio_bytes + b'\x00'  # Pad with one zero byte
             self._input_file.write(audio_bytes)
-            self._input_file.flush()  # Ensure data is written to disk
             self._input_bytes += len(audio_bytes)
+            self._write_sizes(self._input_file, self._input_bytes)
             
     def record_output_audio(self, audio_bytes: bytes):
         """
@@ -85,41 +87,42 @@ class AudioRecorder:
                 logger.warning(f"⚠️ Output audio has odd byte count: {len(audio_bytes)}, padding with zero")
                 audio_bytes = audio_bytes + b'\x00'  # Pad with one zero byte
             self._output_file.write(audio_bytes)
-            self._output_file.flush()  # Ensure data is written to disk
             self._output_bytes += len(audio_bytes)
+            self._write_sizes(self._output_file, self._output_bytes)
             
     def stop_recording(self):
         """Stop recording and finalize WAV files."""
         if self._input_file:
-            # Flush any pending writes before updating header
-            self._input_file.flush()
-            # Update WAV header with actual data size
-            # WAV format: RIFF header (12 bytes) + fmt chunk (24 bytes) + data header (8 bytes) = 44 bytes
-            # File size field (position 4) = total_file_size - 8 = (44 + data_size) - 8 = 36 + data_size
-            self._input_file.seek(4)
-            self._input_file.write(struct.pack('<I', 36 + self._input_bytes))
-            self._input_file.seek(40)
-            self._input_file.write(struct.pack('<I', self._input_bytes))
-            self._input_file.flush()  # Ensure header updates are written
+            self._write_sizes(self._input_file, self._input_bytes)
             self._input_file.close()
             self._input_file = None
             logger.info(f"✅ Stopped input recording: {self._input_bytes} bytes")
             
         if self._output_file:
-            # Flush any pending writes before updating header
-            self._output_file.flush()
-            # Update WAV header with actual data size
-            # WAV format: RIFF header (12 bytes) + fmt chunk (24 bytes) + data header (8 bytes) = 44 bytes
-            # File size field (position 4) = total_file_size - 8 = (44 + data_size) - 8 = 36 + data_size
-            self._output_file.seek(4)
-            self._output_file.write(struct.pack('<I', 36 + self._output_bytes))
-            self._output_file.seek(40)
-            self._output_file.write(struct.pack('<I', self._output_bytes))
-            self._output_file.flush()  # Ensure header updates are written
+            self._write_sizes(self._output_file, self._output_bytes)
             self._output_file.close()
             self._output_file = None
             logger.info(f"✅ Stopped output recording: {self._output_bytes} bytes")
             
+    @staticmethod
+    def _write_sizes(file, data_bytes: int):
+        """Keep the WAV header's sizes current and flush.
+
+        Updated on every write, not only at stop: the add-on runs for days, and
+        a file read while it is still recording otherwise claims zero samples,
+        so a reader shows nothing (or a guess) instead of what was recorded.
+
+        WAV format: RIFF header (12 bytes) + fmt chunk (24 bytes) + data header
+        (8 bytes) = 44 bytes. File size field (position 4) = total_file_size - 8
+        = 36 + data_size.
+        """
+        file.seek(4)
+        file.write(struct.pack('<I', 36 + data_bytes))
+        file.seek(40)
+        file.write(struct.pack('<I', data_bytes))
+        file.seek(0, os.SEEK_END)
+        file.flush()
+
     def _write_wav_header(self, file, sample_rate: int, channels: int, bits_per_sample: int):
         """
         Write WAV file header.
