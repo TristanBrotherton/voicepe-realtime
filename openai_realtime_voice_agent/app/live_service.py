@@ -121,6 +121,7 @@ from app.live_protocol import (
     chunk_text,
     context_append,
     function_call_output,
+    end_on_reply,
     history_to_session_input,
     input_audio_append,
     inner_type,
@@ -1123,10 +1124,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 "restarted"
             )
         # A reopened session has no server-side memory of the last one, so seed
-        # it with the recent text conversation the same way a reconnect does.
+        # it with the recent text conversation the same way a reconnect does,
+        # ending on the last reply: anything after it would be answered again.
         if self._context is not None:
             try:
-                self._seed_history = history_to_session_input(self._context.get_messages())
+                self._seed_history = end_on_reply(history_to_session_input(self._context.get_messages()))
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning(f"⚠️ live: could not snapshot history for the new session: {e!r}")
         # Developer test rig (experiment_mode): hot A/B overrides re-read at every session open

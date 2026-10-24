@@ -426,6 +426,20 @@ def history_to_session_input(messages: Iterable[dict], max_items: int = MAX_INPU
     return items
 
 
+
+def end_on_reply(items: List[dict]) -> List[dict]:
+    """History for a session opened by a new wake: it ends on the assistant's
+    last reply. A trailing user or developer item (a request the closed session
+    never answered, a tool result read in after its reply) is unfinished
+    business, and GPT-Live acts on it as soon as the session starts: it
+    re-runs the old request and talks over the new one, which it then never
+    transcribes (rig, 2026-10-23: "Six forty-nine" said unprompted, the new
+    question lost)."""
+    items = list(items)
+    while items and items[-1].get("role") != "assistant":
+        items.pop()
+    return items
+
 # ---------------------------------------------------------------------------
 # context appends
 # ---------------------------------------------------------------------------

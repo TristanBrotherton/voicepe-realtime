@@ -2,6 +2,19 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.11 (fork)
+
+### Fixed: a new question was sometimes never heard after a wake
+
+- A session opened by a wake is seeded with the recent conversation. When
+  that history ended on something other than the assistant's reply (a
+  request the last session never answered, or a tool result read in after
+  the reply), GPT-Live acted on it as soon as the session started: it re-ran
+  the old request and spoke an answer nobody asked for (dropped by the
+  add-on, so nothing was heard), and the new question was never transcribed.
+  The history for a new session now ends on the last reply. Reconnects in
+  the middle of a turn still carry the pending request.
+
 ## 0.19.10 (fork)
 
 ### Fixed: a follow-up spoken late in the window was cut off
