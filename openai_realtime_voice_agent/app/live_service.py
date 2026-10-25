@@ -3230,6 +3230,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         arguments, dropped = sanitize_tool_arguments(
             call.name, call.arguments, self._tool_schemas.get(call.name)
         )
+        arguments = self._resolve_ha_target(call.name, arguments)
         record = self.calls.observe(
             call_id=call.call_id, name=call.name, delegation_id=call.delegation_id,
             arguments=arguments, now=time.monotonic(),
@@ -3759,6 +3760,21 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._note(self.on_backend_activity)
         await self._router_deliver(op)
 
+    def _resolve_ha_target(self, name: str, arguments):
+        """Fit a spoken entity name, domain and area to the one exposed entity
+        it means (app/ha_names.py), before the guards judge the call."""
+        household = getattr(self.router, "household", None)
+        if household is None or not hasattr(household, "resolve_target"):
+            return arguments
+        try:
+            resolved, note = household.resolve_target(name, arguments)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"⚠️ entity name match failed for {name}: {e!r}")
+            return arguments
+        if note:
+            logger.info(f"🎯 {name}: {note}")
+        return resolved
+
     async def _router_execute(self, op: RouterOp, name: str, arguments: dict):
         """Run one tool for the router through the guarded handler path.
 
@@ -3766,6 +3782,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         repeat ledger answers an exact repeat without touching the house.
         """
         arguments, dropped = sanitize_tool_arguments(name, arguments, self._tool_schemas.get(name))
+        arguments = self._resolve_ha_target(name, arguments)
         call_id = new_event_id("rcall")
         record = self.calls.observe(call_id=call_id, name=name, delegation_id=op.op_id,
                                     arguments=arguments, now=time.monotonic())

@@ -215,6 +215,10 @@ class HouseholdDirectory:
         self._block = ""
         self._rooms: Dict[str, Room] = {}
         self._devices: List[dict] = []
+        # Every exposed entity with its names, domain and areas, and the floor
+        # names of each area, for matching a spoken name (app/ha_names.py).
+        self._entities: list = []
+        self._floors_of_area: Dict[str, List[str]] = {}
         self._refreshed = 0.0
         self._task: Optional[asyncio.Task] = None
 
@@ -260,7 +264,14 @@ class HouseholdDirectory:
         if self._fetch_prompt is not None:
             prompt = await step("Assist prompt", self._fetch_prompt)
             entries = parse_overview(prompt or "")
+        if entries:
+            from app.ha_names import entities_from_overview
+            self._entities = entities_from_overview(entries)
         if areas:
+            floor_names = {f.get("floor_id"): [f.get("name") or f.get("floor_id")] + list(f.get("aliases") or [])
+                           for f in floors if f.get("floor_id")}
+            self._floors_of_area = {fold(a.get("name") or a["area_id"]): floor_names.get(a.get("floor_id"), [])
+                                    for a in areas if a.get("area_id")}
             self._rooms = {a["area_id"]: Room(a["area_id"], a.get("name") or a["area_id"],
                                               list(a.get("aliases") or []), a.get("floor_id"))
                            for a in areas if a.get("area_id")}
@@ -312,6 +323,12 @@ class HouseholdDirectory:
         if not reply.get("success"):
             raise RuntimeError(f"{payload['type']}: {(reply.get('error') or {}).get('message')}")
         return reply.get("result") or []
+
+    def resolve_target(self, function_name: str, arguments: dict):
+        """``(arguments, note)`` with a spoken entity name fitted to the one
+        exposed entity it means (app/ha_names.py); unchanged when unclear."""
+        from app.ha_names import resolve_target
+        return resolve_target(function_name, arguments, self._entities, self._floors_of_area)
 
     def room_of(self, satellite_ip: Optional[str]) -> Optional[Room]:
         """The room of the satellite at ``satellite_ip``: its MAC from the ARP
