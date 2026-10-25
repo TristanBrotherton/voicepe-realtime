@@ -264,6 +264,11 @@ def should_rescue_silent_tool_request(text: str) -> bool:
 # Graceful close: the server drains for up to ~10 s; the device is gone by
 # then, so wait less.
 SESSION_CLOSE_TIMEOUT_S = 3.0
+# A session opened this long after the last one closed starts a new
+# conversation: the old one is not seeded into it. Seeding it anyway made the
+# model repeat an old answer over the new tool result (2026-10-25: "What time
+# is it?" at 06:20 answered with the previous evening's "ten thirty-eight").
+HISTORY_MAX_GAP_S = 300.0
 # Silence filler while the device mic is closed (100 ms chunks).
 SILENCE_CHUNK_MS = 100
 SILENCE_AFTER_MS = 250
@@ -769,6 +774,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._session_closed = asyncio.Event()
         self._startup_failures = 0
         self._context: Optional[LLMContext] = None
+        self._last_session_closed_mono: Optional[float] = None
         self._resampler = create_stream_resampler()
         self._last_input_mono = 0.0
         self._input_audio_ms_sent = 0.0
@@ -1153,6 +1159,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # it with the recent text conversation the same way a reconnect does,
         # ending on the last reply: anything after it would be answered again.
         if self._context is not None:
+            self._forget_stale_conversation()
             try:
                 self._seed_history = end_on_reply(history_to_session_input(self._context.get_messages()))
             except Exception as e:  # pragma: no cover - defensive
@@ -1204,6 +1211,21 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._session_opening = False
             raise
 
+    def _forget_stale_conversation(self) -> None:
+        """Drop the conversation (not the system prompt) after a long gap."""
+        if self._last_session_closed_mono is None:
+            return
+        gap = time.monotonic() - self._last_session_closed_mono
+        if gap <= HISTORY_MAX_GAP_S:
+            return
+        messages = self._context.get_messages()
+        kept = [m for m in messages if isinstance(m, dict) and m.get("role") == "system"]
+        dropped = len(messages) - len(kept)
+        if dropped:
+            self._context.set_messages(kept)
+            logger.info(f"🧹 live: last session closed {gap:.0f}s ago; starting a new conversation "
+                        f"({dropped} old message(s) not carried over)")
+
     async def close_session(self, reason: str = "") -> None:
         """Close the session gracefully and release everything it owned.
 
@@ -1225,6 +1247,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             acknowledged = await self._close_session()
         finally:
             socket_closed = await self._disconnect()
+            self._last_session_closed_mono = time.monotonic()
         if not acknowledged and not socket_closed:
             raise RuntimeError("Live session closure uncertain: no session.closed and socket close failed")
         if self.router is not None:

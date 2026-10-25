@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.15 (fork)
+
+### Fixed: an old conversation answered a new question
+
+- Every GPT-Live session was seeded with the device's whole earlier
+  conversation, however old. Asked "What time is it?" in the morning, the
+  model repeated the previous evening's answer instead of the time the tool
+  had just returned. A session opened more than 5 minutes after the last one
+  closed now starts a new conversation; the system prompt is kept, and a
+  follow-up within 5 minutes still carries over.
+
 ## 0.19.14 (fork)
 
 ### Fixed: a quiet or distant request got silence
