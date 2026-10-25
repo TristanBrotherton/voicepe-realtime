@@ -63,6 +63,28 @@ FLOOR_MIN = 20.0
 # is transcribed when it ends, and anything longer than this is not one.
 HOLD_MAX_S = 12.0
 
+# After a wake the same detector watches for the request itself. GPT-Live
+# answers a quiet or distant request without ever transcribing it, and without
+# a transcript the add-on's turn never opens: the reply is dropped and the
+# user hears nothing until the 12 s wedge check closes the turn. When speech
+# was heard after the wake and no transcript has arrived this long after the
+# last speech-level block (transcripts land 1.2-3 s after speech ends), the
+# user is told it was not caught instead.
+NOT_TRANSCRIBED_S = 4.0
+# ... and never later than this after the speech was first heard.
+WAKE_WATCH_MAX_S = 10.0
+# The wake chime leaks into the mic for about 0.4 s right after the wake
+# (10000-20000 RMS at wake_open_delay_ms 150); blocks this soon after the
+# wake are learned from but never count as the request's onset.
+WAKE_ONSET_BLIND_S = 1.0
+# The request itself may be quiet: GPT-Live answers but never transcribes a
+# request at 500-1800 RMS (a soft voice, a person a few metres away), far below
+# the hold detector's bar (1500, tuned so knocks never hold the mic). The watch
+# listens with its own detector at a lower bar; a knock right after a wake can
+# then earn a "didn't catch that", which beats twelve seconds of silence.
+WAKE_WATCH_MIN_RMS = 400.0
+WAKE_WATCH_NOISE_RATIO = 3.0
+
 
 def _env_seconds(name: str, default: float, low: float, high: float) -> float:
     try:
@@ -163,7 +185,12 @@ class FollowUpHold:
                  on_release: Optional[Callable[[], None]] = None,
                  spawn: Optional[Callable[[Awaitable], object]] = None,
                  hold_max_s: Optional[float] = None, clock=time.monotonic,
-                 detector: Optional[SpeechOnsetDetector] = None):
+                 detector: Optional[SpeechOnsetDetector] = None,
+                 on_not_transcribed: Optional[Callable[[], Awaitable[None]]] = None,
+                 not_transcribed_s: float = NOT_TRANSCRIBED_S,
+                 wake_watch_max_s: float = WAKE_WATCH_MAX_S,
+                 wake_onset_blind_s: float = WAKE_ONSET_BLIND_S,
+                 wake_detector: Optional[SpeechOnsetDetector] = None):
         self._hold_listening = hold_listening
         self._release_idle = release_idle
         self._may_hold = may_hold
@@ -184,6 +211,20 @@ class FollowUpHold:
         self._closed = False
         self.holds = 0
         self.releases = 0
+        # The wake watch: speech heard after a wake that never got a transcript.
+        self._on_not_transcribed = on_not_transcribed
+        self.not_transcribed_s = not_transcribed_s
+        self.wake_watch_max_s = wake_watch_max_s
+        self.wake_onset_blind_s = wake_onset_blind_s
+        self._wake_detector = wake_detector or SpeechOnsetDetector(
+            min_rms=WAKE_WATCH_MIN_RMS, noise_ratio=WAKE_WATCH_NOISE_RATIO)
+        self.wake_watch = False
+        self._wake_mono = 0.0
+        self.wake_speech_mono: Optional[float] = None
+        self._wake_last_loud = 0.0
+        self._wake_task: Optional[asyncio.Task] = None
+        self.not_transcribed = 0
+        self.wake_speech_heard = 0
 
     # -- what the phase emitter sends the device ----------------------------
 
@@ -194,6 +235,7 @@ class FollowUpHold:
             self._saw_reply = True
             self.disarm("reply")
         elif value == "idle":
+            self._end_wake_watch("idle")
             if (extra or {}).get("followup") is False or not self._saw_reply:
                 # A silent turn, a bare connect, our own release: no window.
                 self.disarm("idle without a follow-up window")
@@ -222,12 +264,15 @@ class FollowUpHold:
         self._cancel_release()
         self.armed = False
         self.held = False
+        if why:
+            self._end_wake_watch(why)
         if was_held and why:
             logger.info(f"🎤 follow-up hold ended ({why})")
 
     def note_wake(self) -> None:
         self._saw_reply = False
         self.disarm("wake")
+        self._start_wake_watch()
 
     def note_flush(self) -> bool:
         """The device's window timer fired. True when speech was heard in it
@@ -241,6 +286,7 @@ class FollowUpHold:
         return self.heard_mono is not None and self._clock() - self.heard_mono <= seconds
 
     def _turn_progressed(self, phase: str) -> None:
+        self._end_wake_watch(phase)
         if self.held:
             since = (self._clock() - (self.heard_mono or self._clock())) * 1000
             logger.info(f"🎤 follow-up hold: the turn went on ({phase}) {since:.0f} ms after speech was heard")
@@ -254,6 +300,10 @@ class FollowUpHold:
         """Audio tap: every forwarded inbound frame, in the receive path."""
         if self._closed:
             return
+        if self.wake_watch:
+            self._feed_wake_watch(pcm)
+            return
+        self._wake_detector.observe(pcm)  # its floor stays current between wakes
         if not self.armed or self.held:
             self.detector.observe(pcm)  # keep the room's floor current
             return
@@ -271,6 +321,91 @@ class FollowUpHold:
                     f"(rms {self.detector.last_rms:.0f}, floor {self.detector.noise:.0f}); "
                     "holding the mic open")
         self._spawn(self._hold())
+
+    # -- the wake watch: a request heard but never transcribed -----------------
+
+    def _start_wake_watch(self) -> None:
+        if self._on_not_transcribed is None:
+            return
+        self._cancel_wake_task()
+        self._wake_detector.reset()
+        self.wake_watch = True
+        self._wake_mono = self._clock()
+        self.wake_speech_mono = None
+        self._wake_last_loud = 0.0
+
+    def _end_wake_watch(self, why: str) -> None:
+        if not self.wake_watch:
+            return
+        self.wake_watch = False
+        self._cancel_wake_task()
+        if self.wake_speech_mono is not None:
+            logger.debug(f"wake watch ended ({why}) {((self._clock() - self.wake_speech_mono) * 1000):.0f} ms "
+                         "after speech was heard")
+
+    def _feed_wake_watch(self, pcm: bytes) -> None:
+        now = self._clock()
+        if self.wake_speech_mono is not None:
+            self._wake_detector.observe(pcm)
+            # Still talking: the run continues at the detector's own bar.
+            if self._wake_detector.last_rms >= min(self._wake_detector.threshold, self._wake_detector.min_rms):
+                self._wake_last_loud = now
+            return
+        if now - self._wake_mono < self.wake_onset_blind_s:
+            self._wake_detector.observe(pcm)  # the chime's leak is not the request
+            return
+        if not self._wake_detector.feed(pcm):
+            return
+        self.wake_speech_mono = now
+        self._wake_last_loud = now
+        self.wake_speech_heard += 1
+        logger.info(f"🎤 speech heard {(now - self._wake_mono) * 1000:.0f} ms after the wake "
+                    f"(rms {self._wake_detector.last_rms:.0f}, floor {self._wake_detector.noise:.0f}); "
+                    "waiting for its transcript")
+        self._wake_task = asyncio.get_running_loop().create_task(self._wake_watch_run())
+
+    def note_reply_without_transcript(self) -> None:
+        """The model is replying to a request it never transcribed. If the
+        add-on heard that request too, there is nothing to wait for."""
+        if self.wake_watch and self.wake_speech_mono is not None:
+            self._cancel_wake_task()
+            self._wake_task = asyncio.get_running_loop().create_task(
+                self._not_transcribed("the model is replying to it without a transcript"))
+
+    async def _wake_watch_run(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(0.25)
+                if not self.wake_watch or self._closed or self.wake_speech_mono is None:
+                    return
+                now = self._clock()
+                if now - self._wake_last_loud >= self.not_transcribed_s:
+                    why = f"no transcript {now - self._wake_last_loud:.1f} s after it ended"
+                    break
+                if now - self.wake_speech_mono >= self.wake_watch_max_s:
+                    why = f"no transcript {now - self.wake_speech_mono:.0f} s after it began"
+                    break
+        except asyncio.CancelledError:
+            return
+        await self._not_transcribed(why)
+
+    async def _not_transcribed(self, why: str) -> None:
+        if not self.wake_watch or self._closed or self.wake_speech_mono is None:
+            return
+        self.wake_watch = False
+        self.not_transcribed += 1
+        logger.warning(f"🙊 speech heard after the wake was never transcribed ({why}); "
+                       f"saying it was not caught ({self.not_transcribed} of {self.wake_speech_heard} "
+                       "requests heard since start)")
+        try:
+            await self._on_not_transcribed()
+        except Exception as e:
+            logger.warning(f"⚠️ could not say the request was not caught: {e!r}")
+
+    def _cancel_wake_task(self) -> None:
+        task, self._wake_task = self._wake_task, None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
 
     async def _hold(self) -> None:
         self._own_listening += 1
@@ -323,6 +458,8 @@ class FollowUpHold:
         self._closed = True
         self.armed = False
         self.held = False
+        self.wake_watch = False
+        self._cancel_wake_task()
         task, self._release_task = self._release_task, None
         if task is not None and not task.done():
             task.cancel()

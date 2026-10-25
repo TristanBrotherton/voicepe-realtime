@@ -483,3 +483,134 @@ class TestWiring(GateWiringCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# the wake watch: a request heard after the wake but never transcribed
+# ---------------------------------------------------------------------------
+
+class WakeWatchCase(unittest.IsolatedAsyncioTestCase):
+    """GPT-Live answers a quiet request without transcribing it; the add-on's
+    turn never opens and the user hears nothing for 12 s. The hold's detector
+    hears the request itself and, when no transcript follows, says so."""
+
+    async def asyncSetUp(self):
+        self.not_transcribed = 0
+
+        async def not_transcribed():
+            self.not_transcribed += 1
+
+        async def hold_listening():
+            return True
+
+        async def release_idle():
+            pass
+
+        self.hold = FollowUpHold(
+            hold_listening=hold_listening, release_idle=release_idle,
+            on_not_transcribed=not_transcribed,
+            not_transcribed_s=0.15, wake_watch_max_s=1.0, wake_onset_blind_s=0.0,
+        )
+
+    async def asyncTearDown(self):
+        await self.hold.close()
+
+    async def test_speech_after_a_wake_with_no_transcript_is_reported_once(self):
+        self.hold.note_wake()
+        self.assertTrue(self.hold.wake_watch)
+        self.hold.feed(SPEECH)
+        self.assertIsNotNone(self.hold.wake_speech_mono)
+        self.assertEqual(self.hold.wake_speech_heard, 1)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 1)
+        self.assertEqual(self.hold.not_transcribed, 1)
+        self.assertFalse(self.hold.wake_watch)
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.not_transcribed, 1, "said once")
+
+    async def test_a_transcript_ends_the_watch_quietly(self):
+        self.hold.note_wake()
+        self.hold.feed(SPEECH)
+        self.hold.note_phase("listening", {})  # the transcript's UserStartedSpeaking
+        self.assertFalse(self.hold.wake_watch)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 0)
+
+    async def test_thinking_or_idle_end_the_watch_too(self):
+        for phase in ("thinking", "idle"):
+            self.hold.note_wake()
+            self.hold.feed(SPEECH)
+            self.hold.note_phase(phase, {})
+            self.assertFalse(self.hold.wake_watch, phase)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 0)
+
+    async def test_a_quiet_request_is_heard_by_the_watch(self):
+        # Below the hold detector's bar (1500 RMS) but above the room: the band
+        # GPT-Live answers without transcribing. The watch hears it.
+        self.hold.feed(ROOM)
+        self.hold.note_wake()
+        self.hold.feed(pcm(400, 1300))  # RMS ~920
+        self.assertIsNotNone(self.hold.wake_speech_mono)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 1)
+
+    async def test_a_silent_wake_says_nothing(self):
+        self.hold.note_wake()
+        self.hold.feed(ROOM)
+        self.hold.feed(ROOM)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 0)
+        self.assertTrue(self.hold.wake_watch, "still waiting for the request")
+
+    async def test_the_chime_right_after_the_wake_is_not_the_request(self):
+        self.hold.wake_onset_blind_s = 10.0
+        self.hold.note_wake()
+        self.hold.feed(pcm(400, 20000))  # the chime's leak
+        self.assertIsNone(self.hold.wake_speech_mono)
+        await asyncio.sleep(0.5)
+        self.assertEqual(self.not_transcribed, 0)
+
+    async def test_a_reply_without_a_transcript_is_reported_at_once(self):
+        self.hold.note_wake()
+        self.hold.feed(SPEECH)
+        self.hold.note_reply_without_transcript()
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.not_transcribed, 1)
+        self.assertFalse(self.hold.wake_watch)
+
+    async def test_a_reply_without_a_transcript_and_no_speech_heard_is_left_to_the_gate(self):
+        self.hold.note_wake()
+        self.hold.feed(ROOM)
+        self.hold.note_reply_without_transcript()  # seeded history, a greeting
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.not_transcribed, 0)
+
+    async def test_speech_that_keeps_going_is_waited_for(self):
+        self.hold.feed(ROOM)  # the floor is known from before the wake
+        self.hold.note_wake()
+        self.hold.feed(SPEECH)
+        for _ in range(4):  # a long question: the clock restarts on every loud block
+            await asyncio.sleep(0.1)
+            self.hold.feed(SPEECH)
+        self.assertEqual(self.not_transcribed, 0)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 1)
+
+    async def test_the_watch_is_never_armed_without_a_fallback(self):
+        hold = FollowUpHold(hold_listening=self.hold._hold_listening,
+                            release_idle=self.hold._release_idle)
+        hold.note_wake()
+        self.assertFalse(hold.wake_watch)
+        hold.feed(SPEECH)
+        self.assertIsNone(hold.wake_speech_mono)
+        await hold.close()
+
+    async def test_the_follow_up_window_still_arms_after_a_wake_watch(self):
+        self.hold.note_wake()
+        self.hold.feed(SPEECH)
+        self.hold.note_phase("listening", {})
+        self.hold.note_phase("replying", {})
+        self.hold.note_phase("idle", {})
+        self.assertTrue(self.hold.armed)
+        self.assertFalse(self.hold.wake_watch)

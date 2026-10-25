@@ -196,6 +196,9 @@ class LiveConfig:
     # app/live_session_gate.py for how each one is enforced, and
     # app/live_cost.py for the cost model and the hard cutoff.
     # ----------------------------------------------------------------
+    # Slow automatic gain on the mic stream (app/input_gain.py); 1.0 = off
+    # (the default: it is opt-in per device until proven on one).
+    input_gain_max: float = 1.0
     idle_close_s: float = 10.0
     followup_s: float = 8.0
     rewake_grace_s: float = 0.0
@@ -318,6 +321,7 @@ class LiveConfig:
             stream_replies=stream_replies,
             router=router,
             fast_chat_model=_fast_chat_model(_get("LIVE_FAST_CHAT_MODEL", "")),
+            input_gain_max=_num("LIVE_INPUT_GAIN_MAX", 1.0, 1.0, 10.0),
             idle_close_s=_num("LIVE_IDLE_CLOSE_S", 10.0, 2.0, 120.0),
             followup_s=_num("LIVE_FOLLOWUP_S", 8.0, 0.0, 120.0),
             rewake_grace_s=_num("LIVE_REWAKE_GRACE_S", 0.0, 0.0, 30.0),

@@ -116,7 +116,9 @@ class LiveHarness:
 
         self._patch = patch.object(live_service_module, "websocket_connect", fake_connect)
         self._patch.start()
-        kwargs = dict(api_key="sk-test", config=LiveConfig(voice="marin"),
+        # Byte-exact input assertions across the Live modules: the mic gain is
+        # exercised by its own tests (test_input_gain, TestEarlyAudioIsPreserved).
+        kwargs = dict(api_key="sk-test", config=LiveConfig(voice="marin", input_gain_max=1.0),
                       instructions="Be brief.", backend_instructions="Use tools.",
                       tools=[], fill_silence=False,
                       # Legacy stream/assembler tests exercise the lower layer.

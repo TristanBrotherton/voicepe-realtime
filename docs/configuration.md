@@ -193,6 +193,7 @@ nothing reconnects while the house is quiet.
 
 | Option | Default | Purpose / when to change |
 |---|---|---|
+| `live_input_gain_max` | `1` | Off by default. A quiet or distant voice is answered by GPT-Live but not transcribed, so the reply is dropped; set this to `4` and the add-on raises quiet speech toward a transcribable level by at most that factor (a slow gain on the mic stream; it never attenuates). Opt-in until proven on a device. |
 | `live_idle_close_s` | `10` | Close after this much quiet with no backend work in flight. Lower is cheaper; higher makes a late follow-up marginally faster. |
 | `live_followup_s` | `8` | Keep the session this long after a reply so a follow-up question does not pay for a new connection. The device's own follow-up window usually closes it sooner. `0` closes as soon as the reply ends. |
 | `live_rewake_grace_s` | `0` | Optional billed grace after the device follow-up mic closes. A wake inside the grace reuses the ready session and skips a new handshake. Maximum `30`; `0` closes immediately. |

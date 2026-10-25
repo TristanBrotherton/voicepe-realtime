@@ -757,9 +757,24 @@ class WebSocketHandler:
             return None
         from app.live_session_gate import OPEN as GATE_OPEN
 
+        async def _not_transcribed() -> None:
+            # Speech was heard after the wake and GPT-Live never transcribed
+            # it (too quiet, too far, taken for background speech): the turn
+            # would otherwise end in silence twelve seconds after the wake.
+            # Close it now and say it was not caught, the way a failed turn is
+            # explained (idle first so the device is never left listening).
+            timeline = connection.turn_timeline
+            if timeline is not None and timeline.current is not None and not timeline.current.done:
+                timeline.finish("not_transcribed")
+            await phase_emitter.force_idle("request not transcribed")
+            speaker = self.turn_error_speaker
+            if speaker is not None:
+                await speaker(connection, "request not transcribed")
+
         hold = FollowUpHold(
             hold_listening=phase_emitter.hold_listening,
             release_idle=phase_emitter.release_hold,
+            on_not_transcribed=_not_transcribed,
             # Only a paid session is worth holding; a window streaming into
             # a closed one is left to the ordinary wake/mic-open paths.
             may_hold=lambda: gate.state == GATE_OPEN,
@@ -1254,6 +1269,8 @@ class WebSocketHandler:
         openai_service.on_silent_response = _on_silent_response
         # The request was answered: a later reconnect must not replay it.
         openai_service.on_response_audio = connection.replay.clear
+        if hold is not None and hasattr(openai_service, "on_reply_without_transcript"):
+            openai_service.on_reply_without_transcript = hold.note_reply_without_transcript
 
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
@@ -1412,7 +1429,7 @@ class WebSocketHandler:
                 # reply path end it. A reply must never be cut off as "no
                 # speech" because the server sent no input transcript.
                 return
-            if extended and timeline is not None and (
+            if timeline is not None and (
                     timeline.current is not turn or (turn is not None and turn.done)):
                 return  # the turn finished or a new one began while we waited
             if not self._backend_progress_since(connection, phase_emitter, window_start):

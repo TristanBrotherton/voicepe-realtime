@@ -2,7 +2,29 @@
 
 All notable changes to this add-on. Newest first.
 
-## Unreleased (fork)
+## 0.19.14 (fork)
+
+### Fixed: a quiet or distant request got silence
+
+- GPT-Live answers a quiet or distant request (a soft voice, a person a few
+  metres away, a loudspeaker across the room) without ever transcribing it.
+  The add-on opens a turn only on the transcript, so the reply was dropped and
+  the user heard nothing until the turn closed 12 s after the wake. Two
+  changes:
+  - The add-on hears the request itself: when speech-level sound follows the
+    wake and no transcript has arrived 4 s after it ends (or the model starts
+    replying to it without one), the turn is closed and the device says
+    "Sorry, I didn't catch that. Could you say it again?" instead of staying
+    silent. Logged with a running count per device. The first second after
+    the wake never counts as the request (the wake chime's leak). The watch
+    listens at a lower bar than the follow-up hold (400 RMS, 3x the room,
+    against 1500): the requests GPT-Live drops are the quiet ones.
+  - Optional: `live_input_gain_max` (new, default 1 = off) brings the mic
+    stream up to a transcribable level before it is sent, with a slow gain
+    that follows the recent speech level, never attenuates and never exceeds
+    the cap. Replaying device audio that was answered but not transcribed
+    showed the same request four times louder transcribed every time. Off
+    until it has been proven on a device; set it to 4 to try it.
 
 ### Fixed: a device disconnect mid-session was logged as a handshake timeout
 
@@ -26,6 +48,7 @@ All notable changes to this add-on. Newest first.
 - The WAV header is kept current on every write, so a recording read while
   the add-on is still running shows everything recorded so far instead of
   claiming to be empty.
+
 
 ## 0.19.13 (fork)
 

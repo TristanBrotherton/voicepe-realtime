@@ -551,6 +551,13 @@ configuration:
       unless experiment mode is on.
 
   # --- 💵 GPT-Live cost safety (hidden, optional) ---
+  live_input_gain_max:
+    name: "🎙️ GPT-Live · Mic gain for quiet voices (max, 1 = off)"
+    description: >-
+      Optional (default 1 = off). A quiet or distant voice is answered by
+      GPT-Live but not transcribed, so the reply is dropped. Set 4 and the
+      add-on brings quiet speech up to a transcribable level, by at most that
+      factor; it never makes a voice quieter.
   live_idle_close_s:
     name: "💵 GPT-Live cost · Close after quiet (seconds)"
     description: >-
