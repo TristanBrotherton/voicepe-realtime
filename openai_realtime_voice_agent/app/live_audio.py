@@ -130,6 +130,13 @@ BYTES_PER_SAMPLE = 2
 # sentence tails) peak at 44-456. 4 separates them with a wide margin and is
 # -78 dBFS, so nothing audible can ever be classified as silence.
 SILENCE_PEAK = 4
+# Outside a reply, a delta must peak above this to start one. GPT-Live opens
+# every session's output stream with a lone click (peak 167-170, about
+# -46 dBFS, then 0-1; measured 2026-10-25 on five sessions fed silence or room
+# noise). Above SILENCE_PEAK, it opened a "reply" on every wake. A quieter
+# delta is held like a leading pause, so a real reply that starts softly loses
+# nothing: it is released ahead of the first louder delta.
+ONSET_PEAK = 300
 # Consecutive inaudible audio passed through before it is suppressed. Measured
 # intra-reply pauses reach ~600 ms between sentences and must survive exactly;
 # idle runs between replies are several seconds. 800 ms keeps every natural
@@ -280,6 +287,7 @@ class LiveOutputAudio:
         sample_rate: int = LIVE_SAMPLE_RATE,
         max_silence_ms: int = MAX_SILENCE_MS,
         silence_peak: int = SILENCE_PEAK,
+        onset_peak: int = ONSET_PEAK,
         speech_hangover_s: float = SPEECH_HANGOVER_S,
         segment_gap_ms: int = SEGMENT_GAP_MS,
         clock: Callable[[], float] = time.monotonic,
@@ -288,6 +296,7 @@ class LiveOutputAudio:
         self.sample_rate = sample_rate
         self.max_silence_ms = max_silence_ms
         self.silence_peak = silence_peak
+        self.onset_peak = onset_peak
         self.speech_hangover_s = speech_hangover_s
         self.segment_gap_ms = segment_gap_ms
         self._clock = clock
@@ -385,7 +394,8 @@ class LiveOutputAudio:
         # device, never put it into REPLYING and never spend its playout lead
         # (see "Leading idle runs" in the module docstring). The protocol has no
         # output-audio-done event, so this threshold is also what ends a reply.
-        inaudible = stats.inaudible(self.silence_peak)
+        inaudible = stats.inaudible(self.silence_peak) or (
+            not self._in_speech and stats.peak <= self.onset_peak)
         if inaudible:
             self.metrics.silent_deltas += 1
             self._silence_run_ms += stats.duration_ms

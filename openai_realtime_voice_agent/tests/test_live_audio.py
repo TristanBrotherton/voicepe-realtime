@@ -375,3 +375,36 @@ class TestDefaults(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStreamStartClick(unittest.TestCase):
+    """2026-10-25: GPT-Live opens every session's output with a lone click
+    (peak 167-170, then 0-1). It opened a "reply" on every wake (#29)."""
+
+    @staticmethod
+    def click_stream():
+        click = bytearray(fx.silence(100, peak=1))
+        click[20:22] = (167).to_bytes(2, "little", signed=True)
+        return [bytes(click)] + [fx.silence(100, peak=1)] * 3 + [fx.silence(100)] * 8
+
+    def test_the_click_opens_no_reply_and_is_discarded_as_idle(self):
+        assembler, chunks = replay(fx.output_audio_deltas(b"".join(self.click_stream())))
+        self.assertEqual(b"".join(c.pcm for c in chunks), b"")
+        self.assertFalse(assembler.speaking)
+        self.assertGreater(assembler.metrics.idle_head_discarded_deltas, 0)
+
+    def test_a_reply_after_the_click_arrives_whole_with_its_lead_in(self):
+        lead = b"".join(self.click_stream()[:4])
+        assembler, chunks = replay(fx.output_audio_deltas(lead + fx.tone(300)))
+        self.assertEqual(b"".join(c.pcm for c in chunks), lead + fx.tone(300),
+                         "a held lead-in is released ahead of the first word")
+
+    def test_a_soft_reply_onset_is_held_then_released_not_lost(self):
+        soft = fx.tone(100, amplitude=250)
+        assembler, chunks = replay(fx.output_audio_deltas(soft + fx.tone(300)))
+        self.assertEqual(b"".join(c.pcm for c in chunks), soft + fx.tone(300))
+
+    def test_quiet_audio_inside_a_reply_still_passes(self):
+        quiet = fx.tone(200, amplitude=120)
+        assembler, chunks = replay(fx.output_audio_deltas(fx.tone(300) + quiet))
+        self.assertEqual(b"".join(c.pcm for c in chunks), fx.tone(300) + quiet)
