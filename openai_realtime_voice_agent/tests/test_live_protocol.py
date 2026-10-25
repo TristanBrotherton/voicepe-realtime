@@ -14,6 +14,7 @@ from app.live_protocol import (
     context_append,
     estimated_tokens,
     function_call_output,
+    end_on_reply,
     history_to_session_input,
     input_audio_append,
     input_audio_mute,
@@ -245,6 +246,20 @@ class TestHistorySeeding(unittest.TestCase):
         big = [{"role": "user", "content": "x" * 10000} for _ in range(5)]
         self.assertEqual(len(history_to_session_input(big)), 2)
         self.assertEqual(history_to_session_input(None), [])
+
+    def test_a_new_session_history_ends_on_the_last_reply(self):
+        items = history_to_session_input([
+            {"role": "user", "content": "what time is it"},
+            {"role": "assistant", "content": "Six thirty-nine."},
+            {"role": "user", "content": "turn off the test light"},
+            {"role": "developer", "content": "[result] HassTurnOff ok"},
+        ])
+        trimmed = end_on_reply(items)
+        self.assertEqual([i["role"] for i in trimmed], ["user", "assistant"])
+        self.assertEqual(trimmed[-1]["content"][0]["text"], "Six thirty-nine.")
+        self.assertEqual(len(items), 4)  # the input list is not changed
+        self.assertEqual(end_on_reply([{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}]), [])
+        self.assertEqual(end_on_reply([]), [])
 
 
 class TestChunking(unittest.TestCase):

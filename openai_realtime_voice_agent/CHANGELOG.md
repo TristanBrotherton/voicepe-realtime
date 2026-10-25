@@ -2,6 +2,56 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.13 (fork)
+
+### Fixed: GPT-Live rejected the opening audio of a session (turn ended on an error)
+
+- The device streams its mic while no session exists (after a
+  background-conversation close it waits for a wake word with the mic open).
+  The add-on held that audio in the pre-roll buffer meant for the handshake
+  and flushed up to 5 s of it at `session.started`, in one burst, ahead of the
+  request itself. GPT-Live accepts input at 1.2x real time in bursts of at
+  most 5 s, so it answered `input_audio_rate_limit_exceeded`, the turn ended
+  on an error and the user was told the request failed (about every second
+  wake on a device without a wake chime). Audio that arrives with no session
+  open or opening is now dropped, the pre-roll holds only what arrives after
+  the open (4 s at most), and every input append (pre-roll flush, reconnect
+  replay, live stream) goes through one pacer that stays under the server's
+  intake rate instead of being rejected.
+
+## 0.19.12 (fork)
+
+### Fixed: a late result for a closed session was sent into the next one
+
+- A router result that landed after its GPT-Live session had closed (a slow
+  tool, a turn the user walked away from) was queued and became the first
+  event of the next wake's session, carrying a delegation id that session
+  had never seen and text about a conversation that was over. Delegation-bound
+  context is now dropped once its session has ended; session-wide context
+  (the voice check) is still carried over.
+
+### Changed: the log names a reply without a transcript
+
+- When GPT-Live replies although it has transcribed no request in the session,
+  the dropped audio is logged as a warning that says so. Measured by replaying
+  device audio: a quiet or thin voice right after the loud wake chime is
+  heard and answered but never transcribed, so the add-on's turn never opens
+  and the user hears nothing; the old "no speech 12s after wake" was the only
+  trace.
+
+## 0.19.11 (fork)
+
+### Fixed: a new question was sometimes never heard after a wake
+
+- A session opened by a wake is seeded with the recent conversation. When
+  that history ended on something other than the assistant's reply (a
+  request the last session never answered, or a tool result read in after
+  the reply), GPT-Live acted on it as soon as the session started: it re-ran
+  the old request and spoke an answer nobody asked for (dropped by the
+  add-on, so nothing was heard), and the new question was never transcribed.
+  The history for a new session now ends on the last reply. Reconnects in
+  the middle of a turn still carry the pending request.
+
 ## 0.19.10 (fork)
 
 ### Fixed: a follow-up spoken late in the window was cut off

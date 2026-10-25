@@ -179,6 +179,53 @@ class TestEarlyAudioIsPreserved(OnDemandCase):
             await asyncio.sleep(0.05)
             self.assertGreater(len(sent_input_audio(h.socket)), 0)
 
+    async def test_audio_streamed_with_no_session_open_is_not_the_next_pre_roll(self):
+        """The mic keeps streaming while no session exists (the device waits
+        for a wake word after a background-conversation close). That audio is
+        nobody's request; held, it became the opening burst of the next
+        session and GPT-Live rejected it (input_audio_rate_limit_exceeded)."""
+        async with self.harness() as h:
+            stale = [ramp(LIVE_SAMPLE_RATE // 2, start=i * 11) for i in range(6)]  # 3 s
+            for chunk in stale:
+                await self.feed(h, chunk)
+            self.assertEqual(h.sockets, [])
+            self.assertEqual(len(h.service._prestart_audio), 0,
+                             "audio with no session open is dropped, not held")
+            await h.open_session()
+            request = ramp(LIVE_SAMPLE_RATE // 2, start=99)
+            await self.feed(h, request)
+            await h.start_session()
+            await asyncio.sleep(0.05)
+            self.assertEqual(sent_input_audio(h.socket), request,
+                             "only audio from this session's open is replayed")
+
+    async def test_appends_beyond_the_burst_allowance_are_paced(self):
+        """The server takes 1.2x real time in bursts of at most 5 s. A full
+        pre-roll flushed at session.started followed at once by more audio
+        would exceed that; the excess waits for the bucket instead."""
+        from app.live_service import INPUT_BURST_MAX_MS
+        async with self.harness() as h:
+            await h.open_session()
+            flush_ms = PRESTART_AUDIO_MAX_S * 1000
+            await self.feed(h, ramp(LIVE_SAMPLE_RATE * PRESTART_AUDIO_MAX_S))
+            await h.start_session()
+            await asyncio.sleep(0.05)
+            self.assertEqual(h.service._input_audio_ms_sent, flush_ms,
+                             "a pre-roll within the allowance is flushed at once")
+            extra = ramp(LIVE_SAMPLE_RATE, start=5)  # 1 s, more than the bucket has left
+            left = INPUT_BURST_MAX_MS - flush_ms
+            self.assertLess(left, 1000)
+            await h.source.push_frame(
+                InputAudioRawFrame(audio=extra, sample_rate=LIVE_SAMPLE_RATE, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+            await asyncio.sleep(0.1)
+            self.assertEqual(h.service._input_audio_ms_sent, flush_ms,
+                             "the excess is held back, not sent in the same burst")
+            await asyncio.sleep((1000 - left) / 1200.0 + 0.2)
+            self.assertEqual(h.service._input_audio_ms_sent, flush_ms + 1000)
+            self.assertTrue(sent_input_audio(h.socket).endswith(extra), "order is kept")
+
     async def test_a_second_session_starts_with_an_empty_pre_roll(self):
         async with self.harness() as h:
             await h.open_session()
