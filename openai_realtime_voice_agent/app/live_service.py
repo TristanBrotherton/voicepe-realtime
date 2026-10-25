@@ -269,8 +269,19 @@ SILENCE_AFTER_MS = 250
 # The device can begin forwarding the post-wake utterance while OpenAI is
 # still acknowledging session.start. Buffer a bounded window locally; the
 # protocol forbids sending it before session.started, but dropping it loses
-# the beginning (or all) of a short household command.
-PRESTART_AUDIO_MAX_S = 5
+# the beginning (or all) of a short household command. The window only ever
+# holds audio that arrived after this session began opening: the mic keeps
+# streaming while no session exists (after a background-conversation close,
+# the device waits for a wake word with its mic open), and that audio is
+# nobody's request. Flushing it at session.started made the first appends a
+# burst above the server's limit (1.2x real time, bursts of at most 5 s), so
+# GPT-Live rejected the opening audio and the turn ended on an error.
+PRESTART_AUDIO_MAX_S = 4
+# The server accepts input audio at 1.2x real time with bursts of at most
+# 5 s; the pre-roll flush, a reconnect replay and the live stream all go
+# through one pacer that holds appends below that (a token bucket).
+INPUT_BURST_MAX_MS = 4500
+INPUT_RATE_X = 1.2
 # A delegation that never finishes must not hold the thinking watchdog open
 # forever (tools are bounded individually; this bounds the backend itself).
 DELEGATION_TIMEOUT_S = 150.0
@@ -762,6 +773,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._input_audio_ms_sent = 0.0
         self._prestart_audio = bytearray()
         self._input_audio_lock = asyncio.Lock()
+        # True from open_session() until session.started (or the socket is
+        # dropped): the only window in which device audio is worth holding.
+        self._session_opening = False
+        self._idle_input_dropped = 0
+        self._idle_input_dropped_ms = 0.0
+        self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
+        self._input_bucket_mono = 0.0
+        self._input_paced_ms = 0.0
 
         self.ledger = DelegationLedger()
         self.reply_admission = LiveReplyAdmission() if admit_complete_replies else None
@@ -1155,7 +1174,27 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self.on_session_opening()
             except Exception as e:  # pragma: no cover - defensive
                 logger.debug(f"live: session-opening hook failed: {e!r}")
-        await self._connect()
+        # The request begins with this open. Mic audio that arrived earlier
+        # (the device streaming with no session to hear it) is not part of it.
+        async with self._input_audio_lock:
+            if self._idle_input_dropped:
+                logger.info(
+                    f"🎙️ live: {self._idle_input_dropped} mic frame(s), "
+                    f"{self._idle_input_dropped_ms:.0f} ms, streamed with no session open since "
+                    "the last one; dropped, not held for this session"
+                )
+            self._idle_input_dropped = 0
+            self._idle_input_dropped_ms = 0.0
+            self._prestart_audio.clear()
+            self._session_opening = True
+            self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
+            self._input_bucket_mono = time.monotonic()
+            self._input_paced_ms = 0.0
+        try:
+            await self._connect()
+        except BaseException:
+            self._session_opening = False
+            raise
 
     async def close_session(self, reason: str = "") -> None:
         """Close the session gracefully and release everything it owned.
@@ -1483,11 +1522,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         try:
             self._disconnecting = True
             self._session_started = False
+            self._session_opening = False
             self.session_expires_at = None
             self._prestart_audio.clear()
             self._last_user_end_ms = None
             self._current_user_start_ms = None
             self._last_user_start_ms = None
+            if self._input_paced_ms:
+                logger.info(
+                    f"🎙️ live input audio: {self._input_audio_ms_sent:.0f} ms sent, "
+                    f"{self._input_paced_ms:.0f} ms of it paced to the server's intake rate"
+                )
             self._input_audio_ms_sent = 0.0
             self._last_user_text = ""
             self._last_user_text_seq = 0
@@ -1779,12 +1824,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._closing = True
             await self._send(session_close())
             self._session_started = False
+            self._session_opening = False
             self._prestart_audio.clear()
             return
         pending, self._pending_context = self._pending_context, []
         for payload in pending:
             await self._send(payload)
         async with self._input_audio_lock:
+            self._session_opening = False
             if self._prestart_audio:
                 audio, self._prestart_audio = bytes(self._prestart_audio), bytearray()
                 chunk_bytes = LIVE_SAMPLE_RATE * 2 * SILENCE_CHUNK_MS // 1000
@@ -1907,6 +1954,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._note(self.on_input_audio)
         async with self._input_audio_lock:
             if not self._session_started:
+                if not self._session_opening and self._websocket is None:
+                    # No session and none opening: the device is streaming
+                    # its mic with nobody to hear it (waiting for a wake word
+                    # after a background-conversation close, a follow-up
+                    # window outliving its session). Holding this would make
+                    # it the opening burst of the next session.
+                    self._idle_input_dropped += 1
+                    self._idle_input_dropped_ms += 1000.0 * len(audio) / (LIVE_SAMPLE_RATE * 2)
+                    if self._idle_input_dropped == 1:
+                        logger.debug("live: device audio with no session open dropped "
+                                     "(not held for the next session)")
+                    return
                 self._prestart_audio.extend(audio)
                 limit = LIVE_SAMPLE_RATE * 2 * PRESTART_AUDIO_MAX_S
                 if len(self._prestart_audio) > limit:
@@ -5050,9 +5109,36 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         return sent
 
     async def _send_input_audio(self, payload: dict, nbytes: int) -> bool:
+        """Append input audio, never faster than the server accepts it.
+
+        Called under ``_input_audio_lock`` by every input path (pre-roll
+        flush, live frames, the silence filler), so a wait here holds the
+        later audio back in order. A token bucket of ``INPUT_BURST_MAX_MS``
+        refilled at ``INPUT_RATE_X`` real time stays under the documented
+        limit (1.2x, bursts of at most 5 s); the live stream alone never
+        touches it, a pre-roll flush or a reconnect replay longer than the
+        bucket is spread out instead of being rejected.
+        """
+        ms = 1000.0 * nbytes / (LIVE_SAMPLE_RATE * 2)
+        now = time.monotonic()
+        self._input_bucket_ms = min(
+            float(INPUT_BURST_MAX_MS),
+            self._input_bucket_ms + (now - self._input_bucket_mono) * 1000.0 * INPUT_RATE_X,
+        )
+        self._input_bucket_mono = now
+        if ms > self._input_bucket_ms:
+            deficit = ms - self._input_bucket_ms
+            if self._input_paced_ms == 0.0:
+                logger.info("⏳ live: input audio ahead of the server's intake rate; "
+                            "pacing the appends (pre-roll or replay longer than the burst allowance)")
+            self._input_paced_ms += deficit
+            await asyncio.sleep(deficit / (1000.0 * INPUT_RATE_X))
+            self._input_bucket_ms = ms
+            self._input_bucket_mono = time.monotonic()
+        self._input_bucket_ms -= ms
         sent = await self._send(payload)
         if sent:
-            self._input_audio_ms_sent += 1000.0 * nbytes / (LIVE_SAMPLE_RATE * 2)
+            self._input_audio_ms_sent += ms
         return sent
 
     def _note(self, callback: Optional[Callable[[], None]]) -> None:

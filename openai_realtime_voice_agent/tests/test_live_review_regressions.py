@@ -439,9 +439,10 @@ class R9AlignmentService(unittest.IsolatedAsyncioTestCase):
         from pipecat.processors.frame_processor import FrameDirection
         async with LiveHarness(self, on_demand=True, admit_complete_replies=True) as h:
             s = h.service
-            for _ in range(20):      # 2.0 s of device audio before the session exists
+            await h.open_session()
+            for _ in range(20):      # 2.0 s of device audio during the handshake
                 await h.source.push_frame(InputAudioRawFrame(audio=fx.silence(100), sample_rate=24000, num_channels=1), FrameDirection.DOWNSTREAM)
-            await h.open_session(); await h.start_session('burst')
+            await h.start_session('burst')
             await h.socket.wait_for_sent('session.input_audio.append', 20)
             self.assertEqual(s._input_audio_ms_sent, 2000.)
             s._user_transcript_seen_for_response = True

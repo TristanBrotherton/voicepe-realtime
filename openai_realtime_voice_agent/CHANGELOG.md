@@ -2,6 +2,23 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.13 (fork)
+
+### Fixed: GPT-Live rejected the opening audio of a session (turn ended on an error)
+
+- The device streams its mic while no session exists (after a
+  background-conversation close it waits for a wake word with the mic open).
+  The add-on held that audio in the pre-roll buffer meant for the handshake
+  and flushed up to 5 s of it at `session.started`, in one burst, ahead of the
+  request itself. GPT-Live accepts input at 1.2x real time in bursts of at
+  most 5 s, so it answered `input_audio_rate_limit_exceeded`, the turn ended
+  on an error and the user was told the request failed (about every second
+  wake on a device without a wake chime). Audio that arrives with no session
+  open or opening is now dropped, the pre-roll holds only what arrives after
+  the open (4 s at most), and every input append (pre-roll flush, reconnect
+  replay, live stream) goes through one pacer that stays under the server's
+  intake rate instead of being rejected.
+
 ## 0.19.12 (fork)
 
 ### Fixed: a late result for a closed session was sent into the next one
