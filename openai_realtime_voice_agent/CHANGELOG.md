@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.16 (fork)
+
+### Fixed: a click at the start of every session counted as a reply
+
+- GPT-Live opens every session's output stream with a lone click (peak about
+  170 of 32767, then digital silence), whatever it hears. The add-on counted
+  anything above near-zero as speech, so every wake logged "GPT-Live is
+  replying without having transcribed a request" 0.4 s after the session
+  opened. That one-per-session signal is also what tells the wake watch the
+  model answered a request it never transcribed (0.19.14), so the click used
+  it up before a real untranscribed request could. Outside a reply, audio now
+  has to peak above 300 (about -41 dBFS) to start one; quieter audio is held
+  and released ahead of the first word if a reply follows, or dropped as
+  idle. Inside a reply nothing changes.
+
 ## 0.19.15 (fork)
 
 ### Fixed: an old conversation answered a new question
