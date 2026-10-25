@@ -247,7 +247,6 @@ class TestDisplacedSessionWithRecording(unittest.IsolatedAsyncioTestCase):
 
     def test_each_pipeline_gets_its_own_recorders(self):
         self.assertIsNot(self.recording.get_input_recorder(), self.recording.get_input_recorder())
-        self.assertIsNot(self.recording.get_output_recorder(), self.recording.get_output_recorder())
 
     async def test_displaced_pipeline_cancels_promptly_and_cleanly(self):
         old = build_runnable(self.handler, "kitchen")

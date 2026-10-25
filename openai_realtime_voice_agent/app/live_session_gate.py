@@ -31,6 +31,8 @@ Close is deterministic and happens on every one of:
 * ``max lifetime`` — ``max_session_s`` since the session opened, absolute;
 * ``server expiry`` — ``session.started.expires_at`` minus a margin;
 * ``handshake timeout`` — ``session.started`` never arrived;
+* ``connection lost`` — the session had started, then its socket went away
+  without the gate closing it;
 * ``device stop`` / ``follow-up cut-off`` / ``device disconnected``;
 * ``spend cutoff`` — the :class:`~app.live_cost.LiveSpendLedger` cap;
 * any error path, including a failed open.
@@ -185,6 +187,14 @@ class LiveSessionGate:
         self._idle_reason = "idle"
         # Set once a turn is genuinely in flight, cleared when it resolves.
         self._turn_in_flight = False
+        # Whether the current session ever reached session.started. A session
+        # that was ready and then lost its socket did not time out its
+        # handshake, and its close must not say so.
+        self._ready_seen = False
+        # Set when the device's own WebSocket dropped. The pipeline is torn
+        # down before the gate's shutdown runs, so the supervisor can see the
+        # session vanish first; this names that close for what it is.
+        self._device_gone = False
         # Telemetry for a spend watchdog.
         self.opens = 0
         self.open_failures = 0
@@ -263,7 +273,8 @@ class LiveSessionGate:
             return await self._open_locked(reason, turn, epoch)
 
     async def _open_locked(self, reason, turn, epoch):
-        if self._closed_for_good or epoch != self._intent_epoch:
+        if self._closed_for_good or self._device_gone or epoch != self._intent_epoch:
+            # A late wake from a device that has already gone opens nothing.
             return False
         if turn:
             self._turn_in_flight = True
@@ -290,6 +301,7 @@ class LiveSessionGate:
         self.generation += 1
         generation = self.generation
         self._state = OPENING
+        self._ready_seen = False
         now = self._mono()
         self._opened_mono = now
         self._touch(now)
@@ -465,6 +477,10 @@ class LiveSessionGate:
         self._idle_reason = "re-wake grace"
         return True
 
+    def note_device_disconnected(self) -> None:
+        """The device's WebSocket is gone; any close from here on is a disconnect."""
+        self._device_gone = True
+
     def note_turn_resolved(self) -> None:
         """The request is answered or abandoned; a drop is no longer worth a retry."""
         self._turn_in_flight = False
@@ -497,6 +513,11 @@ class LiveSessionGate:
         """The close reason that applies right now, in priority order."""
         policy, now = self.policy, self._mono()
         opened = self._opened_mono
+        if self._device_gone:
+            return "device disconnected"
+        ready = bool(getattr(self._service, "session_ready", False))
+        if ready:
+            self._ready_seen = True
         if opened is not None and now - opened >= policy.max_session_s:
             return "max lifetime"
         if self._reservation and self.open_seconds >= max(0., self._reserved_seconds - 15. - policy.tick_s):
@@ -508,7 +529,11 @@ class LiveSessionGate:
         if isinstance(expires_at, (int, float)) and expires_at > 0:
             if self._wall() >= float(expires_at) - policy.expiry_margin_s:
                 return "server expiry"
-        if not getattr(self._service, "session_ready", False):
+        if not ready:
+            if self._ready_seen:
+                # Started, then dropped (the pipeline was cancelled, or the
+                # socket died before the handler closed it): not a handshake.
+                return "connection lost"
             if opened is not None and now - opened >= policy.open_timeout_s:
                 return "handshake timeout"
             # Still handshaking: the idle/silent deadlines below are measured

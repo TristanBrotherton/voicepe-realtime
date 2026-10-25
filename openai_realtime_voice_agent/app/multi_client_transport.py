@@ -2,6 +2,7 @@
 
 import asyncio
 import typing
+from typing import Callable, Optional
 
 from loguru import logger
 from pipecat.frames.frames import EndFrame, OutputTransportMessageFrame, TTSAudioRawFrame
@@ -40,6 +41,13 @@ class MixedFastAPIWebsocketClient(FastAPIWebsocketClient):
         # starlette does not serialize concurrent sends, so interleaved frames
         # could corrupt the stream; this lock makes each send atomic.
         self._send_lock = asyncio.Lock()
+        # Told about every binary frame that actually went out, whichever path
+        # sent it (the pipeline's output transport, or an out-of-band prompt,
+        # announcement or acknowledgement clip). The output recording hangs off
+        # this so it holds what the device was sent, not what one pipeline
+        # stage saw.
+        self.on_audio_sent: Optional[Callable[[bytes], None]] = None
+        self._audio_tap_failed = False
 
     def receive(self) -> typing.AsyncIterator[bytes | str]:
         """Yield every inbound frame, binary or text.
@@ -83,6 +91,7 @@ class MixedFastAPIWebsocketClient(FastAPIWebsocketClient):
                 async with self._send_lock:
                     if isinstance(data, (bytes, bytearray, memoryview)):
                         await self._websocket.send_bytes(data)
+                        self._audio_sent(data)
                     else:
                         await self._websocket.send_text(data)
         except Exception as e:
@@ -98,6 +107,19 @@ class MixedFastAPIWebsocketClient(FastAPIWebsocketClient):
             ):
                 logger.warning("Closing already disconnected websocket!")
                 self._closing = True
+
+    def _audio_sent(self, data) -> None:
+        tap = self.on_audio_sent
+        if tap is None:
+            return
+        try:
+            tap(bytes(data))
+        except Exception as e:
+            # A recording problem must never cost the device its audio. Logged
+            # once: this runs for every 40 ms of reply audio.
+            if not self._audio_tap_failed:
+                self._audio_tap_failed = True
+                logger.warning(f"{self} output audio tap failed: {e!r}")
 
 
 class MixedFastAPIWebsocketInputTransport(FastAPIWebsocketInputTransport):

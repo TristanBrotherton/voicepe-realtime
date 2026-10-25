@@ -468,6 +468,53 @@ class TestClosing(GateCase):
         await self._settle(lambda: gate.state == CLOSED)
         self.assertEqual(self.service.closes, ["handshake timeout"])
 
+    async def test_a_device_drop_mid_session_is_not_a_handshake_timeout(self):
+        """voice-pe#7: the device's socket dropped long after session.started;
+        cancelling its pipeline dropped the Live socket before the teardown
+        reached the gate, and the supervisor logged a handshake timeout."""
+        policy = LiveSessionPolicy(idle_s=60.0, followup_s=8.0, max_silent_s=120.0,
+                                   max_session_s=300.0, open_timeout_s=5.0, tick_s=0.005)
+        gate = self.make(policy=policy)
+        await gate.open("wake")
+        await self.advance(30, step=1)
+        self.assertEqual(gate.state, OPEN)
+        gate.note_device_disconnected()
+        self.service.session_ready = False  # the pipeline cancel dropped the socket
+        await self.advance(1)
+        await self._settle(lambda: gate.state == CLOSED)
+        self.assertEqual(self.service.closes, ["device disconnected"])
+        self.assertEqual(gate.last_charge.reason, "device disconnected")
+        self.assertFalse(await gate.open("wake"), "a late wake from a gone device opens nothing")
+        self.assertEqual(self.service.opens, 1)
+        await gate.shutdown("device disconnected")
+        self.assertEqual(self.service.closes, ["device disconnected"], "closed once")
+
+    async def test_a_started_session_that_loses_its_socket_is_connection_lost(self):
+        policy = LiveSessionPolicy(idle_s=60.0, followup_s=8.0, max_silent_s=120.0,
+                                   max_session_s=300.0, open_timeout_s=5.0, tick_s=0.005)
+        gate = self.make(policy=policy)
+        await gate.open("wake")
+        await self.advance(30, step=1)
+        self.service.session_ready = False
+        await self.advance(1)
+        await self._settle(lambda: gate.state == CLOSED)
+        self.assertEqual(self.service.closes, ["connection lost"])
+
+    async def test_a_reopened_session_can_still_time_out_its_handshake(self):
+        """The started flag is per session: a later open that never starts is
+        still a handshake timeout."""
+        policy = LiveSessionPolicy(idle_s=60.0, followup_s=8.0, max_silent_s=120.0,
+                                   max_session_s=300.0, open_timeout_s=5.0, tick_s=0.005)
+        gate = self.make(policy=policy)
+        await gate.open("wake")
+        await self.advance(2, step=1)
+        await gate.close("device stop")
+        self.service.auto_ready = False
+        await gate.open("wake")
+        await self.advance(6, step=1)
+        await self._settle(lambda: gate.state == CLOSED)
+        self.assertEqual(self.service.closes, ["device stop", "handshake timeout"])
+
     async def test_server_expiry_closes_ahead_of_the_server(self):
         gate = self.make()
         await gate.open("wake")
