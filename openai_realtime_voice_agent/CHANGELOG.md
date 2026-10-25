@@ -2,6 +2,29 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.14 (fork)
+
+### Fixed: a quiet or distant request got silence
+
+- GPT-Live answers a quiet or distant request (a soft voice, a person a few
+  metres away, a loudspeaker across the room) without ever transcribing it.
+  The add-on opens a turn only on the transcript, so the reply was dropped and
+  the user heard nothing until the turn closed 12 s after the wake. Two
+  changes:
+  - The add-on hears the request itself: when speech-level sound follows the
+    wake and no transcript has arrived 4 s after it ends (or the model starts
+    replying to it without one), the turn is closed and the device says
+    "Sorry, I didn't catch that. Could you say it again?" instead of staying
+    silent. Logged with a running count per device. The first second after
+    the wake never counts as the request (the wake chime's leak).
+  - Optional: `live_input_gain_max` (new, default 1 = off) brings the mic
+    stream up to a transcribable level before it is sent, with a slow gain
+    that follows the recent speech level, never attenuates and never exceeds
+    the cap. Replaying device audio that was answered but not transcribed
+    showed the same request four times louder transcribed every time. Off
+    until it has been proven on a device; set it to 4 to try it.
+
+
 ## 0.19.13 (fork)
 
 ### Fixed: GPT-Live rejected the opening audio of a session (turn ended on an error)

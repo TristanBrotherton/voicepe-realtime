@@ -136,7 +136,7 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
               voice_runtime live_model live_backend_model live_reasoning_effort \
               live_service_tier live_backend_instructions live_acknowledge_gaps \
               live_audio_capture_ms live_stream_replies live_router live_fast_chat_model live_context_entities live_auto_expose \
-              live_idle_close_s live_followup_s live_rewake_grace_s live_max_silent_s live_max_session_s \
+              live_input_gain_max live_idle_close_s live_followup_s live_rewake_grace_s live_max_silent_s live_max_session_s \
               live_max_session_minutes_per_day live_max_usd_per_day \
               experiment_mode experiment_overrides \
               openclaw_callback_url live_task_promote_s live_task_hold_session_s live_task_delivery live_task_deferred_delivery live_task_quiet_hours live_task_imessage_to live_task_imessage_after_idle_s live_task_progress_every_s live_task_progress_max live_task_result_ttl_s live_task_deferred_max_s \
@@ -192,6 +192,7 @@ for option in wake_capture_ttl_days wake_label_ttl_days false_wake_flag_window_s
             live_task_deferred_max_s) export LIVE_TASK_DEFERRED_MAX_S="${value}" ;;
             # GPT-Live cost safety: on-demand session lifetime + spend cutoff.
             # GPT-Live bills per connected session second and idle time counts.
+            live_input_gain_max) export LIVE_INPUT_GAIN_MAX="${value}" ;;
             live_idle_close_s) export LIVE_IDLE_CLOSE_S="${value}" ;;
             live_followup_s) export LIVE_FOLLOWUP_S="${value}" ;;
             live_rewake_grace_s) export LIVE_REWAKE_GRACE_S="${value}" ;;

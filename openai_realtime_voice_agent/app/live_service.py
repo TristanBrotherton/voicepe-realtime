@@ -112,6 +112,7 @@ from app.live_reply import (
     ReplyStreamStart,
 )
 
+from app.input_gain import SpeechLevelGain
 from app.live_protocol import (
     LIVE_SAMPLE_RATE,
     LIVE_URL,
@@ -777,6 +778,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # dropped): the only window in which device audio is worth holding.
         self._session_opening = False
         self._idle_input_dropped = 0
+        # Quiet speech is answered but not transcribed by GPT-Live; a slow
+        # gain on the mic stream brings it up to a level that is (input_gain.py).
+        self.input_gain = SpeechLevelGain(max_gain=getattr(config, 'input_gain_max', 1.0))
+        # The gate dropped reply audio of a session with no transcript yet:
+        # the request was heard by the model but never transcribed.
+        self.on_reply_without_transcript: Optional[Callable[[], None]] = None
         self._idle_input_dropped_ms = 0.0
         self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
         self._input_bucket_mono = 0.0
@@ -1187,6 +1194,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._idle_input_dropped_ms = 0.0
             self._prestart_audio.clear()
             self._session_opening = True
+            self.input_gain.reset_stats()
             self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
             self._input_bucket_mono = time.monotonic()
             self._input_paced_ms = 0.0
@@ -1528,10 +1536,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._last_user_end_ms = None
             self._current_user_start_ms = None
             self._last_user_start_ms = None
-            if self._input_paced_ms:
+            if self._input_paced_ms or self.input_gain.boosted_blocks:
                 logger.info(
                     f"🎙️ live input audio: {self._input_audio_ms_sent:.0f} ms sent, "
-                    f"{self._input_paced_ms:.0f} ms of it paced to the server's intake rate"
+                    f"{self._input_paced_ms:.0f} ms of it paced to the server's intake rate; "
+                    f"gain {self.input_gain.summary()}"
                 )
             self._input_audio_ms_sent = 0.0
             self._last_user_text = ""
@@ -1952,6 +1961,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         self._last_input_mono = time.monotonic()
         self._note(self.on_input_audio)
+        audio = self.input_gain.process(audio)
+        if not audio:
+            return  # a partial block, carried into the next frame
         async with self._input_audio_lock:
             if not self._session_started:
                 if not self._session_opening and self._websocket is None:
@@ -4115,6 +4127,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                                "this session; dropping its audio (nobody asked anything yet, or "
                                "the request was too quiet or unclear after the wake chime to be "
                                "treated as one: check the level at the device)")
+                self._note(self.on_reply_without_transcript)
             return
         if self._gate == "pre":
             if self._gate_blocked:

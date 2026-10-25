@@ -55,6 +55,10 @@ PROMPTS: Dict[str, str] = {
     # claim: "Done." with nothing done is the one thing the device must
     # never say.
     "error_not_done": "Sorry, I couldn't do that.",
+    # Speech was heard after the wake but GPT-Live transcribed no request
+    # (too quiet, too far, or taken for background speech). Said instead of
+    # twelve seconds of silence.
+    "error_not_heard": "Sorry, I didn't catch that. Could you say it again?",
     # The GPT-Live spend cutoff refused to open a session. Said out loud
     # because a refused turn is otherwise indistinguishable from a broken
     # assistant, and the user needs to know it was deliberate.
@@ -436,4 +440,6 @@ def classify_error(reason: str) -> str:
     text = (reason or "").lower()
     if "rate limit" in text or "rate_limit" in text or "429" in text:
         return "error_rate_limit"
+    if "not transcribed" in text:
+        return "error_not_heard"
     return "error_generic"

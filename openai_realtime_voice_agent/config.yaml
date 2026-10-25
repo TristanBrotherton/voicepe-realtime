@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.19.13"
+version: "0.19.14"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -310,6 +310,7 @@ schema:
   # last two are a hard cutoff — once either is reached, turns are refused
   # until the 24h window rolls (app/live_cost.py). Optional without defaults
   # like the rest of the Live block; the code's defaults are the safe ones.
+  live_input_gain_max: "float(1,10)?"
   live_idle_close_s: "float(2,120)?"
   live_followup_s: "float(0,120)?"
   live_rewake_grace_s: "float(0,30)?"

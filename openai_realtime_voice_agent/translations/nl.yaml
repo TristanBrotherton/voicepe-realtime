@@ -413,6 +413,14 @@ configuration:
       Genegeerd tenzij de experimentmodus aan staat.
 
   # --- 💵 GPT-Live kosten (verborgen, optioneel) ---
+  live_input_gain_max:
+    name: "🎙️ GPT-Live · Microfoonversterking voor zachte stemmen (max, 1 = uit)"
+    description: >-
+      Optioneel (standaard 1 = uit). Een zachte of verre stem wordt door GPT-Live
+      beantwoord maar niet getranscribeerd, waardoor het antwoord wegvalt. De
+      add-on versterkt zachte spraak tot een transcribeerbaar niveau, met ten
+      hoogste deze factor; een stem wordt nooit zachter gemaakt. 1 schakelt
+      het uit.
   live_idle_close_s:
     name: "💵 GPT-Live kosten · Sluiten na stilte (seconden)"
     description: >-

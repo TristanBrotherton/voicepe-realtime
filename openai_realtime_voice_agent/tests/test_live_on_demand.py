@@ -226,6 +226,26 @@ class TestEarlyAudioIsPreserved(OnDemandCase):
             self.assertEqual(h.service._input_audio_ms_sent, flush_ms + 1000)
             self.assertTrue(sent_input_audio(h.socket).endswith(extra), "order is kept")
 
+    async def test_a_quiet_voice_is_sent_louder_when_the_gain_is_on(self):
+        """GPT-Live answers a quiet request without transcribing it; the mic
+        stream is brought up toward a transcribable level before it is sent."""
+        import math, struct
+        from app.voice_runtime import LiveConfig
+        n = LIVE_SAMPLE_RATE  # 1 s
+        quiet = struct.pack(f"<{n}h", *(int(1500 * math.sin(2 * math.pi * 220 * i / LIVE_SAMPLE_RATE))
+                                        for i in range(n)))
+        async with self.harness(config=LiveConfig(voice="marin", input_gain_max=4.0)) as h:
+            await h.open_session()
+            await h.start_session()
+            await self.feed(h, quiet)
+            await asyncio.sleep(0.05)
+            sent = sent_input_audio(h.socket)
+            self.assertEqual(len(sent), len(quiet))
+            tail = struct.unpack(f"<{n // 2}h", sent[len(sent) // 2:])
+            rms = (sum(x * x for x in tail) / len(tail)) ** 0.5
+            self.assertGreater(rms, 3000, "RMS ~1060 in, close to the 4000 target out")
+            self.assertGreater(h.service.input_gain.boosted_blocks, 0)
+
     async def test_a_second_session_starts_with_an_empty_pre_roll(self):
         async with self.harness() as h:
             await h.open_session()
