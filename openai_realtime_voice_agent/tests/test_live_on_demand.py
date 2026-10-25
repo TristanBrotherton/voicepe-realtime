@@ -8,6 +8,7 @@ the handshake is in flight is preserved byte-for-byte and in order.
 """
 import asyncio
 import base64
+import time
 import unittest
 from unittest import mock
 
@@ -15,7 +16,7 @@ from pipecat.frames.frames import InputAudioRawFrame, TTSAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from app.live_protocol import LIVE_SAMPLE_RATE
-from app.live_service import PRESTART_AUDIO_MAX_S
+from app.live_service import HISTORY_MAX_GAP_S, PRESTART_AUDIO_MAX_S
 
 from tests import live_fixtures as fx
 from tests.live_harness import LiveHarness
@@ -370,3 +371,44 @@ class TestLifecycleObservers(OnDemandCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStaleConversationIsNotSeeded(OnDemandCase):
+    """2026-10-25: a wake hours after the last one was seeded with the old
+    conversation, and the model repeated last night's time over the new
+    GetDateTime result."""
+
+    def context(self):
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        return LLMContext(messages=[
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "What time is it?"},
+            {"role": "assistant", "content": "Ten thirty-eight p.m."},
+        ])
+
+    async def reopen_after(self, h, gap_s):
+        h.service._context = self.context()
+        h.service._last_session_closed_mono = time.monotonic() - gap_s
+        await h.open_session()
+        return h.socket.of("session.start")[-1]["session"].get("input", [])
+
+    async def test_a_recent_conversation_is_seeded(self):
+        async with self.harness() as h:
+            seeded = await self.reopen_after(h, HISTORY_MAX_GAP_S - 10)
+            self.assertEqual([i["role"] for i in seeded], ["user", "assistant"])
+
+    async def test_an_old_conversation_is_dropped_but_the_system_prompt_kept(self):
+        async with self.harness() as h:
+            with self.assertLogs("app.live_service", "INFO") as logs:
+                seeded = await self.reopen_after(h, HISTORY_MAX_GAP_S + 10)
+            self.assertTrue(any("2 old message(s) not carried over" in line for line in logs.output), logs.output)
+            self.assertEqual(seeded, [])
+            self.assertEqual([m["role"] for m in h.service._context.get_messages()], ["system"])
+
+    async def test_closing_a_session_starts_the_gap_clock(self):
+        async with self.harness() as h:
+            await h.open_session()
+            await h.start_session()
+            self.assertIsNone(h.service._last_session_closed_mono)
+            await h.service.close_session("test")
+            self.assertAlmostEqual(h.service._last_session_closed_mono, time.monotonic(), delta=5)
