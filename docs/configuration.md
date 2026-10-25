@@ -236,7 +236,7 @@ What is published while the runtime is `live`:
 - One log line per session close with its duration, its cost and the reason
   (`idle`, `follow-up quiet`, `follow-up cut-off`, `device stop`, `silent`,
   `max lifetime`, `server expiry`, `handshake timeout`, `spend cutoff`,
-  `device disconnected`, `connection lost while idle`).
+  `device disconnected`, `connection lost`, `connection lost while idle`).
 
 A session is also closed on every error path, including a failed open, and the
 first utterance is never lost to the handshake: device audio that arrives while
