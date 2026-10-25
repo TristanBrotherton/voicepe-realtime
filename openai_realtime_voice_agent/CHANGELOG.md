@@ -16,7 +16,9 @@ All notable changes to this add-on. Newest first.
     replying to it without one), the turn is closed and the device says
     "Sorry, I didn't catch that. Could you say it again?" instead of staying
     silent. Logged with a running count per device. The first second after
-    the wake never counts as the request (the wake chime's leak).
+    the wake never counts as the request (the wake chime's leak). The watch
+    listens at a lower bar than the follow-up hold (400 RMS, 3x the room,
+    against 1500): the requests GPT-Live drops are the quiet ones.
   - Optional: `live_input_gain_max` (new, default 1 = off) brings the mic
     stream up to a transcribable level before it is sent, with a slow gain
     that follows the recent speech level, never attenuates and never exceeds

@@ -77,6 +77,13 @@ WAKE_WATCH_MAX_S = 10.0
 # (10000-20000 RMS at wake_open_delay_ms 150); blocks this soon after the
 # wake are learned from but never count as the request's onset.
 WAKE_ONSET_BLIND_S = 1.0
+# The request itself may be quiet: GPT-Live answers but never transcribes a
+# request at 500-1800 RMS (a soft voice, a person a few metres away), far below
+# the hold detector's bar (1500, tuned so knocks never hold the mic). The watch
+# listens with its own detector at a lower bar; a knock right after a wake can
+# then earn a "didn't catch that", which beats twelve seconds of silence.
+WAKE_WATCH_MIN_RMS = 400.0
+WAKE_WATCH_NOISE_RATIO = 3.0
 
 
 def _env_seconds(name: str, default: float, low: float, high: float) -> float:
@@ -182,7 +189,8 @@ class FollowUpHold:
                  on_not_transcribed: Optional[Callable[[], Awaitable[None]]] = None,
                  not_transcribed_s: float = NOT_TRANSCRIBED_S,
                  wake_watch_max_s: float = WAKE_WATCH_MAX_S,
-                 wake_onset_blind_s: float = WAKE_ONSET_BLIND_S):
+                 wake_onset_blind_s: float = WAKE_ONSET_BLIND_S,
+                 wake_detector: Optional[SpeechOnsetDetector] = None):
         self._hold_listening = hold_listening
         self._release_idle = release_idle
         self._may_hold = may_hold
@@ -208,6 +216,8 @@ class FollowUpHold:
         self.not_transcribed_s = not_transcribed_s
         self.wake_watch_max_s = wake_watch_max_s
         self.wake_onset_blind_s = wake_onset_blind_s
+        self._wake_detector = wake_detector or SpeechOnsetDetector(
+            min_rms=WAKE_WATCH_MIN_RMS, noise_ratio=WAKE_WATCH_NOISE_RATIO)
         self.wake_watch = False
         self._wake_mono = 0.0
         self.wake_speech_mono: Optional[float] = None
@@ -293,6 +303,7 @@ class FollowUpHold:
         if self.wake_watch:
             self._feed_wake_watch(pcm)
             return
+        self._wake_detector.observe(pcm)  # its floor stays current between wakes
         if not self.armed or self.held:
             self.detector.observe(pcm)  # keep the room's floor current
             return
@@ -317,7 +328,7 @@ class FollowUpHold:
         if self._on_not_transcribed is None:
             return
         self._cancel_wake_task()
-        self.detector.reset()
+        self._wake_detector.reset()
         self.wake_watch = True
         self._wake_mono = self._clock()
         self.wake_speech_mono = None
@@ -335,21 +346,21 @@ class FollowUpHold:
     def _feed_wake_watch(self, pcm: bytes) -> None:
         now = self._clock()
         if self.wake_speech_mono is not None:
-            self.detector.observe(pcm)
+            self._wake_detector.observe(pcm)
             # Still talking: the run continues at the detector's own bar.
-            if self.detector.last_rms >= min(self.detector.threshold, self.detector.min_rms):
+            if self._wake_detector.last_rms >= min(self._wake_detector.threshold, self._wake_detector.min_rms):
                 self._wake_last_loud = now
             return
         if now - self._wake_mono < self.wake_onset_blind_s:
-            self.detector.observe(pcm)  # the chime's leak is not the request
+            self._wake_detector.observe(pcm)  # the chime's leak is not the request
             return
-        if not self.detector.feed(pcm):
+        if not self._wake_detector.feed(pcm):
             return
         self.wake_speech_mono = now
         self._wake_last_loud = now
         self.wake_speech_heard += 1
         logger.info(f"🎤 speech heard {(now - self._wake_mono) * 1000:.0f} ms after the wake "
-                    f"(rms {self.detector.last_rms:.0f}, floor {self.detector.noise:.0f}); "
+                    f"(rms {self._wake_detector.last_rms:.0f}, floor {self._wake_detector.noise:.0f}); "
                     "waiting for its transcript")
         self._wake_task = asyncio.get_running_loop().create_task(self._wake_watch_run())
 

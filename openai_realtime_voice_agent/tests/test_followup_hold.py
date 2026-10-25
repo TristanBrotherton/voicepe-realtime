@@ -545,6 +545,16 @@ class WakeWatchCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.6)
         self.assertEqual(self.not_transcribed, 0)
 
+    async def test_a_quiet_request_is_heard_by_the_watch(self):
+        # Below the hold detector's bar (1500 RMS) but above the room: the band
+        # GPT-Live answers without transcribing. The watch hears it.
+        self.hold.feed(ROOM)
+        self.hold.note_wake()
+        self.hold.feed(pcm(400, 1300))  # RMS ~920
+        self.assertIsNotNone(self.hold.wake_speech_mono)
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.not_transcribed, 1)
+
     async def test_a_silent_wake_says_nothing(self):
         self.hold.note_wake()
         self.hold.feed(ROOM)
