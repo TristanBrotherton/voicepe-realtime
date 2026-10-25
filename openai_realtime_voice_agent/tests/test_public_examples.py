@@ -40,6 +40,15 @@ SPEAKER_FIXTURE_NAMES = frozenset({
 # entry to be in use somewhere in the scanned sources, so a real name cannot be
 # parked here ahead of the fixture that would spend it.
 NON_NAME_LITERALS = {
+    'Attic': 'fictional room in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Attic Light': 'fictional device name in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Car': 'fictional device alias word in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Cellar': 'fictional room in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Charger': 'fictional device name word in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Green Glow': 'fictional scene name in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Laundry': 'fictional sensor alias word in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Studio': 'fictional room in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Visitor': 'fictional helper alias word in the entity-name matching fixtures (tests/test_ha_names.py)',
     'Colour Bulb': 'Home Assistant device name in the action-gate fixtures',
     'Accept': 'HTTP header name in the Home Assistant MCP request (app/ha_household.py)',
     'Assist': "name of Home Assistant's MCP prompt (app/ha_household.py)",
