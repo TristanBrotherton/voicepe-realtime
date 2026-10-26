@@ -413,6 +413,13 @@ CHAT_SPECULATIVE_PAUSE_S = 0.3
 CHAT_SPECULATIVE_MAX = 2
 # One-word utterances that are plainly social and never answer a question.
 _ONE_WORD_SOCIAL = re.compile(r"^\s*(?:hello|hi|hey|hiya|thanks|cheers|goodbye|bye|morning|evening)\b[\s.!?,]*$", re.I)
+# A follow-up that only thanks or signs off: the task is done, so the session
+# closes without a reply (Kitchen 2026-10-26: after "thanks" it kept listening,
+# answered the room and ended in a stop).
+_THANKS_ONLY = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|great|perfect|cool|awesome|lovely|nice|alright|all right|got it)[\s.!?,]*)?"
+    r"(?:(?:no )?thanks?(?: you)?(?: (?:so much|very much|a lot))?|cheers|that'?s (?:all|it|everything|great|perfect))"
+    r"(?:,\s*[a-z]+)?[\s.!?,]*$", re.I)  # "thanks, <the assistant's name>"
 _SHORT_REPLY = re.compile(
     r"^\s*(?:yes|yeah|yep|yup|no|nope|nah|sure|ok(?:ay)?|do it|go ahead|please do|"
     r"the other one|that one|this one|both|all of them|none of them|never ?mind|cancel|stop)"
@@ -995,6 +1002,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._discussion_active = False
         self._merged_fragments = 0
         self._background_closing = False
+        self._answered_this_session = False
         # Times of recent utterances with no request; kept across sessions.
         self._not_caught: Deque[float] = deque()
         self._session_started_mono: Optional[float] = None
@@ -1179,6 +1187,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._routing_suspended = False
         self._merged_fragments = 0
         self._background_closing = False
+        self._answered_this_session = False
         self._discussion_active = False
         if self.router is not None:
             self._gate_reset("idle")
@@ -2807,6 +2816,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 # silent wait and no rescue; tools never depend on the voice
                 # deciding to delegate.
                 self._silent_task = None
+                if self._answered_this_session and _THANKS_ONLY.match(text.strip()) \
+                        and self._close_for_background("a thank-you after the answer", "👋 done"):
+                    return
                 await self._router_start(text.strip())
                 self._task_flush_soon("user turn closed")
             else:
@@ -2818,6 +2830,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # The reply is over: start the bounded follow-up window. Once it
             # expires with nothing further, the session closes and stops billing.
             self._note(self.on_reply_finished)
+            if text.strip() and self._op is not None and self._op.done:
+                # The answer to a routed request (not an acknowledgement while
+                # it is still routing, nor a greeting before any request).
+                self._answered_this_session = True
             if self.router is not None:
                 self._task_flush_soon("reply finished")
             # The reply is over: write the turn's audio and function-call
@@ -2853,9 +2869,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             except Exception as e:  # pragma: no cover - defensive
                 logger.debug(f"discussion observer failed: {e!r}")
 
-    def _close_for_background(self, why: str) -> bool:
+    def _close_for_background(self, why: str, label: str = "🙉 background conversation") -> bool:
         """Close the session silently: what it hears is a conversation in the
-        room, not a request. Lengths and counts only, never the words."""
+        room, not a request (or a thank-you that ends it). Lengths and counts
+        only, never the words."""
         if self._discussion_active:
             return False
         if self._background_closing:
@@ -2869,7 +2886,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if op is not None and not op.done and op.task is not None and not op.tools_started:
             op.abandoned = True
             op.task.cancel()
-        logger.warning(f"🙉 background conversation: {why}; closing the session without replying")
+        logger.warning(f"{label}: {why}; closing the session without replying")
         self._spawn(self.on_background_conversation(), "live-background-close")
         return True
 
@@ -3962,6 +3979,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 op.classifier_task.cancel()
             self._task_detach(op, "the user is speaking again")
             logger.info(f"🧭 router: {op.op_id} result held until the user's new words are routed")
+            await self._task_complete(op)
+            return
+        if result is not None and result.kind == ROUTE_NOTHING and self._answered_this_session \
+                and self._close_for_background("no request in a follow-up after the answer"):
+            # The task was done; this is the room talking (Kitchen
+            # 2026-10-26). Close quietly rather than "I didn't catch that".
             await self._task_complete(op)
             return
         if result is not None and result.kind == ROUTE_NOTHING and self._turn_heard_mono is not None:

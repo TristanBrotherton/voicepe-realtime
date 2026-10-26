@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.18 (fork)
+
+### Fixed: "thanks" after an answer kept the device listening
+
+- Once a request has been answered, a follow-up that only thanks or signs
+  off ("thanks", "okay, thank you", "that's all") closes the session
+  silently instead of being routed. Before, the device kept listening, routed
+  whatever the room said next and answered it with "Sorry, I didn't catch
+  that."
+- A follow-up after an answer in which the router finds no request also
+  closes silently (it is the room talking), instead of "I didn't catch that".
+  Before any answer, a request with no request found still gets "I didn't
+  catch that", so a misheard command is not met with silence.
+
 ## 0.19.17 (fork)
 
 ### Fixed: a device asked for by a near-miss name or the wrong kind was "not found"
