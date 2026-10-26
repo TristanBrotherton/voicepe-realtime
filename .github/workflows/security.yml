@@ -1,0 +1,174 @@
+name: Security
+
+# Security checks for every pull request and every push to main. Nothing here
+# builds or runs code from the pull request: the jobs only read and scan it.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (release binary, sha256-verified)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+
+      - name: Scan the full git history
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 .'
+
+  codeql:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Pull requests from forks get a read-only token from GitHub regardless.
+      security-events: write  # upload the results to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - python
+          - actions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor (hash-locked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --no-deps -r .github/ci/zizmor-requirements.txt
+
+      - name: Audit workflows and Dependabot config
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/venv/bin/zizmor" --format plain .'
+
+  bandit:
+    name: bandit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install bandit (hash-locked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --no-deps -r .github/ci/bandit-requirements.txt
+
+      # Medium and high severity only. The baseline holds the five reviewed
+      # findings that are intended: the add-on binds 0.0.0.0 inside its
+      # container (B104, three places) and urlopen is called on constant
+      # https:// URLs (B310, two places). Any new finding fails the job.
+      # --ignore-nosec so an inline "# nosec" cannot hide a finding.
+      - name: Scan the add-on and demo code
+        run: |
+          "$RUNNER_TEMP/venv/bin/bandit" -r openai_realtime_voice_agent/app demo \
+            -x demo/tests -ll --ignore-nosec -b .github/ci/bandit-baseline.json
+
+  sensitive-paths:
+    name: sensitive-paths
+    # Pull requests from forks only: changes to CI, dependencies, build or
+    # container startup files need a maintainer's security review.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history, no credentials)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          hits=()
+          while IFS= read -r f; do
+            case "$f" in
+              .github/*|.gitleaks.toml|.gitleaksignore|\
+              *requirements*.txt|*pyproject.toml|*poetry.lock|*uv.lock|*package.json|*package-lock.json|*build.yaml|\
+              Dockerfile*|*/Dockerfile*|*.sh|\
+              openai_realtime_voice_agent/config.yaml|openai_realtime_voice_agent/root/*)
+                hits+=("$f") ;;
+              *.yaml|*.yml)
+                # A YAML change that adds a remote external_components or
+                # packages source (github://, a git URL, a ref).
+                added=$(git diff --no-renames -U0 "$BASE_SHA...$HEAD_SHA" -- "$f" | grep -E '^\+' | grep -vE '^\+\+\+' || true)
+                if printf '%s\n' "$added" | grep -qE 'github://|gitlab://|git@|type:[[:space:]]*git|url:[[:space:]]*["'"'"']?[a-z+]+://|ref:'; then
+                  if printf '%s\n' "$added" | grep -qE 'external_components|packages' ||
+                     git show "$HEAD_SHA:$f" 2>/dev/null | grep -qE '^[[:space:]]*(external_components|packages)[[:space:]]*:'; then
+                    hits+=("$f (adds a remote external_components/packages source)")
+                  fi
+                fi ;;
+            esac
+          done < <(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")
+          if [ "${#hits[@]}" -gt 0 ]; then
+            echo "::error::This pull request needs maintainer security review: it changes CI, dependency, build or startup files."
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          echo "No sensitive paths changed."
