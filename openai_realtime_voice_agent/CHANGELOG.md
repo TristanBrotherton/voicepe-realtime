@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.20 (fork)
+
+### Fixed: a false wake into room talk kept answering
+
+- A transcript longer than 12 words in which the backend finds no request
+  closes the session silently, right after a wake too and even after an
+  acknowledgement played. Before, Home Assistant's parser could pick an
+  intent out of the conversation, which overruled the backend and the device
+  said "I couldn't tell which device you meant", then listened again.
+- A short phrase the parser reads as a command still hears that it was not
+  done, so a misheard command is not met with silence.
+- Once the session is closing quietly, the fallback acknowledgement clip no
+  longer plays.
+
 ## 0.19.19 (fork)
 
 ### Fixed: GPT-Live's native-language voices fell back to marin
