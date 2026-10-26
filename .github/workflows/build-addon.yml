@@ -62,7 +62,7 @@ jobs:
         run: echo "name=${REPOSITORY,,}/openai-realtime-voice-agent" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3.7.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
         with:
           platforms: linux/arm64,linux/amd64
 
