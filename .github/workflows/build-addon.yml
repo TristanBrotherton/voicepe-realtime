@@ -21,24 +21,32 @@ on:
 env:
   REGISTRY: ghcr.io
 
+permissions:
+  contents: read
+
+# Two jobs share one list of steps (YAML anchor): pull requests build without
+# pushing and get a read-only token; push, release and manual runs publish to
+# GHCR and are the only ones that get packages: write.
 jobs:
   build:
     name: Build for ${{ matrix.arch }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-    
-    strategy:
+
+    strategy: &build-strategy
       fail-fast: false
       matrix:
         arch:
           - aarch64
           - amd64
-    
-    steps:
+
+    steps: &build-steps
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Extract version from config.yaml
         id: version
@@ -54,16 +62,16 @@ jobs:
         run: echo "name=${REPOSITORY,,}/openai-realtime-voice-agent" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3.7.0
         with:
           platforms: linux/arm64,linux/amd64
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -71,8 +79,10 @@ jobs:
 
       - name: Map architecture
         id: arch-map
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          case "${{ matrix.arch }}" in
+          case "$ARCH" in
             aarch64)
               echo "platform=linux/arm64" >> $GITHUB_OUTPUT
               ;;
@@ -82,7 +92,7 @@ jobs:
           esac
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5.4.0
         with:
           context: ./openai_realtime_voice_agent
           file: ./openai_realtime_voice_agent/Dockerfile
@@ -99,5 +109,19 @@ jobs:
 
       - name: Generate image manifest
         if: github.event_name != 'pull_request' && matrix.arch == 'amd64'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "Image built: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}"
+          echo "Image built: ${REGISTRY}/${IMAGE}-${ARCH}:${VERSION}"
+
+  publish:
+    name: Publish for ${{ matrix.arch }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # push the add-on images to GHCR
+    strategy: *build-strategy
+    steps: *build-steps
