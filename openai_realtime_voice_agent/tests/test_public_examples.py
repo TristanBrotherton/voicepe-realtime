@@ -107,6 +107,7 @@ NON_NAME_LITERALS = {
     'One': 'first word of "One moment." as a transcript delta in the render fixtures',
     'Next': "spoken enrollment prompt, 'Next, please.'",
     'No': 'refusal text in a response-payload fixture, and a negative clause in a web-search transcript',
+    'Noeul': 'OpenAI voice id (tests/test_voice_runtime.py)',
     'None': 'the Python literal, written into docstrings in action_gate.py',
     'Office': 'Home Assistant area',
     'Office Blinds': 'Home Assistant device name in the action-gate fixtures',
