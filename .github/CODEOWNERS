@@ -1,0 +1,15 @@
+# Changes to CI, dependencies, the container build and startup scripts need
+# the maintainer's review (main's ruleset requires code-owner review).
+/.github/                                   @TristanBrotherton
+/.gitleaksignore                            @TristanBrotherton
+**/requirements*.txt                        @TristanBrotherton
+**/pyproject.toml                           @TristanBrotherton
+**/poetry.lock                              @TristanBrotherton
+**/uv.lock                                  @TristanBrotherton
+**/package.json                             @TristanBrotherton
+**/package-lock.json                        @TristanBrotherton
+**/Dockerfile*                              @TristanBrotherton
+**/build.yaml                               @TristanBrotherton
+**/*.sh                                     @TristanBrotherton
+/openai_realtime_voice_agent/config.yaml    @TristanBrotherton
+/openai_realtime_voice_agent/root/          @TristanBrotherton
