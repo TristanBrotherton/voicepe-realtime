@@ -42,6 +42,8 @@ class TestLiveVoicePolicy(unittest.TestCase):
         self.assertEqual(live_voice_for("Cedar"), "cedar")
         self.assertEqual(live_voice_for("quartz"), "quartz")
         self.assertEqual(live_voice_for("Vesper"), "vesper")
+        self.assertEqual(live_voice_for("brise"), "brise")
+        self.assertEqual(live_voice_for("Noeul"), "noeul")
 
     def test_realtime_only_voice_is_not_guessed(self):
         # Falls back to the server default instead of substituting a voice.

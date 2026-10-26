@@ -75,6 +75,9 @@ LIVE_VOICES = frozenset({
     "marin", "cedar",
     "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian",
     "bossa", "tempo", "beacon", "delta", "cinder",
+    # Native-language voices: German, French, Hindi, Japanese, Korean.
+    "nuri", "juni", "flitz", "brise", "sillage", "nira", "harema", "shida",
+    "noeul",
 })
 
 

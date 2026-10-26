@@ -247,7 +247,9 @@ seconds, newest kept) and replayed in order once the session exists.
 Under `live`, `openai_voice` is used when it is a documented GPT-Live voice.
 Shared voices are `marin` and `cedar`; Live-only voices are `quartz`, `ripple`,
 `vesper`, `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`,
-`delta`, and `cinder`. OpenAI describes `vesper` as natural, British, and
+`delta`, and `cinder`, plus native-language voices: `nuri`, `juni`, `flitz`
+(German), `brise`, `sillage` (French), `nira` (Hindi), `harema`, `shida`
+(Japanese) and `noeul` (Korean). OpenAI describes `vesper` as natural, British, and
 masculine. To select a Live-only voice in the UI, choose `custom` and put its
 API name in `openai_voice_custom`; in YAML:
 

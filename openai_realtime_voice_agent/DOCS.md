@@ -381,7 +381,9 @@ model itself decides when to hand a request to the backend.
 - `openai_voice` must be a documented GPT-Live voice. Shared voices are
   `marin` and `cedar`; Live additionally provides `quartz`, `ripple`, `vesper`,
   `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`, `delta`
-  and `cinder`. The regional labels describe influence, not a hard language
+  and `cinder`, plus native-language voices: `nuri`, `juni`, `flitz` (German),
+  `brise`, `sillage` (French), `nira` (Hindi), `harema`, `shida` (Japanese) and
+  `noeul` (Korean). The regional labels describe influence, not a hard language
   restriction. The [official voice table](https://developers.openai.com/api/docs/guides/live-conversations#voice-options)
   identifies `vesper` as a natural British masculine voice. Anything else
   falls back to the server default with a warning.

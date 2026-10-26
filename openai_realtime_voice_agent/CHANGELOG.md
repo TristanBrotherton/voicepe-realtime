@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.19 (fork)
+
+### Fixed: GPT-Live's native-language voices fell back to marin
+
+- `nuri`, `juni`, `flitz` (German), `brise`, `sillage` (French), `nira`
+  (Hindi), `harema`, `shida` (Japanese) and `noeul` (Korean) are in OpenAI's
+  GPT-Live voice table but were refused as undocumented, so the session spoke
+  with the server default. They are now accepted (#15, change by @GManzato).
+
 ## 0.19.18 (fork)
 
 ### Fixed: "thanks" after an answer kept the device listening
