@@ -1007,6 +1007,76 @@ class RoomTalkClosesTheSession(Patched):
             self.assertEqual(closed, [])
 
 
+class ThanksEndsTheConversation(Patched):
+    """Kitchen 2026-10-26: after the answer the user said "thanks"; the session
+    kept listening, routed the room's talk and said "Sorry, I didn't catch
+    that". Once a request is answered, a thank-you or a follow-up with no
+    request in it closes the session silently."""
+
+    async def _answered(self, h):
+        closed = []
+
+        async def close():
+            closed.append(1)
+
+        h.service.on_background_conversation = close
+        with patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.05):
+            await h.user_says("What's on the shopping list?")
+            await h.wait_commentary()
+            h.voice_says("Milk and eggs.")
+            await asyncio.sleep(0.3)
+        self.assertTrue(h.service._answered_this_session)
+        # The follow-up comes seconds later, not as a continuation of the question.
+        h.service._last_user_turn_closed_mono -= live_service_module.USER_FRAGMENT_MERGE_S
+        return closed
+
+    async def test_a_thank_you_after_the_answer_closes_silently(self):
+        backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Milk and eggs.")))
+        async with RouterHarness(self, backend) as h:
+            closed = await self._answered(h)
+            calls = len(backend.bodies)
+            for _ in range(2):
+                await h.user_says("okay, thanks.", start_ms=5000)
+                await asyncio.sleep(0.3)
+            self.assertEqual(closed, [1])
+            self.assertEqual(len(backend.bodies), calls, "a thank-you is not routed")
+
+    async def test_room_talk_after_the_answer_closes_without_not_caught(self):
+        backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Milk and eggs.")),
+                              response(message("NO_REQUEST")))
+        async with RouterHarness(self, backend) as h:
+            closed = await self._answered(h)
+            commentary = len(h.socket.of("session.commentary.append"))
+            await h.user_says("so it's like medium. okay, well, sit down.", start_ms=5000)
+            await asyncio.sleep(0.4)
+            self.assertEqual(closed, [1])
+            self.assertEqual(len(h.socket.of("session.commentary.append")), commentary,
+                             "nothing is said to the room")
+
+    async def test_a_thank_you_before_any_answer_is_routed(self):
+        backend = FakeBackend(response(message("CHAT")))
+        async with RouterHarness(self, backend) as h:
+            closed = []
+
+            async def close():
+                closed.append(1)
+
+            h.service.on_background_conversation = close
+            await h.user_says("thanks.")
+            await asyncio.sleep(0.3)
+            self.assertEqual(closed, [])
+            self.assertEqual(len(backend.bodies), 1)
+
+    def test_only_a_bare_thank_you_counts(self):
+        thanks = live_service_module._THANKS_ONLY
+        for text in ("thanks.", "thank you", "okay, thanks!", "great, thank you so much.", "that's all.",
+                     "no thanks", "perfect. thanks, computer."):
+            self.assertTrue(thanks.match(text), text)
+        for text in ("thanks, and turn off the lights.", "thanks, what about tomorrow?", "okay.",
+                     "no, the other one."):
+            self.assertFalse(thanks.match(text), text)
+
+
 class OnlyAWaitingPhraseIsAnAcknowledgement(Patched):
     """candidate-v33 seventh review B6: a bag of acknowledgement words let a
     count or an affirmative through ("Just one.", "Mm hmm.", "Absolutely.").
