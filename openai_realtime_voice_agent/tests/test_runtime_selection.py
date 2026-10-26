@@ -191,6 +191,32 @@ class TestSessionManagerRestorable(unittest.TestCase):
         context = manager.create_context_for_new_session("kitchen")
         self.assertEqual([m["content"] for m in context.get_messages()], ["s", "m3", "m4"])
 
+    def test_restored_context_drops_tool_calls_and_results(self):
+        # A new session resent cached tool results with call ids it never
+        # issued (invalid_tool_call_id). Reported in PR #6.
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        import time
+
+        manager = SessionManager(reuse_timeout=300, max_restored_messages=0)
+        messages = [
+            {"role": "user", "content": "is the light on?"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "on"},
+            {"role": "assistant", "content": "checking.",
+             "tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_2", "content": "on"},
+            {"role": "assistant", "content": "yes, it is on."},
+        ]
+        manager.context_caches["kitchen"] = type("E", (), {"context": LLMContext(messages=messages),
+                                                           "timestamp": time.time()})()
+        expected = [{"role": "user", "content": "is the light on?"},
+                    {"role": "assistant", "content": "checking."},
+                    {"role": "assistant", "content": "yes, it is on."}]
+        self.assertEqual(manager.restorable_messages("kitchen"), expected)
+        self.assertEqual(manager.create_context_for_new_session("kitchen").get_messages(), expected)
+        self.assertEqual(len(messages), 6, "the cache itself is untouched")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,24 @@ class ContextCacheEntry:
         self.timestamp = timestamp
 
 
+def _without_tool_plumbing(messages) -> list:
+    """The messages minus tool results and tool calls; an assistant message
+    left with no text is dropped."""
+    kept = []
+    for message in messages:
+        if not isinstance(message, dict):
+            kept.append(message)
+            continue
+        if message.get("role") == "tool" or message.get("tool_call_id"):
+            continue
+        if message.get("tool_calls") or message.get("function_call"):
+            message = {k: v for k, v in message.items() if k not in ("tool_calls", "function_call")}
+            if not message.get("content"):
+                continue
+        kept.append(message)
+    return kept
+
+
 class SessionManager:
     """Manages OpenAI Realtime sessions with context caching per client device.
     
@@ -155,8 +173,12 @@ class SessionManager:
 
         Keeps a leading system message if there is one, then the last N of
         the rest, so the per-turn token cost stays bounded (see __init__).
+        Tool calls and their results are dropped first: a new session has no
+        record of those call ids, and the Realtime service resends cached
+        results with them (invalid_tool_call_id). What the assistant said
+        about them is kept.
         """
-        restore_messages = list(cached_messages) if cached_messages else []
+        restore_messages = _without_tool_plumbing(cached_messages or [])
         if restore_messages and self.max_restored_messages > 0 and \
                 len(restore_messages) > self.max_restored_messages:
             head = []
