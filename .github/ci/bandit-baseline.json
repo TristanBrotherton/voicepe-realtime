@@ -1,0 +1,117 @@
+{
+  "results": [
+    {
+      "code": "43         \"Authorization\": f\"Bearer {api_key}\", \"Content-Type\": \"application/json\"})\n44     with urllib.request.urlopen(request, timeout=60) as response:\n45         return response.read()          # 24 kHz mono 16-bit PCM\n",
+      "col_offset": 9,
+      "end_col_offset": 52,
+      "filename": "demo/make_prompts.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 22,
+        "link": "https://cwe.mitre.org/data/definitions/22.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+      "line_number": 44,
+      "line_range": [
+        44
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+      "test_id": "B310",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "166     await runner.setup()\n167     site = web.TCPSite(runner, \"0.0.0.0\", port)\n168     await site.start()\n",
+      "col_offset": 31,
+      "end_col_offset": 40,
+      "filename": "openai_realtime_voice_agent/app/announce_http.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 605,
+        "link": "https://cwe.mitre.org/data/definitions/605.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible binding to all interfaces.",
+      "line_number": 167,
+      "line_range": [
+        167
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+      "test_id": "B104",
+      "test_name": "hardcoded_bind_all_interfaces"
+    },
+    {
+      "code": "228         def _fetch() -> bytes:\n229             with urllib.request.urlopen(request, timeout=60) as response:\n230                 return response.read()\n",
+      "col_offset": 17,
+      "end_col_offset": 60,
+      "filename": "openai_realtime_voice_agent/app/live_probe.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 22,
+        "link": "https://cwe.mitre.org/data/definitions/22.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+      "line_number": 229,
+      "line_range": [
+        229
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+      "test_id": "B310",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "621         websocket_port = int(os.environ.get(\"WEBSOCKET_PORT\", \"8080\"))\n622         websocket_host = os.environ.get(\"WEBSOCKET_HOST\", \"0.0.0.0\")\n623         \n",
+      "col_offset": 58,
+      "end_col_offset": 67,
+      "filename": "openai_realtime_voice_agent/app/main.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 605,
+        "link": "https://cwe.mitre.org/data/definitions/605.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible binding to all interfaces.",
+      "line_number": 622,
+      "line_range": [
+        622
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+      "test_id": "B104",
+      "test_name": "hardcoded_bind_all_interfaces"
+    },
+    {
+      "code": "541         self,\n542         host: str = \"0.0.0.0\",\n543         port: int = 8080,\n544         session_manager: Optional[SessionManager] = None,\n545         audio_recording_service: Optional[AudioRecordingService] = None,\n546         follow_up_ms: int = 0,\n547         follow_up_open_delay_ms: int = 700,\n548         wake_open_delay_ms: int = 700,\n549         playback_prebuffer_ms: int = 0,\n550         output_lead_buffer_ms: int = 0,\n551         wake_events: Optional[WakeEventStore] = None,\n552         device_auth: Optional[DeviceAuth] = None,\n553         trigger_capture: bool = False,\n554         follow_up_hold: bool = True,\n555     ):\n556         \"\"\"\n",
+      "col_offset": 20,
+      "end_col_offset": 29,
+      "filename": "openai_realtime_voice_agent/app/websocket_handler.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 605,
+        "link": "https://cwe.mitre.org/data/definitions/605.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible binding to all interfaces.",
+      "line_number": 542,
+      "line_range": [
+        541,
+        542,
+        543,
+        544,
+        545,
+        546,
+        547,
+        548,
+        549,
+        550,
+        551,
+        552,
+        553,
+        554
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+      "test_id": "B104",
+      "test_name": "hardcoded_bind_all_interfaces"
+    }
+  ]
+}

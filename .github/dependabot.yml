@@ -1,0 +1,25 @@
+---
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # The add-on's Python dependencies (pyproject.toml + poetry.lock).
+  - package-ecosystem: "pip"
+    directory: "/openai_realtime_voice_agent"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Hash-locked CI tools (zizmor, bandit).
+  - package-ecosystem: "pip"
+    directory: "/.github/ci"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
