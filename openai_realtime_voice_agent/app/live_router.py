@@ -697,6 +697,11 @@ REFUSED_NO_TOOL = "tool_not_offered"
 # the user hears that, never a generic failure and never an action.
 TARGET_REFUSALS = frozenset({REFUSED_UNRESOLVED, REFUSED_UNNAMED, REFUSED_TOO_MANY})
 UNCLEAR_TARGET_TEXT = "I couldn't tell which device you meant."
+# A spoken command is short. Longer than this, a transcript the backend finds
+# no request in is the room talking, even when Home Assistant's parser picks
+# an intent out of it (Kitchen 2026-10-26: a family conversation parsed as
+# HassLightSet got "I couldn't tell which device you meant", twice).
+COMMAND_MAX_WORDS = 12
 
 
 def _named(value: Any) -> bool:
@@ -1201,7 +1206,7 @@ class TurnRouter:
         self._remember(user_text, new_items)
         upper = text.strip().upper().rstrip(".")
         if not runs and upper == NO_REQUEST:
-            if heard_info:
+            if heard_info and len(user_text.split()) <= COMMAND_MAX_WORDS:
                 # Home Assistant parsed a command, so it was one (16:22: a
                 # clean "Turn on the kitchen lights" was judged NO_REQUEST and
                 # the user heard 20 s of nothing). Say it was not done.

@@ -267,7 +267,7 @@ class ANamedDeviceIdStillFindsItsRoom(unittest.IsolatedAsyncioTestCase):
 
 
 class ParsedCommandsAreNeverIgnored(unittest.IsolatedAsyncioTestCase):
-    async def route(self, heard, answer):
+    async def route(self, heard, answer, text="Turn on the kitchen lights"):
         backend = FakeBackend(response(message(answer)))
         rec = ScriptedRecognizer(None, heard=heard)
         router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post),
@@ -275,7 +275,7 @@ class ParsedCommandsAreNeverIgnored(unittest.IsolatedAsyncioTestCase):
 
         async def execute(name, args):  # pragma: no cover - nothing runs
             raise AssertionError(name)
-        return await router.route("Turn on the kitchen lights", execute), backend
+        return await router.route(text, execute), backend
 
     async def test_no_request_for_a_parsed_command_tells_the_user(self):
         result, backend = await self.route(
@@ -286,6 +286,13 @@ class ParsedCommandsAreNeverIgnored(unittest.IsolatedAsyncioTestCase):
         self.assertIn("parser guessed HassTurnOn (name='kitchen lights'); unmatched: name", note)
         self.assertIn("A hint only", note)
         self.assertNotIn("This is a request", note)
+
+    async def test_no_request_in_long_talk_is_silence_despite_a_parse(self):
+        # Kitchen 2026-10-26: a conversation parsed as HassLightSet.
+        result, _ = await self.route(
+            {"intent": "HassLightSet", "slots": {}, "targets": 0, "unmatched": ["name"]}, "NO_REQUEST",
+            "of course not honey, we have to have each other's back, like we always said we would")
+        self.assertEqual(result.kind, NOTHING)
 
     async def test_no_request_without_a_parse_is_still_silence(self):
         result, _ = await self.route(None, "NO_REQUEST")

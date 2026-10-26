@@ -22,6 +22,7 @@ Responses backend and a scripted Home Assistant intent recognizer:
 import asyncio
 import base64
 import json
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1066,6 +1067,37 @@ class ThanksEndsTheConversation(Patched):
             await asyncio.sleep(0.3)
             self.assertEqual(closed, [])
             self.assertEqual(len(backend.bodies), 1)
+
+    async def test_long_talk_with_no_request_closes_silently_at_once(self):
+        # Kitchen 2026-10-26: a false wake into a family conversation said
+        # "I couldn't tell which device you meant", twice.
+        backend = FakeBackend(response(message("NO_REQUEST")))
+        async with RouterHarness(self, backend) as h:
+            closed = []
+
+            async def close():
+                closed.append(1)
+
+            h.service.on_background_conversation = close
+            await h.user_says("of course not honey, we have to have each other's back, "
+                              "like we always said we would")
+            await asyncio.sleep(0.4)
+            self.assertEqual(closed, [1])
+            self.assertEqual(h.socket.of("session.commentary.append"), [], "nothing is said to the room")
+
+    async def test_a_short_misheard_command_still_hears_not_caught(self):
+        backend = FakeBackend(response(message("NO_REQUEST")))
+        async with RouterHarness(self, backend) as h:
+            closed = []
+
+            async def close():
+                closed.append(1)
+
+            h.service.on_background_conversation = close
+            h.service._turn_heard_mono = time.monotonic()  # the acknowledgement played
+            await h.user_says("turn on the kitchen lights")
+            await asyncio.sleep(0.4)
+            self.assertEqual(closed, [])
 
     def test_only_a_bare_thank_you_counts(self):
         thanks = live_service_module._THANKS_ONLY

@@ -80,6 +80,7 @@ from app.live_router import (
     ACK_PREFIX,
     ACTION as ROUTE_ACTION,
     CHAT_KIND,
+    COMMAND_MAX_WORDS,
     FAILED as ROUTE_FAILED,
     LOOKUP as ROUTE_LOOKUP,
     NOTHING as ROUTE_NOTHING,
@@ -3987,6 +3988,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # 2026-10-26). Close quietly rather than "I didn't catch that".
             await self._task_complete(op)
             return
+        if result is not None and result.kind == ROUTE_NOTHING \
+                and len(op.text.split()) > COMMAND_MAX_WORDS and self._close_for_background(
+                    f"no request in {len(op.text.split())} words of talk"):
+            # Too long to be a command: the room talking after a false wake.
+            # Quiet, even after an acknowledgement (Kitchen 2026-10-26).
+            await self._task_complete(op)
+            return
         if result is not None and result.kind == ROUTE_NOTHING and self._turn_heard_mono is not None:
             # The user already heard an acknowledgement, so they asked
             # something; silence now leaves the device "thinking" until the
@@ -5111,6 +5119,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         if self._device_audio_active():
             return  # audio is on its way to the device: never on top of it
+        if self._background_closing:
+            return  # closing quietly on room talk: nothing is said to the room
         player = self.on_fallback_ack
         meta = self._turn_meta()
         if player is None:
