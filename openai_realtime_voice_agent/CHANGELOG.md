@@ -2,6 +2,16 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.21 (fork)
+
+### Fixed: a new session restored from the cache resent old tool results
+
+- On the Realtime runtime, a session started from the cached conversation
+  resent every cached tool result with a call id the new session never
+  issued, and the server answered `invalid_tool_call_id`. Tool calls and
+  their results are now left out of the restored context; what the
+  assistant said about them is kept. Reported by @novastate (PR #6).
+
 ## 0.19.20 (fork)
 
 ### Fixed: a false wake into room talk kept answering
