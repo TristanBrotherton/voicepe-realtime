@@ -152,5 +152,99 @@ class TestApplicationPerDevice(unittest.TestCase):
         self.assertEqual(self.app._live_config_for(SimpleNamespace(device_id="study")).voice, "vesper")
 
 
+class TestPortChecks(unittest.TestCase):
+    def test_colliding_ports_are_dropped_not_fatal(self):
+        d = directory([
+            {"name": "main", "port": 8080},                        # the instance's own port
+            {"name": "a", "port": 8082, "announce_port": 8090},    # 8090 is the instance announce port
+            {"name": "b", "port": 8091, "announce_port": 8082},    # its announce port is a's port
+            {"name": "c", "port": 8084, "announce_port": 8092},
+            {"name": "d", "port": 8086, "announce_port": 8092},    # c already has 8092
+        ]).checked(8080, 8090)
+        self.assertIsNone(d.get("main").port, "a device must not take the instance's websocket_port")
+        self.assertEqual((d.get("a").port, d.get("a").announce_port), (8082, None))
+        self.assertEqual((d.get("b").port, d.get("b").announce_port), (8091, None))
+        self.assertEqual(d.get("c").announce_port, 8092)
+        self.assertIsNone(d.get("d").announce_port)
+        self.assertEqual(d.extra_ports(8080), [8082, 8084, 8086, 8091])
+
+    def test_the_main_port_never_names_unknown_devices(self):
+        d = directory([{"name": "kitchen", "port": 8080}]).checked(8080, None)
+        ports = {p.port: p.name for p in d.profiles if p.port is not None}
+        self.assertEqual(device_id_from_websocket(FakeWS(8080), ports), "192.0.2.9")
+
+
+class TestBusyPort(unittest.IsolatedAsyncioTestCase):
+    async def test_a_busy_device_port_does_not_stop_the_others(self):
+        from app.main import Application
+        app = Application.__new__(Application)
+        app.device_directory = directory()
+        served = []
+
+        class Server:
+            def __init__(self, port, fail):
+                self.port, self.fail = port, fail
+
+            async def serve(self):
+                if self.fail:
+                    # What uvicorn raises when it cannot bind; an OSError for the
+                    # instance port (a SystemExit would stop the test loop).
+                    raise SystemExit(1) if self.port != 8080 else OSError(48, "in use")
+                served.append(self.port)
+
+        await app._serve_ports([(8080, Server(8080, False)), (8082, Server(8082, True)),
+                                (8084, Server(8084, False))], 8080)
+        self.assertEqual(sorted(served), [8080, 8084])
+        with self.assertRaises(OSError):
+            await app._serve_ports([(8080, Server(8080, True))], 8080)
+
+
+class TestCaseInsensitiveNames(unittest.TestCase):
+    def test_names_match_in_any_case(self):
+        d = directory([{"name": "Hallway", "follow_up_listen_seconds": 4}])
+        self.assertEqual(d.get("hallway").name, "hallway")
+        self.assertEqual(d.get("HALLWAY").follow_up_listen_seconds, 4)
+        handler = WebSocketHandler(follow_up_ms=8000)
+        handler.device_directory = d
+        self.assertEqual(handler.follow_up_ms_for("Hallway"), 4000)
+
+
+class TestBothCapsDisabled(unittest.TestCase):
+    def test_a_device_with_both_caps_off_is_flagged(self):
+        from app.device_config import DeviceProfile
+        from app.main import Application
+        app = Application.__new__(Application)
+        app.live_config = SimpleNamespace(max_session_minutes_per_day=0, max_usd_per_day=0)
+        with patch("app.live_cost.LEDGER_PATH", None), self.assertLogs("app.main", "ERROR") as logs:
+            app._device_ledger(DeviceProfile(name="x", live_max_usd_per_day=0))
+        self.assertTrue(any("BOTH GPT-Live spend caps are disabled" in line for line in logs.output))
+
+
+class TestSettingsResolvedAtAccept(unittest.IsolatedAsyncioTestCase):
+    async def test_prompts_use_the_connected_devices_lead_buffer(self):
+        from app.device_registry import DeviceConnection
+        from app.main import Application
+        handler = WebSocketHandler(output_lead_buffer_ms=300)
+        handler.device_directory = directory([{"name": "hallway", "output_lead_buffer_ms": 600}])
+        connection = DeviceConnection(device_id="hallway", websocket=None,
+                                      profile=handler.device_directory.get("hallway"))
+        await handler.devices.add(connection)
+        self.assertEqual(handler.output_lead_ms_for("hallway"), 600)
+        self.assertEqual(handler.output_lead_ms_for("other"), 300)
+        app = Application.__new__(Application)
+        app.websocket_handler = handler
+        plans = []
+        handler.send_bytes_to = lambda data, device_id: _true()
+        handler.serializer_for = lambda device_id: None
+        with patch("app.output_lead_buffer.prompt_send_plan",
+                   side_effect=lambda pcm, lead: plans.append(lead) or []):
+            await app._play_prompt(b"\0" * 4800, "hallway")
+        self.assertEqual(plans, [600])
+
+
+async def _true():
+    return True
+
+
 if __name__ == "__main__":
     unittest.main()

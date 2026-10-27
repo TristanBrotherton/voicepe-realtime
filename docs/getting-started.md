@@ -289,5 +289,10 @@ Every override is optional and falls back to the instance setting:
 `playback_prebuffer_ms`, `output_lead_buffer_ms`, `timer_ring_entity`, `room`,
 `voice` and the two GPT-Live caps. A device with its own caps is charged on
 its own ledger; a device without them shares the instance's caps. Unknown
-devices still connect with the instance settings. One add-on restart (an
-update or an option change) reconnects every device on it.
+devices still connect with the instance settings. Names match in any letter
+case. A configured device publishes its own `sensor.voicepe_<name>_*` sensors,
+and its spoken prompts use its own voice and ledger. A device `port` or
+`announce_port` that is busy or collides with another port of the add-on is
+logged and skipped without taking the other devices down; a device port may
+not be the instance's own `websocket_port`. One add-on restart (an update or
+an option change) reconnects every device on it.

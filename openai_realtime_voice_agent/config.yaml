@@ -143,7 +143,7 @@ options:
   announce_token: ""
   # Several Voice PEs on this one add-on: name each device and, optionally,
   # give it the port it connects to and its own settings. Empty = one
-  # instance-wide set of settings (see DOCS.md, "Several devices").
+  # instance-wide set of settings (see the add-on Documentation tab, "Several devices").
   devices: []
 
   # --- ⚙️ Advanced ---

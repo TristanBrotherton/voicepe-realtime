@@ -145,3 +145,66 @@ class TestSensorPublisher(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordingPoster:
+    def __init__(self):
+        self.posts = {}
+
+    def post_nowait(self, entity, state, attrs):
+        self.posts[entity] = (state, attrs)
+
+
+class TestPerDeviceSensors(unittest.IsolatedAsyncioTestCase):
+    """A configured device keeps its own sensor.voicepe_<name>_* names on a
+    shared instance; the instance sensors keep the totals."""
+
+    def publisher(self):
+        import app.ha_sensors as hs
+        poster = RecordingPoster()
+        publisher = SensorPublisher(poster=poster, counters=DailyCounters(None))
+        publisher.device_names = {"kitchen"}
+        return publisher, poster, hs._INST
+
+    async def test_a_configured_device_publishes_under_its_own_name(self):
+        publisher, poster, inst = self.publisher()
+        await publisher.wake("Kitchen")
+        await publisher.wake("Kitchen")
+        await publisher.wake("192.0.2.9")
+        self.assertEqual(poster.posts["sensor.voicepe_kitchen_wakes_today"][0], 2)
+        self.assertEqual(poster.posts[f"sensor.voicepe_{inst}_wakes_today"][0], 3, "the instance keeps the total")
+        publisher.wake_model("kitchen", {"model": "m"})
+        self.assertIn("sensor.voicepe_kitchen_wake_word", poster.posts)
+        publisher.latency({"device_id": "kitchen", "speech_end_to_first_audio_sent_ms": 900}, {})
+        self.assertEqual(poster.posts["sensor.voicepe_kitchen_latency"][0], 900)
+        await publisher.speaker("male", "A", 0.5, "pitch", "kitchen")
+        self.assertIn("sensor.voicepe_kitchen_speaker", poster.posts)
+
+    async def test_an_unconfigured_device_uses_the_instance_name(self):
+        publisher, poster, inst = self.publisher()
+        publisher.latency({"device_id": "192.0.2.9", "speech_end_to_first_audio_sent_ms": 1}, {})
+        self.assertEqual(list(poster.posts), [f"sensor.voicepe_{inst}_latency"])
+
+    def test_each_cost_sensor_shows_one_ledger(self):
+        publisher, poster, inst = self.publisher()
+        own = {"spend": {"usd": 0.2}}
+        publisher.live_session_cost(own, device_id="kitchen", shared=False)
+        self.assertEqual(list(poster.posts), ["sensor.voicepe_kitchen_live_session_cost_today"],
+                         "a device's own ledger never lands on the instance sensor")
+        shared = {"spend": {"usd": 2.4}}
+        publisher.live_session_cost(shared, device_id="192.0.2.9", shared=True)
+        self.assertEqual(poster.posts[f"sensor.voicepe_{inst}_live_session_cost_today"][0], 2.4)
+        self.assertEqual(poster.posts["sensor.voicepe_kitchen_live_session_cost_today"][0], 0.2)
+
+    async def test_timers_per_device(self):
+        publisher, poster, inst = self.publisher()
+
+        class Registry:
+            def list_timers(self, device_id=None):
+                timers = [{"label": "a", "seconds_left": 5, "dev": "kitchen"},
+                          {"label": "b", "seconds_left": 9, "dev": "x"}]
+                return {"timers": [t for t in timers if device_id is None or t["dev"] == device_id]}
+
+        await publisher.timers(Registry(), "kitchen")
+        self.assertEqual(poster.posts["sensor.voicepe_kitchen_active_timers"][0], 1)
+        self.assertEqual(poster.posts[f"sensor.voicepe_{inst}_active_timers"][0], 2)

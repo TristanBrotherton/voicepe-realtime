@@ -133,10 +133,6 @@ class TestAnnounceHttp(AnnounceServerTestCase):
         self.assertEqual(len(self.attempts), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAnnouncePortForADevice(AnnounceServerTestCase):
     """An announce port configured for one device (the devices option)."""
 
@@ -162,3 +158,7 @@ class TestAnnouncePortForADevice(AnnounceServerTestCase):
         async with self.post({"message": "Dinner is ready", "device_id": "kitchen"}) as response:
             self.assertEqual(response.status, 200)
         self.assertEqual(self.attempts, [("Dinner is ready", "kitchen")])
+
+
+if __name__ == "__main__":
+    unittest.main()

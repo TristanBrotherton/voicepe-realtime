@@ -1,6 +1,9 @@
 """Publish live Voice PE state to Home Assistant as sensors.
 
-Per-instance sensors (INSTANCE_NAME option, e.g. 'kitchen'):
+Per-instance sensors (INSTANCE_NAME option, e.g. 'kitchen'). A device named in
+the ``devices`` option publishes the same set under its own name instead
+(``sensor.voicepe_<device>_*``), so a device that moves onto a shared instance
+keeps its sensor names; the day counters are also kept as instance totals:
   sensor.voicepe_<inst>_speaker        recognized name/unknown/none (+score/method)
   sensor.voicepe_<inst>_active_timers  count (+next-expiry attrs)
   binary_sensor.voicepe_<inst>_enrollment_active
@@ -231,6 +234,13 @@ class SensorPublisher:
         self._responses_today = 0
         self._cost_day = self.counters.day
         self._rollover_task: Optional[asyncio.Task] = None
+        # Names of the devices configured in the ``devices`` option.
+        self.device_names: set = set()
+
+    def _inst(self, device_id: Optional[str]) -> str:
+        """The sensor prefix for a device: its own configured name, else the instance's."""
+        key = (device_id or "").strip().lower()
+        return key if key in self.device_names else _INST
 
     def _post(self, entity: str, state, attrs: dict) -> None:
         self._ensure_rollover_task()
@@ -250,24 +260,30 @@ class SensorPublisher:
         while True:
             await asyncio.sleep(60)
             if self.counters.roll():
-                self._publish_counter("wakes", "wakes today")
-                self._publish_counter("false_wakes", "false wakes today")
+                for name, label in (("wakes", "wakes today"), ("false_wakes", "false wakes today")):
+                    self._publish_counter(name, label)
+                    for device in sorted(self.device_names):
+                        self._publish_counter(name, label, device)
 
-    def _publish_counter(self, name: str, label: str) -> None:
+    def _publish_counter(self, name: str, label: str, device_id: Optional[str] = None) -> None:
+        inst = self._inst(device_id)
+        if inst == _INST:
+            # The instance sensor is the total over every device.
+            state, extra = self.counters.get(name), {"by_device": self.counters.device_counts(name)}
+        else:
+            counts = {d.lower(): c for d, c in self.counters.device_counts(name).items()}
+            state, extra = counts.get(inst, 0), {}
         self.poster.post_nowait(
-            f"sensor.voicepe_{_INST}_{name}_today",
-            self.counters.get(name),
-            {
-                "friendly_name": f"Voice PE {_INST} {label}",
-                "by_device": self.counters.device_counts(name),
-                "day": self.counters.day,
-            },
+            f"sensor.voicepe_{inst}_{name}_today",
+            state,
+            {"friendly_name": f"Voice PE {inst} {label}", **extra, "day": self.counters.day},
         )
 
-    async def speaker(self, label: str, name, score: float, method: str):
+    async def speaker(self, label: str, name, score: float, method: str, device_id: Optional[str] = None):
         state = name or ("unknown" if label == "unknown" else "none")
-        self._post(f"sensor.voicepe_{_INST}_speaker", state, {
-            "friendly_name": f"Voice PE {_INST} speaker",
+        inst = self._inst(device_id)
+        self._post(f"sensor.voicepe_{inst}_speaker", state, {
+            "friendly_name": f"Voice PE {inst} speaker",
             "label": label, "score": round(float(score), 3), "method": method,
             "at": time.strftime("%H:%M:%S"),
         })
@@ -286,7 +302,8 @@ class SensorPublisher:
             "last_response_cost": round(cost, 5), **detail,
         })
 
-    def live_session_cost(self, snapshot: dict) -> None:
+    def live_session_cost(self, snapshot: dict, device_id: Optional[str] = None,
+                          shared: bool = True) -> None:
         """Publish GPT-Live voice spend so a dashboard can watch it.
 
         Unlike :meth:`usage`, this is not an estimate of a response: GPT-Live
@@ -298,8 +315,22 @@ class SensorPublisher:
         close, on the path that is also releasing the device's audio.
         """
         spend = snapshot.get("spend") or {}
-        self._post(f"sensor.voicepe_{_INST}_live_session_cost_today", spend.get("usd", 0.0), {
-            "friendly_name": f"Voice PE {_INST} GPT-Live session cost",
+        inst = self._inst(device_id)
+        # Each sensor always shows one ledger. A configured device's sensor
+        # shows the ledger it is charged to (its own, or the instance's when
+        # it has no caps of its own); the instance sensor shows only the
+        # instance ledger, never a device's.
+        targets = [inst] if inst != _INST else []
+        if shared:
+            targets.append(_INST)
+        for target in targets:
+            self._post_live_cost(target, spend, snapshot,
+                                 "own" if not shared else ("instance" if target == _INST else "shared"))
+
+    def _post_live_cost(self, inst: str, spend: dict, snapshot: dict, ledger: str) -> None:
+        self._post(f"sensor.voicepe_{inst}_live_session_cost_today", spend.get("usd", 0.0), {
+            "friendly_name": f"Voice PE {inst} GPT-Live session cost",
+            "ledger": ledger,
             "unit_of_measurement": "$",
             "session_minutes": spend.get("session_minutes", 0.0),
             "sessions": spend.get("sessions_in_window", 0),
@@ -341,18 +372,27 @@ class SensorPublisher:
     async def wake(self, device_id: Optional[str] = None):
         self.counters.increment("wakes", device_id)
         self._publish_counter("wakes", "wakes today")
+        if self._inst(device_id) != _INST:
+            self._publish_counter("wakes", "wakes today", device_id)
 
     async def false_wake(self, device_id: Optional[str] = None):
         self.counters.increment("false_wakes", device_id)
         self._publish_counter("false_wakes", "false wakes today")
+        if self._inst(device_id) != _INST:
+            self._publish_counter("false_wakes", "false wakes today", device_id)
 
-    async def timers(self, registry):
-        t = registry.list_timers()["timers"]
-        attrs = {"friendly_name": f"Voice PE {_INST} active timers"}
-        if t:
-            attrs["next_label"] = t[0]["label"]
-            attrs["next_seconds_left"] = min(x["seconds_left"] for x in t)
-        self._post(f"sensor.voicepe_{_INST}_active_timers", len(t), attrs)
+    async def timers(self, registry, device_id: Optional[str] = None):
+        # The instance sensor counts every timer; a configured device's own.
+        targets = [(_INST, None)]
+        if self._inst(device_id) != _INST:
+            targets.append((self._inst(device_id), device_id))
+        for inst, owner in targets:
+            t = registry.list_timers(owner)["timers"]
+            attrs = {"friendly_name": f"Voice PE {inst} active timers"}
+            if t:
+                attrs["next_label"] = t[0]["label"]
+                attrs["next_seconds_left"] = min(x["seconds_left"] for x in t)
+            self._post(f"sensor.voicepe_{inst}_active_timers", len(t), attrs)
 
     async def enrollment(self, active: bool):
         self._post(f"binary_sensor.voicepe_{_INST}_enrollment_active",
@@ -362,8 +402,9 @@ class SensorPublisher:
     def latency(self, summary: dict, stats: dict) -> None:
         """Publish the newest turn timeline and rolling percentiles (numbers only)."""
         state = summary.get("speech_end_to_first_audio_sent_ms")
-        self._post(f"sensor.voicepe_{_INST}_latency", state if state is not None else "unknown", {
-            "friendly_name": f"Voice PE {_INST} reply latency",
+        inst = self._inst(summary.get("device_id"))
+        self._post(f"sensor.voicepe_{inst}_latency", state if state is not None else "unknown", {
+            "friendly_name": f"Voice PE {inst} reply latency",
             "unit_of_measurement": "ms",
             "device_id": summary.get("device_id"),
             "turn_id": summary.get("turn_id"),
@@ -376,8 +417,9 @@ class SensorPublisher:
 
     def wake_model(self, device_id: str, meta: dict) -> None:
         """Publish the wake model/operating point the device reports using."""
-        self._post(f"sensor.voicepe_{_INST}_wake_word", meta.get("model") or "unknown", {
-            "friendly_name": f"Voice PE {_INST} wake word",
+        inst = self._inst(device_id)
+        self._post(f"sensor.voicepe_{inst}_wake_word", meta.get("model") or "unknown", {
+            "friendly_name": f"Voice PE {inst} wake word",
             "device_id": device_id,
             **{k: meta[k] for k in ("model", "model_sha", "cutoff", "cutoff_uint8", "window",
                                     "tier", "fw") if k in meta},

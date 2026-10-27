@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.device_registry import sanitize_device_id
@@ -63,7 +63,9 @@ class DeviceProfile:
 def _profile(raw: Any) -> Optional[DeviceProfile]:
     if not isinstance(raw, dict):
         return None
-    name = sanitize_device_id(str(raw.get("name") or ""))
+    # Names match case-insensitively, like rooms: "Hallway" and the URL's
+    # "?device_id=hallway" are one device.
+    name = sanitize_device_id(str(raw.get("name") or "")).lower()
     if not name:
         return None
     values: Dict[str, Any] = {"name": name}
@@ -119,8 +121,7 @@ class DeviceDirectory:
                 continue
             if profile.port is not None and profile.port in ports:
                 logger.warning(f"⚠️ device {profile.name}: port {profile.port} is taken; not matched by port")
-                profile = DeviceProfile(**{f.name: getattr(profile, f.name) for f in fields(profile)
-                                           if f.name != "port"})
+                profile = replace(profile, port=None)
             names.add(profile.name)
             if profile.port is not None:
                 ports.add(profile.port)
@@ -134,8 +135,37 @@ class DeviceDirectory:
     def __bool__(self) -> bool:
         return bool(self.profiles)
 
-    def get(self, name: str) -> Optional[DeviceProfile]:
-        return next((p for p in self.profiles if p.name == name), None)
+    def get(self, name: Optional[str]) -> Optional[DeviceProfile]:
+        key = (name or "").strip().lower()
+        return next((p for p in self.profiles if p.name == key), None) if key else None
+
+    def checked(self, main_port: int, main_announce_port: Optional[int]) -> "DeviceDirectory":
+        """The directory with every port that would collide removed.
+
+        One process listens on all of these ports, so an overlap would either
+        fail to bind (and take every device down) or route connections to the
+        wrong device. A device port equal to the instance's own websocket port
+        would also capture every unconfigured device that connects there.
+        Each dropped port is logged as an error; the device keeps its other
+        settings and is still matched by its ``device_id``."""
+        taken = {main_port: "the add-on's websocket_port"}
+        if main_announce_port:
+            taken[main_announce_port] = "the add-on's announce_port"
+        profiles: List[DeviceProfile] = []
+        for profile in self.profiles:
+            for key in ("port", "announce_port"):
+                port = getattr(profile, key)
+                if port is None:
+                    continue
+                owner = taken.get(port)
+                if owner is not None:
+                    logger.error(f"🚨 device {profile.name}: {key} {port} is already {owner}; "
+                                 "not listening on it for this device")
+                    profile = replace(profile, **{key: None})
+                else:
+                    taken[port] = f"device {profile.name}'s {key}"
+            profiles.append(profile)
+        return DeviceDirectory(profiles)
 
     def by_port(self, port: Optional[int]) -> Optional[DeviceProfile]:
         if port is None:

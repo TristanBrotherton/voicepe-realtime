@@ -46,6 +46,7 @@ NON_NAME_LITERALS = {
     'Cellar': 'fictional room in the entity-name matching fixtures (tests/test_ha_names.py)',
     'Charger': 'fictional device name word in the entity-name matching fixtures (tests/test_ha_names.py)',
     'Green Glow': 'fictional scene name in the entity-name matching fixtures (tests/test_ha_names.py)',
+    'Hallway': 'fictional room used as a device name, written capitalised to test case-insensitive matching (tests/test_device_config.py)',
     'Laundry': 'fictional sensor alias word in the entity-name matching fixtures (tests/test_ha_names.py)',
     'Studio': 'fictional room in the entity-name matching fixtures (tests/test_ha_names.py)',
     'Visitor': 'fictional helper alias word in the entity-name matching fixtures (tests/test_ha_names.py)',

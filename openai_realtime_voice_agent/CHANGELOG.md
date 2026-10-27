@@ -15,6 +15,17 @@ All notable changes to this add-on. Newest first.
   the add-on also listens on every device port, so devices that each had
   their own add-on copy can move onto one add-on without a reflash. An
   `announce_port` per device does the same for announcements.
+- A configured device publishes its own `sensor.voicepe_<name>_*` sensors
+  (latency, wake word, speaker, timers, wake counts, GPT-Live cost), so it
+  keeps its sensor names when it moves onto a shared add-on; the add-on's
+  own sensors keep the totals. Each GPT-Live cost sensor shows one ledger.
+- A device's fillers, errors, spend refusal, timers and announcements use
+  its own voice and ledger, and its prompts its own output lead buffer. Its
+  settings are resolved once, when it connects.
+- A device port that is busy, or that collides with another port of the
+  add-on (including its own `websocket_port`), is logged and skipped; the
+  other devices keep working. A device with both caps at 0 is flagged.
+- Device names match in any letter case. The wake log line names the device.
 - With `devices` empty (the default) nothing changes.
 
 ## 0.19.24 (fork)

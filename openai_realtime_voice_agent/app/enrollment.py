@@ -325,6 +325,9 @@ class EnrollmentConductor:
         # (tts_style option). Generic by default; set a persona there.
         self.tts = TTSCache(api_key, self.tts_voice, tts_style or DEFAULT_STYLE,
                             cache_dir="/data/enroll_prompts")
+        # Per-device voices (several Voice PEs on one instance): device id ->
+        # its own TTSCache, or None for this one. Timers and announcements.
+        self.tts_for = None
         self._task = None
         self._lines: Dict[str, bytes] = {}   # rendered script lines, by text
         self.device_id: Optional[str] = None
@@ -334,16 +337,17 @@ class EnrollmentConductor:
     def running(self):
         return self._task is not None and not self._task.done()
 
-    async def _tts(self, text):
+    async def _tts(self, text, device_id=None):
         """Synthesize one prompt to 24 kHz mono PCM16 (cached on /data)."""
-        pcm = await self.tts.get(text)
+        cache = self.tts_for(device_id) if self.tts_for is not None else None
+        pcm = await (cache or self.tts).get(text)
         if pcm is None:
             raise RuntimeError("speech synthesis unavailable")
         return pcm
 
     async def _say(self, text, device_id=None):
         target = self.device_id if device_id is None else device_id
-        pcm = await self._tts(text)
+        pcm = await self._tts(text, target)
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False

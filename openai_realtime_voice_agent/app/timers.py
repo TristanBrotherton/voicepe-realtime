@@ -146,7 +146,7 @@ class TimerRegistry:
         try:
             import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self))
+            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
         except Exception:
             pass
         return {"id": tid, "label": self._timers[tid]["label"], "seconds": seconds}
@@ -171,7 +171,7 @@ class TimerRegistry:
         try:
             import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self))
+            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
         except Exception:
             pass
         return {"cancelled": tid, "label": t["label"]}

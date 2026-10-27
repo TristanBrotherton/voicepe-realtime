@@ -124,6 +124,8 @@ class DeviceConnection:
     # Holds the follow-up mic window open while the user talks
     # (app/followup_hold.py). None on the Realtime runtime and when disabled.
     followup_hold: Any = None
+    # Per-device settings (app/device_config.py), resolved once at accept.
+    profile: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""

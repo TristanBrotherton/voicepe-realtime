@@ -322,6 +322,18 @@ class SpokenPrompts:
         self.ack_delay_s = ack_delay_s
         self.progress_delay_s = max(0.05, progress_delay_s)
         self.enabled = enabled
+        # Per-device prompt voices (several Voice PEs on one instance): maps a
+        # device id to its own TTSCache, or None for the instance's.
+        self.tts_for: Optional[Callable[[str], Optional[TTSCache]]] = None
+        # Further caches warmed with the same lines (each device's own voice).
+        self.extra_caches: list = []
+
+    def _tts(self, device_id: Optional[str]) -> TTSCache:
+        if self.tts_for is not None:
+            cache = self.tts_for(device_id)
+            if cache is not None:
+                return cache
+        return self.tts
 
     async def warm(self) -> None:
         """Pre-render every prompt at startup.
@@ -333,11 +345,12 @@ class SpokenPrompts:
         texts = list(PROMPTS.values())
         for name in self.names:
             texts += named_fallback_acks(name)
-        if self.tts.live:
-            await self.tts.render_live(texts)
-            return
-        for text in texts:
-            await self.tts.get(text)
+        for cache in [self.tts] + list(self.extra_caches):
+            if cache.live:
+                await cache.render_live(texts)
+                continue
+            for text in texts:
+                await cache.get(text)
 
     @staticmethod
     def is_filler(key: str) -> bool:
@@ -364,7 +377,8 @@ class SpokenPrompts:
         text = PROMPTS.get(key)
         if not text:
             return False
-        pcm = self.tts.cached(text) or await self.tts.get(
+        tts = self._tts(device_id)
+        pcm = tts.cached(text) or await tts.get(
             text, fallback=not self.is_filler(key))
         if not pcm:
             return False
@@ -390,7 +404,7 @@ class SpokenPrompts:
                 continue
             start = self._fallback_turn % len(group)
             for text in group[start:] + group[:start]:
-                pcm = self.tts.cached(text)
+                pcm = self._tts(device_id).cached(text)
                 if pcm:
                     return await self._play(pcm, device_id)
         return False
@@ -406,9 +420,10 @@ class SpokenPrompts:
         """
         if not self.enabled:
             return False
-        if self.tts.live:
+        tts = self._tts(device_id)
+        if tts.live:
             text = generic_progress_phrase(tool_name, transcript)
-            pcm = self.tts.cached(text)
+            pcm = tts.cached(text)
             if pcm is None:
                 logger.info("ℹ️ progress cue not yet rendered in the Live voice; "
                             "staying silent rather than mixing voices")
@@ -421,18 +436,19 @@ class SpokenPrompts:
         """Speak a request-specific progress line without persisting its text."""
         if not self.enabled or not text:
             return False
-        pcm = self.tts.cached(text)
-        if pcm is None and not self.tts.live:
+        tts = self._tts(device_id)
+        pcm = tts.cached(text)
+        if pcm is None and not tts.live:
             try:
                 pcm = await asyncio.wait_for(
-                    self.tts.get(text, persist=False), timeout=max(0.1, timeout_s)
+                    tts.get(text, persist=False), timeout=max(0.1, timeout_s)
                 )
             except asyncio.TimeoutError:
                 pcm = None
         if pcm is None:
             # Fixed, pre-warmed fallback: responsiveness beats exact wording,
             # and in a Live voice nothing is synthesized while the user waits.
-            pcm = self.tts.cached(PROMPTS["ack"])
+            pcm = tts.cached(PROMPTS["ack"])
         return bool(pcm) and await self._play(pcm, device_id)
 
 
