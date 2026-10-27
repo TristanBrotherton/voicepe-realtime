@@ -9,7 +9,7 @@ packages = [{include = "app", from = "."}]
 python = ">=3.11,<3.14"
 # Pinned exactly: this codebase targets the Pipecat 1.x API (LLMContext,
 # InterruptionFrame, FrameSerializer as a BaseObject, FastAPI websocket
-# client without a binary/text mode, MCPClient with one owned session).
+# client without a binary/text mode).
 # 1.13.0 is the version this was developed/tested against. On any Pipecat
 # upgrade, re-check the places that reach into pipecat internals (each is
 # commented): the custom mixed transport (websocket client, media sender

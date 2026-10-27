@@ -1489,11 +1489,10 @@ class Application:
         if self.mcp_client:
             try:
                 logger.info("🔧 Fetching MCP tool definitions...")
-                # Opens the persistent session on first use; the schemas
-                # carry pipecat's call handler, wrapped per tool below. The
-                # listing is bounded and reused across device sessions
-                # (app/mcp_service.py): every device's tool calls wait on
-                # the lock pipecat opens the session under.
+                # Opens the shared session on first use. The listing is
+                # bounded and reused across device sessions
+                # (app/mcp_service.py); our handler per tool is registered
+                # in _register_tool_handlers.
                 mcp_tools_schema = await self.mcp_client.cached_tools()
 
                 # Convert MCP tool schemas to OpenAI format, applying the
@@ -1881,11 +1880,10 @@ class Application:
             logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
         logger.info("✅ Registered timer + memory tools")
 
-        # Register MCP tool handlers if available. Each handler is pipecat's
-        # own tool wrapper under our session policy (app/mcp_service.py);
-        # the MCP client is shared by every device, so it is registered
-        # without pipecat's per-service teardown cleanup, which would close
-        # the shared session whenever one device disconnected.
+        # Register MCP tool handlers if available. Each handler is ours
+        # (app/mcp_service.py), calling Home Assistant over the add-on's own
+        # MCP session, which is shared by every device; a device's teardown
+        # does not touch it.
         if self.mcp_client and mcp_tools_schema:
             try:
                 for function_schema in mcp_tools_schema.standard_tools:
