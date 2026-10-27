@@ -35,6 +35,8 @@ class RealtimeSessionControls:
 
     @property
     def response_active(self) -> bool:
+        # pipecat-internal (1.13 included): the realtime service has no public
+        # "a response is being generated" flag.
         return getattr(self._service, "_current_assistant_response", None) is not None
 
     async def discard_pending_input(self, reason: str = "") -> bool:

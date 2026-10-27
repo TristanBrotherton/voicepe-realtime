@@ -323,9 +323,9 @@ class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
     async def send_client_event(self, event):  # type: ignore[override]
         """Serialize GPT transcription models with their required `languages` field.
 
-        Pipecat 0.0.97 only exposes the legacy singular `language` field on
-        InputAudioTranscription. OpenAI rejects that field for newer GPT
-        transcription models, which instead expect `languages: [<ISO code>]`.
+        Pipecat (1.13 included) only exposes the legacy singular `language`
+        field on InputAudioTranscription. OpenAI rejects that field for newer
+        GPT transcription models, which instead expect `languages: [<ISO code>]`.
         """
         payload = event.model_dump(exclude_none=True)
         transform_gpt_transcription_language(payload)
@@ -398,6 +398,11 @@ class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
         return True
 
     # -- per-turn timeline stamps (app/turn_timeline.py) -----------------------
+    @property
+    def model_name(self) -> str:
+        """The session's model, kept in pipecat's settings since 1.x."""
+        return self.settings.model or ""
+
     def _timeline(self):
         return getattr(self, "turn_timeline", None)
 
@@ -509,10 +514,13 @@ class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
         finally:
             self._resetting_conversation = False
 
-    # Error codes that must NOT kill the realtime session. pipecat 0.0.97's
-    # _receive_task_handler does `_handle_evt_error(evt); return` on EVERY
+    # Error codes that must NOT kill the realtime session. pipecat's
+    # _receive_task_handler does `_handle_evt_error(evt); return` on an
     # error event — the reader task dies, the in-flight reply cuts off
     # mid-sentence and the session is deaf until the next connection death.
+    # (1.13 itself already logs the first two as debug and reads on; the
+    # third is still fatal to it, and the hook below keeps all three
+    # together as our own list.)
     # Observed live (2026-06-10): semantic_vad split one utterance into two
     # turns, the server's auto-created second response collided with the
     # first → conversation_already_has_active_response → the playing reply
@@ -1634,11 +1642,18 @@ class Application:
 
         logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
 
-        # Create new service instance
+        # Create new service instance. The model and the session properties
+        # go in as Settings (pipecat 1.x's runtime-updatable settings; the
+        # direct ``model=``/``session_properties=`` arguments are deprecated).
+        # ``instructions`` inside the session properties become the service's
+        # ``system_instruction``, which is what the adapter sends — a system
+        # message in the context would lose to it, and we never add one.
         return SafeRealtimeLLMService(
             api_key=self.openai_api_key,
-            model=self.model,
-            session_properties=session_properties,
+            settings=SafeRealtimeLLMService.Settings(
+                model=self.model,
+                session_properties=session_properties,
+            ),
             start_audio_paused=False
         )
 
@@ -1925,17 +1940,21 @@ class Application:
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
 
-        pipecat 0.0.97's `_handle_context` does `if not self._context: ...
-        await self._create_response()` — the very first context it sees
-        triggers a real, audible reply. With semantic_vad the SERVER also
-        creates a response per user turn, so the first real turn would
-        double-create → `conversation_already_has_active_response`.
+        pipecat's `_handle_context` (unchanged in 1.13) does `if not
+        self._context: ... await self._create_response()` — the very first
+        context it sees triggers a real, audible reply. With semantic_vad the
+        SERVER also creates a response per user turn, so the first real turn
+        would double-create → `conversation_already_has_active_response`.
 
         Pre-setting an empty context sends the first real turn down the else
         branch instead, so there is no double and no startup speech. This runs
         per SESSION rather than once at startup: with a session per device,
         every new connection has its own service that would otherwise greet
         the room unprompted on connect.
+
+        `_context` and `_llm_needs_conversation_setup` are pipecat internals:
+        1.x has no public way to hand the realtime service its context
+        without also asking for a response (an LLMContextFrame always does).
 
         Args:
             service: The freshly created service.

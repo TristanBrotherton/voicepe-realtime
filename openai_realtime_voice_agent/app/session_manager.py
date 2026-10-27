@@ -3,7 +3,11 @@ import logging
 import time
 from typing import Optional, Dict
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, StartFrame, LLMMessagesUpdateFrame
@@ -271,7 +275,18 @@ class SessionManager:
             LLMContextAggregatorPair with cached or new context
         """
         context = self.create_context_for_new_session(client_id)
-        aggregator_pair = LLMContextAggregatorPair(context)
+        # Both runtimes are speech-to-speech services that decide the user's
+        # turns themselves (OpenAI's server VAD, GPT-Live's own events), so
+        # the aggregators take their turn boundaries from the service
+        # (ExternalUserTurnStrategies) and write context the realtime way.
+        # Spelled out rather than left to auto-detection: the default
+        # strategies would build a local smart-turn ONNX session per device
+        # connection and start user turns on transcripts.
+        aggregator_pair = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(user_turn_strategies=ExternalUserTurnStrategies()),
+            realtime_service_mode=True,
+        )
         self.set_context_aggregator(client_id, aggregator_pair)
         return aggregator_pair
     

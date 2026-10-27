@@ -348,6 +348,9 @@ class ConnectionRecovery(FrameProcessor):
         and a half-open socket — the failure mode that produced NO error at
         all — cannot answer it.
         """
+        # ``_websocket`` is pipecat-internal (1.13 included): the realtime
+        # service offers no public liveness probe, and the GPT-Live service
+        # keeps the same attribute name on purpose.
         socket = getattr(self._service, "_websocket", None)
         if socket is None:
             return False
@@ -1837,6 +1840,10 @@ class WebSocketHandler:
             connection.wake_capture.finalize()
         service = connection.openai_service
         if service is not None:
+            # GPT-Live has a public disconnect(); pipecat's realtime service
+            # only exposes the socket close through its (internal)
+            # _disconnect, which the pipeline's own cancel/cleanup also
+            # calls — this is the belt to that braces.
             for method in ("disconnect", "_disconnect", "cleanup"):
                 closer = getattr(service, method, None)
                 if closer is None:

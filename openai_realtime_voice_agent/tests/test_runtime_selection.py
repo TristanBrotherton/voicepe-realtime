@@ -76,7 +76,7 @@ class TestRuntimeSelection(unittest.IsolatedAsyncioTestCase):
         app = make_app(REALTIME)
         service = await app.create_openai_service(connection())
         self.assertIsInstance(service, SafeRealtimeLLMService)
-        props = service._session_properties
+        props = service.settings.session_properties
         self.assertEqual([t["name"] for t in props.tools], EXPECTED_TOOLS)
         self.assertEqual(props.audio.output.voice, "marin")
         self.assertEqual(props.audio.input.turn_detection.type, "semantic_vad")

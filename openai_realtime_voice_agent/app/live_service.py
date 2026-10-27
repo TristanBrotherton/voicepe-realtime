@@ -71,6 +71,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
+from pipecat.services.settings import LLMSettings
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
 from app.live_audio import WITHHELD_REASONS, LiveOutputAudio, OutputAudioCapture, OutputChunk
@@ -746,6 +748,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         router=None,
         **kwargs,
     ):
+        # pipecat 1.x keeps a service's model in its settings (the single
+        # source of truth for metrics and ``settings.model``); every field is
+        # named so AIService.start() does not report uninitialised ones. The
+        # prompts are ours (session instructions on the wire, not a
+        # system_instruction composed by pipecat), so that stays None.
+        kwargs.setdefault("settings", LLMSettings(
+            model=config.model, system_instruction=None, temperature=None,
+            max_tokens=None, top_p=None, top_k=None, frequency_penalty=None,
+            presence_penalty=None, seed=None, filter_incomplete_user_turns=False,
+            user_turn_completion_config=None,
+        ))
         super().__init__(**kwargs)
         self.api_key = api_key
         self.base_url = base_url
@@ -761,10 +774,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # billing gate, so it cannot extend the session's idle deadline.
         self.on_demand = bool(on_demand)
         self.config = config
-        try:
-            self.set_model_name(config.model)
-        except Exception:  # pragma: no cover - pipecat API drift
-            pass
         self.instructions = instructions
         self.backend_instructions = backend_instructions
         self.tools = list(tools)
@@ -1064,6 +1073,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     def can_generate_metrics(self) -> bool:
         return True
+
+    def service_metadata_frame(self) -> LLMServiceMetadataFrame:
+        """Announce a speech-to-speech service whose turns GPT-Live decides.
+
+        The context aggregators then adopt the UserStarted/StoppedSpeaking
+        frames this service broadcasts instead of detecting turns themselves,
+        and write the user transcript the realtime way.
+        """
+        return LLMServiceMetadataFrame(
+            service_name=self.name,
+            is_realtime_service=True,
+            user_turn_strategies=ExternalUserTurnStrategies(),
+        )
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
@@ -2787,7 +2809,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 if not continuation:
                     timeline.user_turn_seq += 1
                 timeline.mark("speech_started")
-                turn.meta.setdefault("model_name", self.model_name)
+                turn.meta.setdefault("model_name", self.settings.model)
             await self._broadcast(UserStartedSpeakingFrame)
         else:
             await self.push_frame(LLMFullResponseStartFrame())
