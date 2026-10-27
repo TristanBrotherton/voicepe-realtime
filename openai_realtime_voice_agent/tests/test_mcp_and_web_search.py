@@ -2,6 +2,8 @@
 import asyncio
 import contextlib
 import unittest
+
+import anyio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -111,6 +113,107 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         params = Params("HassTurnOn")
         await client._streamable_http_tool_wrapper(params)
         self.assertIn("not reachable", params.results[0])
+
+
+class SharedSessionFake:
+    """Sessions whose calls can be held open, fail after sending, or find the
+    session already closed; a call on a session closed under it fails."""
+
+    def __init__(self, plan):
+        self.plan = list(plan)   # one entry per session: "ok", "fail_after_send", "never_sent"
+        self.sessions = []
+        self.gate = asyncio.Event()
+        self.gate.set()
+        self.started = asyncio.Event()
+
+    def make(self, read, write):
+        fake = self
+
+        class Session:
+            def __init__(self):
+                self.mode = fake.plan.pop(0) if fake.plan else "ok"
+                self.closed = False
+                fake.sessions.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                self.closed = True
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def send_ping(self):
+                return None
+
+            async def call_tool(self, name, arguments=None):
+                if self.mode == "never_sent":
+                    raise anyio.ClosedResourceError()
+                if self.mode == "fail_after_send" and name.lower().startswith("fail"):
+                    raise RuntimeError("connection reset after send")
+                if name.lower().startswith("slow"):
+                    fake.started.set()
+                    await fake.gate.wait()
+                if self.closed:
+                    raise RuntimeError("session closed under the call")
+                return SimpleNamespace(content=[SimpleNamespace(text=f"{name} ok")])
+
+        return Session()
+
+
+def make_shared(plan):
+    fake = SharedSessionFake(plan)
+    client = PersistentMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
+    client._client = fake_transport
+    client._session = fake.make
+    return client, fake
+
+
+class TestSharedSessionSafety(unittest.IsolatedAsyncioTestCase):
+    async def test_a_failure_never_closes_the_session_under_another_call(self):
+        client, fake = make_shared(["fail_after_send"])
+        fake.gate.clear()
+        slow = Params("SlowHassTurnOn")
+        slow_task = asyncio.create_task(client._streamable_http_tool_wrapper(slow))
+        await fake.started.wait()
+        failed = Params("FailHassTurnOff")
+        await client._streamable_http_tool_wrapper(failed)
+        self.assertIn("may or may not have completed", failed.results[0])
+        fake.gate.set()
+        await slow_task
+        self.assertEqual(slow.results, ["SlowHassTurnOn ok"])
+        self.assertTrue(fake.sessions[0].closed)   # retired, closed once its call finished
+        await client.aclose()
+
+    async def test_the_call_after_a_failure_gets_a_new_session(self):
+        client, fake = make_shared(["fail_after_send", "ok"])
+        failed = Params("FailHassTurnOff")
+        await client._streamable_http_tool_wrapper(failed)
+        self.assertTrue(fake.sessions[0].closed)
+        nxt = Params("HassTurnOn")
+        await client._streamable_http_tool_wrapper(nxt)
+        self.assertEqual(nxt.results, ["HassTurnOn ok"])
+        self.assertEqual(len(fake.sessions), 2)
+        await client.aclose()
+
+    async def test_a_call_that_was_never_sent_is_retried_not_reported_uncertain(self):
+        client, fake = make_shared(["never_sent", "ok"])
+        params = Params("HassTurnOn")
+        await client._streamable_http_tool_wrapper(params)
+        self.assertEqual(params.results, ["HassTurnOn ok"])
+        self.assertEqual(len(fake.sessions), 2)
+        await client.aclose()
+
+    async def test_never_sent_twice_is_not_reachable(self):
+        client, fake = make_shared(["never_sent", "never_sent"])
+        params = Params("HassTurnOn")
+        await client._streamable_http_tool_wrapper(params)
+        self.assertEqual(len(params.results), 1)
+        self.assertIn("not reachable", params.results[0])
+        self.assertNotIn("may or may not", params.results[0])
+        await client.aclose()
 
 
 class FakeResponses:

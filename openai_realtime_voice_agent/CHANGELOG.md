@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.24 (fork)
+
+### Fixed: one device's failed Home Assistant call could cut off another's
+
+- Every device shares one Home Assistant MCP session. When a call failed
+  after it was sent, the session was closed at once, also under calls other
+  devices still had running on it; those then reported "may or may not have
+  completed" even when their action had worked. A failed session is now
+  retired: new calls get a fresh session, and the old one closes once the
+  calls still running on it have finished.
+- A call whose session had already closed before it was sent was reported as
+  "may or may not have completed", although nothing had reached Home
+  Assistant. It is now retried once on a fresh session, and reported as "not
+  reachable" if that fails too.
+
 ## 0.19.23 (fork)
 
 ### Fixed: a follow-up question went unanswered
