@@ -202,6 +202,11 @@ def acknowledgement_state(text: str) -> str:
     match = re.search(r",\s*([A-Za-z'\u2019-]+)\s*[.!]?\s*$", text or "")
     if match and _is_form_of_address(match.group(1)):
         text = text[:match.start()] + "."
+    elif match and match.group(0).rstrip()[-1:] not in ".!" and _is_name_start(match.group(1)):
+        # The name is still streaming in ("One moment, <na…"): an
+        # acknowledgement still forming, not a claim (Kitchen 2026-10-26).
+        if acknowledgement_state(text[:match.start()] + ".") in (ACK, ACK_PREFIX):
+            return ACK_PREFIX
     words = _words(text)
     if not words:
         return ACK_PREFIX
@@ -250,6 +255,12 @@ def _is_form_of_address(word: str) -> bool:
     """A configured household name, and nothing else."""
     folded = word.replace("\u2019", "'").strip("'-").lower()
     return bool(folded) and folded in KNOWN_NAMES
+
+
+def _is_name_start(word: str) -> bool:
+    """The start of a configured household name, cut off by streaming."""
+    folded = word.replace("\u2019", "'").strip("'-").lower()
+    return bool(folded) and any(name.startswith(folded) and name != folded for name in KNOWN_NAMES)
 
 
 HELD_SAMPLE_MAX_WORDS = 14

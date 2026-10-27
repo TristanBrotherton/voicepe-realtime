@@ -2,6 +2,20 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.22 (fork)
+
+### Fixed: an acknowledgement was cut off mid-word
+
+- On GPT-Live, "One moment, <name>." could stop after "One mo-" when the
+  result of a quick Home Assistant action came in, followed by a pause before
+  the confirmation. Audio that arrived while the voice's words were still a
+  complete acknowledgement now plays to the end; only what the voice says
+  after it is held back or dropped.
+- A household name still streaming in (half of it after "One moment,") no longer counts as
+  a claim, so it no longer cuts the acknowledgement off.
+- An acknowledgement the voice is in the middle of when the request is
+  routed again is judged as one phrase, not from its last words alone.
+
 ## 0.19.21 (fork)
 
 ### Fixed: a new session restored from the cache resent old tool results

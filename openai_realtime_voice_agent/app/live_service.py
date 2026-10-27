@@ -935,9 +935,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # acknowledgement (None: no timestamped acknowledgement yet).
         self._gate_ack_end_ms: Optional[float] = None
         self._gate_timeline_seen = False
+        # When the voice's words stopped being a complete acknowledgement
+        # (monotonic; None while they are one). Lagged audio that arrived
+        # before then is that acknowledgement's own sound and plays, so the
+        # words after it never cut it off mid-word (Kitchen 2026-10-26: "One
+        # mo-").
+        self._gate_ack_until: Optional[float] = None
         # Everything the voice said while the gate was "pre" this utterance,
-        # including before the transcript closed (_gate_text restarts at the
-        # close). The fast chat path refuses to open over a claimed outcome.
+        # including before the transcript closed. The fast chat path refuses
+        # to open over a claimed outcome.
         self._gate_turn_text = ""
         self._gate_held: List = []
         self._gate_text = ""
@@ -3515,6 +3521,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_drop_until_ack = False
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
+        self._gate_ack_until = None
 
     async def _router_start(self, text: str) -> None:
         """Route the utterance that just closed. Once per utterance."""
@@ -3553,14 +3560,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                       started_mono=time.monotonic(), key=key)
         self._op = op
         self.router_stats["routed"] += 1
-        self._gate_text = ""
-        self._gate_blocked = False
-        self._gate_ack_end_ms = None
-        self._gate_timeline_seen = False
-        if self._gate != "pre":
-            self._gate_lag.clear()
-            self._gate_held.clear()
-        self._gate = "pre"
+        self._gate_continue_utterance()
         meta = self._turn_meta()
         if meta is not None:
             meta["route_op"] = op.op_id
@@ -4227,14 +4227,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 if wait > 0:
                     await asyncio.sleep(wait)
                     continue
-                if acknowledgement_state(self._gate_text) != ACK:
+                if not self._gate_lag_is_ack(arrived, end_ms):
                     # Only a complete acknowledgement is heard; a phrase still
-                    # forming ("Sure, one…") waits for its next words.
-                    await asyncio.sleep(0.05)
-                    continue
-                if not self._gate_timeline_allows(end_ms):
-                    # The audio runs past the last word known to be part of
-                    # the acknowledgement: wait for its transcript.
+                    # forming ("Sure, one…", "One moment, <na…") waits for
+                    # its next words, and audio past the last word known to be
+                    # part of the acknowledgement waits for its transcript.
                     await asyncio.sleep(0.05)
                     continue
                 if self._gate != "pre" or self._gate_blocked or not self._gate_lag:
@@ -4243,6 +4240,46 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._enqueue_audio(chunk)
         finally:
             self._gate_release_task = None
+
+    def _gate_continue_utterance(self) -> None:
+        """The gate for a newly routed utterance.
+
+        An acknowledgement the voice is in the middle of when the transcript
+        closes ("One moment," and then ", Alex." after the close) is still
+        one phrase: its words so far are kept, so the rest is judged with
+        them and not on its own (Kitchen 2026-10-26: ", <name>." alone never
+        formed an acknowledgement, and the rest of "One moment" was dropped
+        mid-word). Speech already held as a claim starts over, as before.
+        """
+        if self._gate != "pre" or self._gate_blocked:
+            self._gate_text = ""
+            self._gate_ack_end_ms = None
+            self._gate_timeline_seen = False
+            self._gate_ack_until = None
+        self._gate_blocked = False
+        if self._gate != "pre":
+            self._gate_lag.clear()
+            self._gate_held.clear()
+        self._gate = "pre"
+
+    def _gate_lag_is_ack(self, arrived: float, end_ms: Optional[float]) -> bool:
+        """A lagged chunk is acknowledgement audio: the words are one now, or
+        it arrived before they stopped being one."""
+        if acknowledgement_state(self._gate_text) != ACK and (
+                self._gate_ack_until is None or arrived > self._gate_ack_until):
+            return False
+        return self._gate_timeline_allows(end_ms)
+
+    def _gate_play_ack_tail(self) -> None:
+        """Play the lagged audio that arrived while the voice's words were
+        still a complete acknowledgement. The transcript runs ahead of the
+        audio, so that audio is the acknowledgement's own words; held
+        alongside what came after it, it was dropped mid-word."""
+        until = self._gate_ack_until
+        while (self._gate_lag and until is not None and self._gate_lag[0][0] <= until
+               and self._gate_timeline_allows(self._gate_lag[0][2])):
+            _, chunk, _end = self._gate_lag.popleft()
+            self._enqueue_audio(chunk)
 
     def _gate_timeline_allows(self, end_ms: Optional[float]) -> bool:
         """Session-timeline check for one lagged chunk (improvement 5)."""
@@ -4255,15 +4292,22 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     def _gate_note_transcript(self, delta: str, end_ms=None) -> None:
         if self._gate != "pre":
             return
+        was_ack = acknowledgement_state(self._gate_text) == ACK
         self._gate_text += delta
         self._gate_turn_text = (self._gate_turn_text + delta)[-2000:]
         if isinstance(end_ms, (int, float)):
             self._gate_timeline_seen = True
             if not self._gate_blocked and acknowledgement_state(self._gate_text) == ACK:
                 self._gate_ack_end_ms = float(end_ms)
-        if self._gate_blocked or acknowledgement_state(self._gate_text) in (ACK, ACK_PREFIX):
+        state = acknowledgement_state(self._gate_text)
+        if state == ACK:
+            self._gate_ack_until = None
+        elif was_ack and self._gate_ack_until is None and not self._gate_blocked:
+            self._gate_ack_until = time.monotonic()
+        if self._gate_blocked or state in (ACK, ACK_PREFIX):
             return
         self._gate_blocked = True
+        self._gate_play_ack_tail()
         self._gate_held.extend(chunk for _, chunk, _end in self._gate_lag)
         self._gate_lag.clear()
         logger.info(
@@ -4300,9 +4344,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         """A verified result is going in. Acknowledgement audio still in the
         lag plays; held speech (a guess at the outcome) is dropped unheard.
         Returns the number of chunks dropped."""
+        held_as_claim = self._gate_blocked
+        ack_tail = self._gate_ack_until is not None
         # Only a complete acknowledgement still in the lag may play; a phrase
         # that never completed ("Absolutely.") is dropped with the guesses.
         if not self._gate_blocked and acknowledgement_state(self._gate_text) != ACK:
+            # What arrived while the words were still a complete
+            # acknowledgement plays; only the rest is dropped.
+            self._gate_play_ack_tail()
             self._gate_held = [chunk for _, chunk, _end in self._gate_lag] + list(self._gate_held)
             self._gate_lag.clear()
             self._gate_blocked = True
@@ -4343,7 +4392,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if held:
             self._gate_dropped += held
             self.router_stats["held_dropped"] += 1
-            logger.info(f"⏹️ live dropped {held} held chunks spoken before the verified result")
+            # Why it was held, without the words: a claim the transcript stopped,
+            # or speech that never formed a complete acknowledgement.
+            logger.info(f"⏹️ live dropped {held} held chunks spoken before the verified result "
+                        f"({'held as a claim' if held_as_claim else 'never a complete acknowledgement'}"
+                        f"{', after acknowledgement audio' if ack_tail else ''})")
         return held
 
     def _note_heard(self) -> None:
@@ -4450,14 +4503,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op.background = False
         op.seq = seq
         self._op = op
-        self._gate_text = ""
-        self._gate_blocked = False
-        self._gate_ack_end_ms = None
-        self._gate_timeline_seen = False
-        if self._gate != "pre":
-            self._gate_lag.clear()
-            self._gate_held.clear()
-        self._gate = "pre"
+        self._gate_continue_utterance()
         if op.done:
             await self._router_deliver(op)
             self._finish_task(op, SESSION)
@@ -4545,6 +4591,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._gate_reset("open")
             return
         if not self._gate_blocked and acknowledgement_state(self._gate_text) != ACK:
+            # What arrived while the words were still a complete
+            # acknowledgement plays; only the rest is dropped.
+            self._gate_play_ack_tail()
             self._gate_held = [chunk for _, chunk, _end in self._gate_lag] + list(self._gate_held)
             self._gate_lag.clear()
             self._gate_blocked = True
