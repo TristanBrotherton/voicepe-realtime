@@ -11,7 +11,7 @@
 name: third-party-gate
 
 on:
-  pull_request_target: # zizmor: ignore[dangerous-triggers] no checkout, no PR code; reads metadata and sets a status
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] no checkout, no PR code; reads metadata and sets a status
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions: {}
