@@ -143,17 +143,19 @@ class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
     goes out as it is: no padding, no PCM modification; Realtime frames are
     unaffected.
 
-    The sender holds audio back in two places: the stream resampler it feeds
-    every frame through keeps a filter tail (hundreds of samples), and
-    ``_audio_runs`` keeps the sub-chunk rest. The fence flushes the resampler
-    into the runs first, as pipecat's own end-of-speech flush does, then
-    drains the runs.
+    The sender's stream resampler is left alone. At equal rates — the Live
+    service's 24 kHz on the 24 kHz transport the handler configures — it is
+    a pass-through holding nothing, so the drained runs are the whole batch.
+    At other rates the filter would hold a tail back, but flushing it here
+    would reset the stream at every batch seam of one reply and click (pipecat
+    flushes it only at the end of speech); batches are byte-exact at equal
+    rates only, which is the one configuration the serializer speaks.
 
     pipecat 1.13 has no public hook for "flush the tail before this message"
     (``_enqueue_flushed_audio_buffer`` pads to a full chunk and is private
-    too), so this reaches into ``MediaSender``: ``_resampler``,
-    ``_buffer_audio``, ``_audio_runs``, ``_take_audio_chunk`` and
-    ``_audio_queue``. Re-check on every pipecat upgrade.
+    too), so this reaches into ``MediaSender``'s buffer: ``_audio_runs``,
+    ``_take_audio_chunk`` and ``_audio_queue``. Re-check on every pipecat
+    upgrade.
     """
 
     async def _handle_frame(self, frame):
@@ -161,13 +163,7 @@ class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
                 and isinstance(frame.message, dict)
                 and frame.message.get('type') == 'output_batch_end'):
             sender = self._media_senders.get(frame.transport_destination)
-            if sender is not None:
-                # The resampler's tail belongs at the end of this batch,
-                # with the last run's flag (pipecat's flush does the same).
-                tail = await sender._resampler.flush()
-                if tail:
-                    last_uninterruptible = sender._audio_runs[-1][1] if sender._audio_runs else False
-                    sender._buffer_audio(tail, uninterruptible=last_uninterruptible)
+            if sender is not None and sender._audio_runs:
                 while sender._audio_runs:
                     audio, uninterruptible = sender._take_audio_chunk()
                     tail = TTSAudioRawFrame(

@@ -88,18 +88,16 @@ class TestMixedTransport(unittest.IsolatedAsyncioTestCase):
 
 
 class TestBatchFenceFlush(unittest.IsolatedAsyncioTestCase):
-    """An output_batch_end marker follows ALL of its batch's PCM.
+    """An output_batch_end marker follows all of its batch's PCM, and a reply
+    split into batches sounds like one that was not.
 
-    pipecat's media sender resamples reply audio through a stream resampler
-    that keeps a filter tail back, and then cuts whole chunks, keeping the
-    sub-chunk rest back too. The fence has to flush both, or the marker
-    precedes the batch's last samples.
+    pipecat's media sender feeds reply audio through a stream resampler
+    (a pass-through at equal rates) and then cuts whole chunks, keeping the
+    sub-chunk rest back. The fence drains that rest; it never flushes the
+    resampler, which would reset the filter at every seam.
     """
 
-    async def test_marker_follows_the_resampler_tail_and_the_partial_chunk(self):
-        import math
-
-        from pipecat.frames.frames import OutputTransportMessageFrame, TTSAudioRawFrame
+    def setUp(self):
         from pipecat.transports.base_output import BaseOutputTransport
         from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
@@ -111,35 +109,66 @@ class TestBatchFenceFlush(unittest.IsolatedAsyncioTestCase):
             FastAPIWebsocketParams(serializer=RawAudioSerializer("kitchen"),
                                    audio_out_enabled=True, audio_out_sample_rate=24000),
         )
-        out = transport.output()
-        chunk_size = 960 * 2  # 40 ms at 24 kHz mono 16-bit
-        sender = BaseOutputTransport.MediaSender(
-            out, destination=None, sample_rate=24000, audio_chunk_size=chunk_size, params=out._params
+        self.out = transport.output()
+        self.sender = BaseOutputTransport.MediaSender(
+            self.out, destination=None, sample_rate=24000, audio_chunk_size=960 * 2,  # 40 ms
+            params=self.out._params,
         )
-        queued = []
+        self.queued = []
+        queued = self.queued
 
         class Queue:
             async def put(self, frame):
                 queued.append(frame)
 
-        sender._audio_queue = Queue()
-        out._media_senders[None] = sender
+        self.sender._audio_queue = Queue()
+        self.out._media_senders[None] = self.sender
 
-        # 100 ms of a 16 kHz tone: resampled to 24 kHz it is 2400 samples,
-        # i.e. 2.5 chunks, and the resampler holds its filter tail back.
-        samples_16k = 1600
-        pcm = b"".join(
-            int(8000 * math.sin(2 * math.pi * 440 * i / 16000)).to_bytes(2, "little", signed=True)
-            for i in range(samples_16k)
+    @staticmethod
+    def tone(samples, rate, start=0):
+        import math
+        return b"".join(
+            int(8000 * math.sin(2 * math.pi * 440 * (start + i) / rate)).to_bytes(2, "little", signed=True)
+            for i in range(samples)
         )
-        await sender.handle_audio_frame(TTSAudioRawFrame(pcm, sample_rate=16000, num_channels=1))
-        marker = OutputTransportMessageFrame(message={"type": "output_batch_end", "output_batch_id": "b1"})
-        await out._handle_frame(marker)
 
-        self.assertIs(queued[-1], marker, "the marker goes out last")
-        audio = b"".join(f.audio for f in queued if isinstance(f, TTSAudioRawFrame))
-        self.assertAlmostEqual(len(audio) // 2, 2400, delta=2, msg="every resampled sample precedes the marker")
-        self.assertEqual(sender._audio_runs, type(sender._audio_runs)(), "nothing held back")
+    async def feed(self, pcm, rate):
+        from pipecat.frames.frames import TTSAudioRawFrame
+        await self.sender.handle_audio_frame(TTSAudioRawFrame(pcm, sample_rate=rate, num_channels=1))
+
+    async def fence(self, batch):
+        from pipecat.frames.frames import OutputTransportMessageFrame
+        marker = OutputTransportMessageFrame(message={"type": "output_batch_end", "output_batch_id": batch})
+        await self.out._handle_frame(marker)
+        return marker
+
+    def audio(self):
+        from pipecat.frames.frames import TTSAudioRawFrame
+        return b"".join(f.audio for f in self.queued if isinstance(f, TTSAudioRawFrame))
+
+    async def test_marker_follows_every_sample_at_the_transport_rate(self):
+        pcm = self.tone(2400, 24000)  # 100 ms: 2.5 chunks, the half chunk held back
+        await self.feed(pcm, 24000)
+        marker = await self.fence("b1")
+        self.assertIs(self.queued[-1], marker, "the marker goes out last")
+        self.assertEqual(self.audio(), pcm, "every sample precedes the marker, unmodified")
+        self.assertEqual(len(self.sender._audio_runs), 0, "nothing held back")
+
+    async def test_a_reply_split_into_batches_resamples_like_an_unsplit_one(self):
+        # At another rate the resampler holds a filter tail; a fence must not
+        # flush and restart it mid-reply, or the seam clicks.
+        first, second = self.tone(1600, 16000), self.tone(1600, 16000, start=1600)
+        await self.feed(first, 16000)
+        await self.fence("b1")
+        await self.feed(second, 16000)
+        await self.fence("b2")
+        split = self.audio()
+
+        self.setUp()
+        await self.feed(first, 16000)
+        await self.feed(second, 16000)
+        await self.fence("b3")
+        self.assertEqual(split, self.audio(), "the seam changed the audio")
 
 
 if __name__ == "__main__":
