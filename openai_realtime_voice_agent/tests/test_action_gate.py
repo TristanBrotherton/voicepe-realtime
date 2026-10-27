@@ -260,7 +260,8 @@ class TestWrapperIntegration(unittest.IsolatedAsyncioTestCase):
         base = llm_mod.OpenAIRealtimeLLMService
         self._orig = base.register_function
 
-        def fake_register(_self, name, handler, start_callback=None, cancel_on_interruption=True):
+        def fake_register(_self, name, handler, *, cancel_on_interruption=None,
+                          timeout_secs=None, cancellable_by_llm=None):
             self.registered[name] = handler
 
         base.register_function = fake_register

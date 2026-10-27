@@ -37,21 +37,39 @@ logger = logging.getLogger(__name__)
 class GuardedToolsMixin:
     """register_function() with the speaker/action gates and liveness ticks."""
 
-    def register_function(self, function_name, handler, start_callback=None, *,
-                          cancel_on_interruption: bool = True):  # type: ignore[override]
-        """Force cancel_on_interruption=False for every tool registration.
+    def register_function(self, function_name, handler, *,
+                          cancel_on_interruption=None, timeout_secs=None,
+                          cancellable_by_llm=None):  # type: ignore[override]
+        """Register every tool as a synchronous call that survives interruptions.
 
-        pipecat cancels in-flight function-call tasks on EVERY user-speech
-        interruption — and semantic_vad fires one per utterance fragment, so
-        merely continuing your own sentence kills the tool call your previous
-        fragment started. By then the HTTP request to Home Assistant has
-        usually already been SENT: the action executes, but its result never
-        reaches the model, which then tells the user it failed (observed
-        live: the lights turned ON while the assistant claimed they
+        Synchronous (pipecat's ``cancel_on_interruption=True``) is what makes
+        the model WAIT for the result: the aggregator holds the turn on an
+        ``IN_PROGRESS`` placeholder and the Realtime API gets the
+        ``function_call_output`` before the next response is created. Since
+        pipecat 1.0 the other value, ``False``, no longer means merely "don't
+        cancel": it makes the tool *asynchronous* — the model carries on
+        talking without the result, a "still running" marker replaces the
+        placeholder and an async-tool guide is appended to the system
+        instruction. None of that is wanted here, so the flag the caller
+        passes is ignored and the registration is always synchronous.
+
+        What we still need from the old ``False`` is the part about
+        interruptions. pipecat cancels in-flight synchronous calls on EVERY
+        user-speech interruption — and semantic_vad fires one per utterance
+        fragment, so merely continuing your own sentence kills the tool call
+        your previous fragment started. By then the HTTP request to Home
+        Assistant has usually already been SENT: the action executes, but its
+        result never reaches the model, which then tells the user it failed
+        (observed live: the lights turned ON while the assistant claimed they
         wouldn't). Our tools are all short-lived (HA service calls, one web
         search), so letting them finish and report the truth always beats
-        killing them halfway. This single override covers every registration
-        path (MCP tools via pipecat's MCPClient, web_search, disconnect).
+        killing them halfway. pipecat 1.x offers no per-tool "synchronous but
+        uninterruptible" option — the documented switch,
+        ``enable_interruptions=False`` on the user-turn start strategy, would
+        also stop the InterruptionFrame that flushes queued reply audio on
+        barge-in — so ``_handle_interruptions`` below keeps the calls alive
+        instead. This single override covers every registration path (MCP
+        tools, web_search, timers, memory, OpenClaw, disconnect).
 
         The handler is also wrapped to tick its connection's liveness around its run, so
         the PhaseEmitter's thinking-watchdog knows a tool is in flight and a
@@ -161,8 +179,21 @@ class GuardedToolsMixin:
                 self.turn_liveness.tool_finished()
 
         super().register_function(
-            function_name, liveness_tracked, start_callback, cancel_on_interruption=False
+            function_name, liveness_tracked, cancel_on_interruption=True,
+            timeout_secs=timeout_secs, cancellable_by_llm=cancellable_by_llm,
         )
+
+    async def _handle_interruptions(self, frame) -> None:
+        """Keep in-flight tool calls alive across user-speech interruptions.
+
+        Overrides pipecat's ``LLMService._handle_interruptions``, which cancels
+        every synchronous call on an InterruptionFrame. See register_function:
+        there is no public per-tool option for this in pipecat 1.x. The frame
+        still reaches the base FrameProcessor (queue flush) and, for the
+        Realtime service, ``_handle_interruption`` (response bookkeeping);
+        only the function-call cancellation is skipped.
+        """
+        return None
 
     def gate_context(self):
         """(device_id, user_turn_seq, wake_seq) for confirmation bookkeeping."""

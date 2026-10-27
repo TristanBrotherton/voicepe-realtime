@@ -113,7 +113,8 @@ class TestFastLocalReadsAreSilent(unittest.IsolatedAsyncioTestCase):
         import pipecat.services.openai.realtime.llm as llm_mod
         self._orig = llm_mod.OpenAIRealtimeLLMService.register_function
 
-        def fake_register(_self, name, handler, start_callback=None, cancel_on_interruption=True):
+        def fake_register(_self, name, handler, *, cancel_on_interruption=None,
+                          timeout_secs=None, cancellable_by_llm=None):
             self.registered[name] = handler
 
         llm_mod.OpenAIRealtimeLLMService.register_function = fake_register
