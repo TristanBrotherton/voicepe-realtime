@@ -7,11 +7,14 @@ session whose transport died and connects again on the next call. What
 stays ours is the policy around each call, applied by ``guarded_handler``
 on top of the handler the schema from ``MCPClient.tools()`` carries:
 
-* A session that has been idle longer than ``IDLE_PING_S`` is pinged first
-  (an MCP ping on the live session, bounded by ``PING_TIMEOUT_S``). A dead
-  idle session is reopened before anything is sent — but only while no
-  call is on it; otherwise pipecat's own reconnect takes over, and the
-  shared session is never closed under another device's call.
+* A session that has been idle longer than ``IDLE_PING_S``, or that a call
+  failed on, is pinged before reuse (an MCP ping on the live session,
+  bounded by ``PING_TIMEOUT_S``). A dead session is replaced before
+  anything is sent: pipecat holds one session per client, so calls still
+  on the old one are given ``DRAIN_TIMEOUT_S`` to finish first. A failure
+  pipecat does not treat as a lost connection — a call timeout, or
+  "Session terminated" after a Home Assistant restart — therefore costs
+  one call, not every call until the next quiet minute.
 * A call is bounded by ``CALL_TIMEOUT_S``; a result reaches the model
   exactly once.
 * Once the tool call itself has been sent, a failure is NOT retried: the
@@ -20,12 +23,12 @@ on top of the handler the schema from ``MCPClient.tools()`` carries:
   "Error calling mcp tool …" line, which reads as a safe-to-retry failure.
 * The tool list a new device session needs (``cached_tools``) is bounded by
   ``OPEN_TIMEOUT_S`` and reused for ``TOOLS_CACHE_S``; when a refresh fails
-  the last listing is kept, so a reconnecting device never loses its tools
-  to a slow Home Assistant.
+  the last listing is kept and not retried for ``TOOLS_RETRY_S``, so a
+  reconnecting device neither loses its tools nor waits out the bound on
+  every connect while Home Assistant is down.
 
 ``MCP_PERSISTENT_SESSION=false`` gives each call its own client and session
-(``PerCallMCPClient``), as pipecat 0.0.x did: nothing is shared, so nothing
-can be closed under another call.
+(``PerCallMCPClient``), as pipecat 0.0.x did: nothing is shared.
 """
 import asyncio
 import logging
@@ -51,6 +54,7 @@ PIPECAT_CALL_ERROR_PREFIX = "Error calling mcp tool "
 CALL_TIMEOUT_S = 45.0
 OPEN_TIMEOUT_S = 15.0
 TOOLS_CACHE_S = 300.0
+TOOLS_RETRY_S = 30.0
 
 
 def not_reachable(name: str) -> str:
@@ -68,29 +72,34 @@ class _GuardedCall:
     """One tool call: its result reaches the model exactly once.
 
     pipecat's wrapper delivers through the intercepted callback; a failure
-    it reports as a result string becomes the honest wording. Our own
-    deliveries (not reachable, not confirmed) are skipped once anything
-    has been delivered.
+    it reports as a result string becomes the honest wording and marks the
+    call failed. Our own deliveries (not reachable, not confirmed) are
+    skipped once a delivery has completed — completed, not started: a
+    delivery cancelled by the call bound still gets the fallback.
     """
 
     def __init__(self, params):
         self.name = params.function_name
         self._original = params.result_callback
         self.delivered = False
-        self.params = intercept_result_callback(params, self._on_result)
+        self.failed = False
+        self.params = intercept_result_callback(params, self._on_result, on_delivered=self._on_delivered)
 
     def _on_result(self, result):
-        self.delivered = True
         if isinstance(result, str) and result.startswith(PIPECAT_CALL_ERROR_PREFIX):
             logger.warning(f"⚠️ MCP tool {self.name} failed after sending: {result}")
+            self.failed = True
             return not_confirmed(self.name)
         return result
+
+    def _on_delivered(self):
+        self.delivered = True
 
     async def deliver(self, result) -> None:
         if self.delivered:
             return
-        self.delivered = True
         await self._original(result)
+        self.delivered = True
 
 
 async def _close_quietly(client: MCPClient) -> None:
@@ -100,17 +109,11 @@ async def _close_quietly(client: MCPClient) -> None:
         logger.debug(f"MCP session close: {e!r}")
 
 
-def _handler_for(schema, name):
-    for function_schema in schema.standard_tools:
-        if function_schema.name == name:
-            return function_schema.handler
-    return None
-
-
 class _ToolsCache:
     """A tool listing reused for TOOLS_CACHE_S; kept when a refresh fails."""
 
     TOOLS_CACHE_S = TOOLS_CACHE_S
+    TOOLS_RETRY_S = TOOLS_RETRY_S
 
     def __init__(self):
         self._tools_cache = None
@@ -121,7 +124,8 @@ class _ToolsCache:
 
         A listing younger than TOOLS_CACHE_S is reused, so a device that
         reconnects (follow-up windows, keepalive drops) does not list again.
-        A refresh that fails or times out keeps the last listing.
+        A refresh that fails or times out keeps the last listing and is not
+        tried again for TOOLS_RETRY_S.
         """
         if self._tools_cache is not None and time.monotonic() - self._tools_cached_at < self.TOOLS_CACHE_S:
             return self._tools_cache
@@ -131,6 +135,7 @@ class _ToolsCache:
             if self._tools_cache is None:
                 raise
             logger.warning(f"⚠️ MCP tool listing failed ({e!r}); keeping the previous list")
+            self._tools_cached_at = time.monotonic() - self.TOOLS_CACHE_S + self.TOOLS_RETRY_S
             return self._tools_cache
         self._tools_cache, self._tools_cached_at = schema, time.monotonic()
         return schema
@@ -144,16 +149,17 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
     OPEN_TIMEOUT_S = OPEN_TIMEOUT_S
     IDLE_PING_S = 60.0
     PING_TIMEOUT_S = 3.0
+    DRAIN_TIMEOUT_S = 5.0
 
     def __init__(self, server_params, **kwargs):
         _ToolsCache.__init__(self)
         MCPClient.__init__(self, server_params, **kwargs)
         self._open_lock: Optional[asyncio.Lock] = None
+        # When the session last answered; 0 marks it suspect (a call failed
+        # on it), so the next acquire pings it whatever the clock says.
         self._last_used = 0.0
-        # Calls and listings between _acquire and their end: the session is
-        # never closed by us while this is non-zero.
+        # Calls and listings between _acquire and their end.
         self._in_flight = 0
-        self.session_opens = 0
 
     def _lock(self) -> asyncio.Lock:
         if self._open_lock is None:
@@ -172,8 +178,7 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
 
     async def _open(self) -> None:
         await asyncio.wait_for(self.start(), self.OPEN_TIMEOUT_S)
-        self.session_opens += 1
-        logger.info(f"🔗 Home Assistant MCP session opened (#{self.session_opens})")
+        logger.info("🔗 Home Assistant MCP session opened")
 
     async def _probe(self, session) -> bool:
         """Whether the open session still answers an MCP ping.
@@ -185,38 +190,50 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
             await asyncio.wait_for(session.send_ping(), self.PING_TIMEOUT_S)
             return True
         except Exception as e:
-            logger.info(f"🔌 idle MCP session failed its ping ({e!r})")
+            logger.info(f"🔌 MCP session failed its ping ({e!r})")
             return False
 
+    async def _replace(self) -> None:
+        """Close the dead session and open a new one, with the lock held.
+
+        pipecat holds one session per client, so calls still on the dead
+        one get DRAIN_TIMEOUT_S to finish (they fail on their own, as
+        pipecat's drop would make them) before it is closed.
+        """
+        deadline = time.monotonic() + self.DRAIN_TIMEOUT_S
+        while self._in_flight and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        if self._in_flight:
+            logger.warning(f"🔌 {self._in_flight} call(s) still on the dead MCP session; replacing it")
+        logger.info("🔌 replacing the MCP session")
+        await _close_quietly(self)
+        await self._open()
+
     async def _acquire(self) -> None:
-        """Make sure a session is open and count the caller as in flight.
+        """Make sure a live session is open and count the caller as in flight.
 
         Raises only before anything was sent. The one close in here runs
-        under the lock and only while nothing is in flight.
+        under the lock, after the calls on the old session were given time
+        to finish.
         """
         async with self._lock():
             session = self._live_session()
             if session is None:
                 await self._open()
             elif time.monotonic() - self._last_used > self.IDLE_PING_S and not await self._probe(session):
-                if self._in_flight == 0:
-                    logger.info("🔌 reopening the idle MCP session")
-                    await _close_quietly(self)
-                    await self._open()
-                else:
-                    logger.info(
-                        f"🔌 {self._in_flight} call(s) still on the MCP session; "
-                        "left to pipecat's reconnect"
-                    )
+                await self._replace()
             self._in_flight += 1
             self._last_used = time.monotonic()
 
     async def _list_tools(self):
-        await self._acquire()
-        try:
-            return await asyncio.wait_for(self.tools(), self.OPEN_TIMEOUT_S)
-        finally:
-            self._in_flight -= 1
+        async def listing():
+            await self._acquire()
+            try:
+                return await self.tools()
+            finally:
+                self._in_flight -= 1
+
+        return await asyncio.wait_for(listing(), self.OPEN_TIMEOUT_S)
 
     def guarded_handler(self, function_schema):
         """The call handler for one tool, with the session policy around it.
@@ -244,7 +261,6 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
                 continue
             try:
                 await asyncio.wait_for(call_tool(call.params), self.CALL_TIMEOUT_S)
-                self._last_used = time.monotonic()
                 return
             except _NotConnectedError:
                 # The call reached pipecat after its session was closed
@@ -256,10 +272,15 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
                 raise
             except Exception as e:
                 logger.warning(f"⚠️ MCP tool {call.name} failed after sending: {e!r}")
+                call.failed = True
                 await call.deliver(not_confirmed(call.name))
                 return
             finally:
                 self._in_flight -= 1
+                # A failed call makes the session suspect: pinged before the
+                # next one, whatever the idle clock says. A good one makes it
+                # fresh.
+                self._last_used = 0.0 if call.failed else time.monotonic()
         await call.deliver(not_reachable(call.name))
 
     async def aclose(self) -> None:
@@ -270,11 +291,12 @@ class PersistentMCPClient(_ToolsCache, MCPClient):
 class PerCallMCPClient(_ToolsCache):
     """A client and session per call (``MCP_PERSISTENT_SESSION=false``).
 
-    Opening and listing are pre-send: a failure there reports Home
-    Assistant as not reachable. The call runs through the handler that
-    session's own listing carries — the one public way to call a tool on a
-    pipecat MCPClient — and the session is closed afterwards whatever
-    happened.
+    Opening is pre-send: a failure there reports Home Assistant as not
+    reachable. The call goes to the fresh session by name through
+    pipecat's tool wrapper (``_tool_wrapper`` is pipecat-internal, 1.13:
+    the public path to a call is a listing's handler, and listing 80 tools
+    per call is what this mode exists to avoid; re-check on upgrade). The
+    session is closed afterwards whatever happened.
     """
 
     CALL_TIMEOUT_S = CALL_TIMEOUT_S
@@ -299,16 +321,13 @@ class PerCallMCPClient(_ToolsCache):
             client = MCPClient(self._server_params)
             try:
                 try:
-                    schema = await asyncio.wait_for(client.tools(), self.OPEN_TIMEOUT_S)
-                    call_tool = _handler_for(schema, name)
-                    if call_tool is None:
-                        raise LookupError(f"Home Assistant does not offer {name}")
+                    await asyncio.wait_for(client.start(), self.OPEN_TIMEOUT_S)
                 except Exception as e:
                     logger.warning(f"⚠️ MCP session unavailable for {name}: {e!r}")
                     await call.deliver(not_reachable(name))
                     return
                 try:
-                    await asyncio.wait_for(call_tool(call.params), self.CALL_TIMEOUT_S)
+                    await asyncio.wait_for(client._tool_wrapper(call.params), self.CALL_TIMEOUT_S)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

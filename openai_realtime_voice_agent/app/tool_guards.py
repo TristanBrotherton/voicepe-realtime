@@ -34,21 +34,27 @@ from app.progress_ack import (
 logger = logging.getLogger(__name__)
 
 
-def intercept_result_callback(params, on_result):
+def intercept_result_callback(params, on_result, *, on_delivered=None):
     """A copy of ``params`` whose result goes through ``on_result`` first.
 
-    ``on_result(result)`` returns what the original callback receives. The
-    optional ``properties`` keyword is forwarded only when given, as pipecat's
-    result callbacks expect. Shared by the liveness wrapper below and the MCP
-    session policy (app/mcp_service.py).
+    ``on_result(result)`` returns what the original callback receives;
+    ``on_delivered()``, when given, runs once the original has returned (not
+    when a delivery was cancelled midway). The optional ``properties``
+    keyword is forwarded only when given, as pipecat's result callbacks
+    expect. Shared by the liveness wrapper below and the MCP session policy
+    (app/mcp_service.py).
     """
     original = params.result_callback
 
     async def result_callback(result, *, properties=None):
         result = on_result(result)
         if properties is None:
-            return await original(result)
-        return await original(result, properties=properties)
+            outcome = await original(result)
+        else:
+            outcome = await original(result, properties=properties)
+        if on_delivered is not None:
+            on_delivered()
+        return outcome
 
     return dataclasses.replace(params, result_callback=result_callback)
 
