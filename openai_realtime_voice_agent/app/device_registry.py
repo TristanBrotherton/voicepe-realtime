@@ -35,10 +35,20 @@ def sanitize_device_id(raw: str) -> str:
     return cleaned[:MAX_DEVICE_ID_LEN]
 
 
-def device_id_from_websocket(websocket: Any) -> str:
+def local_port(websocket: Any) -> Optional[int]:
+    """The port this connection came in on (the ASGI scope's ``server``)."""
+    try:
+        server = (getattr(websocket, "scope", None) or {}).get("server")
+        return int(server[1]) if server and server[1] is not None else None
+    except Exception:  # pragma: no cover - defensive, never fatal
+        return None
+
+
+def device_id_from_websocket(websocket: Any, port_names: Optional[Dict[int, str]] = None) -> str:
     """Derive a best-effort device identifier for a connection.
 
-    Prefers an explicit `?device_id=` from the connection URL, because the
+    Prefers an explicit `?device_id=` from the connection URL, then the name
+    configured for the port it connected to (``port_names``), because the
     fallback — the client IP — is not stable: it changes on DHCP renewal
     (orphaning that device's cached conversation context) and collapses two
     devices behind the same NAT into one identity.
@@ -60,6 +70,13 @@ def device_id_from_websocket(websocket: Any) -> str:
                     return explicit
     except Exception as e:  # pragma: no cover - defensive, never fatal
         logger.debug(f"could not read device_id from query string: {e!r}")
+
+    # A device configured by its port: one instance listening on the ports
+    # that used to belong to one add-on copy per device.
+    if port_names:
+        named = port_names.get(local_port(websocket))
+        if named:
+            return named
 
     client = getattr(websocket, "client", None)
     host = getattr(client, "host", None) if client else None
@@ -107,6 +124,8 @@ class DeviceConnection:
     # Holds the follow-up mic window open while the user talks
     # (app/followup_hold.py). None on the Realtime runtime and when disabled.
     followup_hold: Any = None
+    # Per-device settings (app/device_config.py), resolved once at accept.
+    profile: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""
@@ -210,7 +229,8 @@ class DeviceRegistry:
             return True
 
     def get(self, device_id: str) -> Optional[DeviceConnection]:
-        """Look up one device by exact id.
+        """Look up one device by id: exact first, then in any letter case
+        (device names in the ``devices`` option match in any case).
 
         Args:
             device_id: The id to find.
@@ -218,7 +238,11 @@ class DeviceRegistry:
         Returns:
             The connection, or None if that device is not connected.
         """
-        return self._devices.get(device_id)
+        exact = self._devices.get(device_id)
+        if exact is not None or not device_id:
+            return exact
+        key = device_id.lower()
+        return next((c for d, c in self._devices.items() if d.lower() == key), None)
 
     def resolve(self, device_id: Optional[str] = None) -> Optional[DeviceConnection]:
         """Pick the device a single-device feature should act on.
@@ -233,7 +257,7 @@ class DeviceRegistry:
             silently falling back to another room.
         """
         if device_id:
-            return self._devices.get(sanitize_device_id(device_id))
+            return self.get(sanitize_device_id(device_id))
         if not self._devices:
             return None
         # A single-device instance has no ambiguity: it must be addressable

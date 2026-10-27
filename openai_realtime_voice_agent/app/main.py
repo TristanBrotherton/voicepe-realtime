@@ -2,6 +2,7 @@
 import os
 import sys
 import asyncio
+import dataclasses
 import logging
 from typing import Optional
 import dotenv
@@ -51,11 +52,13 @@ from app.voice_runtime import (
     LIVE_OUTPUT_LEAD_MS,
     LiveConfig,
     check_live_deployable,
+    live_voice_for,
     parity_report_lines,
     resolve_output_lead_ms,
     resolve_voice_runtime,
 )
 from app.device_auth import DeviceAuth
+from app.device_config import DeviceDirectory
 from app.spoken_prompts import (
     DEFAULT_SILENT_ACK_TOOLS,
     DEFAULT_SLOW_TOOLS,
@@ -612,6 +615,7 @@ class Application:
         self.action_gate: Optional[ActionGate] = None
         self.spoken_prompts: Optional[SpokenPrompts] = None
         self._guest_state = {"value": False, "checked": -1e9}
+        self.device_directory = DeviceDirectory()
         self.ha_intents = None
         
     async def initialize(self) -> None:
@@ -896,6 +900,24 @@ class Application:
             device_auth=self.device_auth,
             trigger_capture=_env_bool("TRIGGER_CAPTURE", False),
         )
+        # Several Voice PEs on one instance (app/device_config.py).
+        self.announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
+        self.device_directory = DeviceDirectory.from_env().checked(
+            self.websocket_handler.port, self.announce_port or None)
+        self.websocket_handler.device_directory = self.device_directory
+        from .ha_sensors import PUBLISHER as _SENSORS
+        # A configured device publishes its own sensor.voicepe_<name>_* set,
+        # so a device keeps its sensor names when it moves onto this instance.
+        _SENSORS.device_names = {p.name for p in self.device_directory.profiles}
+        if self.device_directory:
+            mappings = self.device_directory.timer_ring_mappings()
+            if mappings:
+                # Configured devices first; the timer_ring_entities option
+                # still names devices that are not configured.
+                existing = os.environ.get("TIMER_RING_ENTITIES", "").strip()
+                os.environ["TIMER_RING_ENTITIES"] = ",".join(x for x in (mappings, existing) if x)
+            for line in self.device_directory.describe():
+                logger.info(f"🏠 device {line}")
         logger.info(
             f"🔁 Follow-up window: {follow_up_listen_seconds}s "
             f"({'enabled' if follow_up_ms > 0 else 'disabled — turn-based'}), "
@@ -1057,20 +1079,36 @@ class Application:
         # Announce endpoint (fork): a LAN route back to the device so the
         # household's agent can speak results of long-running work. Reuses the
         # guarded announcer above; off unless both port and token are set.
-        announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
+        announce_port = self.announce_port
         announce_token = os.environ.get("ANNOUNCE_TOKEN", "").strip()
         # Background task results (router mode) use the same guarded lane
         # when no session is open (app/live_tasks.py, ``announce`` route).
         self._task_announcer = _guarded_say
-        if announce_port and announce_token:
-            await start_announce_server(
-                announce_port, announce_token, _guarded_say,
-                lambda device_id: self.websocket_handler.resolve_device(device_id) is not None,
-                # A result for a pending background task (router mode) lands
-                # in the conversation, not on the bare announcement lane.
-                task_sink=deliver_external_result,
-            )
-        elif announce_port or announce_token:
+        if announce_token:
+            # The instance's own port, plus one per device that has its own
+            # (an announcement there without a device_id is for that device).
+            ports = [(announce_port, None)] if announce_port else []
+            ports += [(port, self.device_directory.by_announce_port(port).name)
+                      for port in self.device_directory.announce_ports() if port != announce_port]
+            for port, device in ports:
+                try:
+                    await start_announce_server(
+                        port, announce_token, _guarded_say,
+                        lambda device_id: self.websocket_handler.resolve_device(device_id) is not None,
+                        # A result for a pending background task (router mode) lands
+                        # in the conversation, not on the bare announcement lane.
+                        task_sink=deliver_external_result,
+                        default_device_id=device,
+                    )
+                except OSError as e:
+                    if device is None:
+                        raise
+                    # One device's busy port never takes the others down.
+                    logger.error(f"🚨 device {device}: cannot listen for announcements on port {port} "
+                                 f"({e.strerror or e}); that device gets none on its own port")
+            if not ports:
+                logger.warning("⚠️ announce endpoint needs BOTH announce_port and announce_token — disabled")
+        elif announce_port:
             logger.warning("⚠️ announce endpoint needs BOTH announce_port and announce_token — disabled")
 
         # Store configuration for session creation
@@ -1242,7 +1280,9 @@ class Application:
         try:
             # A lead burst, like every reply's (app/output_lead_buffer.py): a
             # cold device otherwise drops the start of the prompt.
-            lead_ms = getattr(self.websocket_handler, "output_lead_buffer_ms", 0) or 0
+            resolved = self.websocket_handler.resolve_device(device_id)
+            lead_ms = self.websocket_handler.output_lead_ms_for(
+                resolved.device_id if resolved is not None else device_id) or 0
             for data, sleep_after in prompt_send_plan(pcm, lead_ms):
                 if not await self.websocket_handler.send_bytes_to(data, device_id):
                     return False
@@ -1266,6 +1306,7 @@ class Application:
         ledger = self.live_config.spend_ledger()
         self.websocket_handler.live_session_policy = policy
         self.websocket_handler.live_spend_ledger = ledger
+        self.websocket_handler.device_ledger_factory = self._device_ledger
         self.websocket_handler.budget_refusal_speaker = self._speak_budget_refusal
         self._install_live_voice_prompts(ledger)
         logger.warning(
@@ -1288,6 +1329,55 @@ class Application:
                 "Nothing will stop a runaway session from billing; set at least one."
             )
 
+    def _device_profile(self, device_id):
+        if not device_id:
+            return None
+        profile_for = getattr(getattr(self, "websocket_handler", None), "profile_for", None)
+        if profile_for is not None:
+            return profile_for(device_id)
+        directory = getattr(self, "device_directory", None)
+        return directory.get(device_id) if directory else None
+
+    def _room_for(self, device_id: str) -> str:
+        """The room the OpenClaw bridge announces a late answer to."""
+        profile = self._device_profile(device_id)
+        if profile is not None:
+            return (profile.room or profile.name).strip().lower()
+        return os.environ.get("INSTANCE_NAME", "").strip().lower()
+
+    def _device_ledger(self, profile):
+        """A device with its own caps is charged on its own ledger file;
+        a cap it leaves unset is the instance's."""
+        from app.live_cost import LEDGER_PATH, LiveSpendLedger
+        path = None
+        if LEDGER_PATH:
+            root, ext = os.path.splitext(LEDGER_PATH)
+            path = f"{root}_{profile.name}{ext}"
+        ledger = LiveSpendLedger(
+            max_session_minutes_per_day=(profile.live_max_session_minutes_per_day
+                                         if profile.live_max_session_minutes_per_day is not None
+                                         else self.live_config.max_session_minutes_per_day),
+            max_usd_per_day=(profile.live_max_usd_per_day if profile.live_max_usd_per_day is not None
+                             else self.live_config.max_usd_per_day),
+            path=path,
+        )
+        logger.info(f"💵 {profile.name}: its own GPT-Live caps, {ledger.max_session_minutes_per_day:g} "
+                    f"session-minutes / ${ledger.max_usd_per_day:g} per day")
+        if ledger.max_session_minutes_per_day <= 0 and ledger.max_usd_per_day <= 0:
+            # 0 disables a cap (as on the instance); with both off nothing
+            # stops this device's sessions from billing.
+            logger.error(
+                f"🚨 device {profile.name}: BOTH GPT-Live spend caps are disabled (0). "
+                "Nothing will stop a runaway session on this device from billing; set at least one."
+            )
+        return ledger
+
+    def _live_config_for(self, connection):
+        """The Live config with this device's voice, when it has its own."""
+        profile = self._device_profile(connection.device_id)
+        voice = live_voice_for(profile.voice) if profile is not None and profile.voice else None
+        return dataclasses.replace(self.live_config, voice=voice) if voice else self.live_config
+
     def _install_live_voice_prompts(self, ledger) -> None:
         """Every spoken prompt in the Live voice (decision of 2026-10-11).
 
@@ -1308,6 +1398,8 @@ class Application:
                 "🎙️ no explicit Live voice is configured, so spoken prompts use the "
                 "speech endpoint voice %r", prompts.tts.voice,
             )
+            # A device with a voice of its own still hears its prompts in it.
+            self._install_device_prompt_voices(prompts, conductor, None)
             return
         from .live_voice_prompts import LiveVoiceRenderer
 
@@ -1323,12 +1415,60 @@ class Application:
             cache.live_voice = voice
             cache.live_renderer = renderer
         self.live_voice_renderer = renderer
+        self._install_device_prompt_voices(prompts, conductor, voice)
         logger.info(
             "🎙️ spoken prompts, progress fillers, errors, the spend refusal, timers, "
             "announcements and enrollment guidance are rendered in the Live voice %r; "
             "the speech endpoint voice %r is used only when that voice is unreachable "
             "and the line must be heard", voice, prompts.tts.voice,
         )
+
+    def _install_device_prompt_voices(self, prompts, conductor, voice: Optional[str]) -> None:
+        """A configured device with its own voice or its own caps hears its
+        prompts (fillers, errors, the spend refusal, timers, announcements)
+        in its own voice, rendered on its own ledger."""
+        from .live_voice_prompts import LiveVoiceRenderer
+        from .spoken_prompts import TTSCache
+
+        caches: dict = {}   # (device name, cache role) -> TTSCache
+        self._device_prompt_renderers = []
+        for profile in self.device_directory.profiles:
+            device_voice = live_voice_for(profile.voice) if profile.voice else None
+            if not (device_voice or voice):
+                continue   # no Live voice to render in: the speech endpoint's applies
+            if not profile.has_own_caps and (not device_voice or device_voice == voice):
+                continue
+            renderer = LiveVoiceRenderer(
+                getattr(self, "openai_api_key", ""), model=self.live_config.model,
+                backend_model=self.live_config.backend_model, voice=device_voice or voice,
+                reasoning_effort=self.live_config.reasoning_effort,
+                ledger=self.websocket_handler.ledger_for(profile.name),
+                device_id=f"prompt-render-{profile.name}",
+            )
+            self._device_prompt_renderers.append(renderer)
+            for role, base in (("prompts", prompts.tts), ("conductor", getattr(conductor, "tts", None))):
+                if base is None:
+                    continue
+                caches[(profile.name, role)] = TTSCache(
+                    base.api_key, base.voice, base.style, cache_dir=base.cache_dir, model=base.model,
+                    live_voice=device_voice or voice, live_renderer=renderer)
+            logger.info(f"🎙️ device {profile.name}: spoken prompts in the Live voice "
+                        f"{device_voice or voice!r}, rendered on its own ledger")
+        if not caches:
+            return
+
+        def _for(role):
+            def lookup(device_id):
+                connection = self.websocket_handler.resolve_device(device_id)
+                name = connection.device_id if connection is not None else device_id
+                profile = self.websocket_handler.profile_for(name)
+                return caches.get((profile.name, role)) if profile is not None else None
+            return lookup
+
+        prompts.tts_for = _for("prompts")
+        prompts.extra_caches = [c for (_, role), c in caches.items() if role == "prompts"]
+        if conductor is not None:
+            conductor.tts_for = _for("conductor")
 
     async def _speak_budget_refusal(self, connection, reason: str) -> None:
         """Tell the user out loud that the spend cutoff refused the turn.
@@ -1659,7 +1799,7 @@ class Application:
             return self._create_live_router_service(connection, all_tools, history)
         return OpenAILiveLLMService(
             api_key=self.openai_api_key,
-            config=self.live_config,
+            config=self._live_config_for(connection),
             instructions=live_conversation_instructions(self._conversation_instructions(), all_tools),
             backend_instructions=live_backend_instructions(
                 self.live_config.backend_instructions,
@@ -1688,7 +1828,11 @@ class Application:
             DISCUSSION_BACKEND_RULE, ROUTER_BACKEND_INSTRUCTIONS, BackendRouter, TurnRouter)
         from app.live_cost import USD_PER_SESSION_SECOND, SessionCharge
 
-        ledger = getattr(self.websocket_handler, "live_spend_ledger", None)
+        # The handler can be a bare stand-in (tests, or a service built before
+        # the handler is wired); its instance ledger then applies.
+        ledger_for = getattr(self.websocket_handler, "ledger_for", None)
+        ledger = (ledger_for(connection.device_id) if ledger_for is not None
+                  else getattr(self.websocket_handler, "live_spend_ledger", None))
         device_id = connection.device_id or "device"
 
         def _charge(stat: dict) -> None:
@@ -1739,7 +1883,7 @@ class Application:
         shared = lambda: self.instructions + memory_instructions()  # noqa: E731
         service = OpenAILiveLLMService(
             api_key=self.openai_api_key,
-            config=self.live_config,
+            config=self._live_config_for(connection),
             instructions=lambda: live_router_instructions(shared(), all_tools),
             backend_instructions="",
             tools=all_tools,
@@ -1818,6 +1962,7 @@ class Application:
             connection.speaker_probe = SpeakerProbe(
                 self.speaker_male_name, self.speaker_female_name
             )
+            connection.speaker_probe.device_id = connection.device_id
             service.speaker_probe = connection.speaker_probe
             service.male_only_tools = self.male_only_tools
 
@@ -1859,7 +2004,7 @@ class Application:
         register_timer_tools(service, self.timer_registry, connection.device_id)
         register_memory_tools(service, _current_speaker_name)
         if openclaw_url():
-            register_openclaw_tool(service, connection.device_id)
+            register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
             logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
         logger.info("✅ Registered timer + memory tools")
 
@@ -1877,7 +2022,7 @@ class Application:
         # path and its 60s cap. Observed live 2026-07-13: "It failed. I
         # couldn't send the text" at exactly 60s — while the text sent fine.
         if openclaw_url():
-            register_openclaw_tool(service, connection.device_id)
+            register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
             logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
             if discussions_enabled():
                 register_discussion_tools(service)
@@ -2009,30 +2154,57 @@ class Application:
         # to build one around: each device brings its own when it connects.
         self.websocket_handler.openai_service_factory = self.create_openai_service
 
-        config = uvicorn.Config(
-            self.build_web_app(),
-            host=self.websocket_handler.host,
-            port=self.websocket_handler.port,
-            log_level="warning",
-            # The add-on installs its own signal handling; uvicorn's would
-            # fight with it and with the per-connection pipeline runners.
-            lifespan="off",
-        )
-        server = uvicorn.Server(config)
-        server.install_signal_handlers = lambda: None
+        web_app = self.build_web_app()
+        # The instance's port, plus one per configured device that keeps the
+        # port it had on its own add-on copy (app/device_config.py).
+        main_port = self.websocket_handler.port
+        ports = [main_port] + self.device_directory.extra_ports(main_port)
+        servers = []
+        for port in ports:
+            config = uvicorn.Config(
+                web_app,
+                host=self.websocket_handler.host,
+                port=port,
+                log_level="warning",
+                # The add-on installs its own signal handling; uvicorn's would
+                # fight with it and with the per-connection pipeline runners.
+                lifespan="off",
+            )
+            server = uvicorn.Server(config)
+            server.install_signal_handlers = lambda: None
+            servers.append((port, server))
 
         logger.info(
             f"✅ Listening for devices on ws://{self.websocket_handler.host}:"
-            f"{self.websocket_handler.port}/ (multi-device)"
+            f"{', '.join(str(p) for p in ports)}/ (multi-device; a device port that "
+            "cannot be bound is reported below and skipped)"
         )
         try:
-            await server.serve()
+            await self._serve_ports(servers, main_port)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
             await self.cleanup()
+
+    async def _serve_ports(self, servers, main_port: int) -> None:
+        """Serve every (port, uvicorn server) pair until shutdown.
+
+        uvicorn exits the process when it cannot bind. For a device's own
+        port that would take every device down, so only the instance's port
+        is fatal; a device whose port is busy is logged and skipped."""
+        async def _serve(port, server):
+            try:
+                await server.serve()
+            except (OSError, SystemExit) as e:
+                if port == main_port:
+                    raise
+                device = self.device_directory.by_port(port)
+                logger.error(f"🚨 device {device.name if device else port}: cannot listen on port {port} "
+                             f"({e!r}); it can still connect on port {main_port} with ?device_id=")
+
+        await asyncio.gather(*(_serve(port, server) for port, server in servers))
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
@@ -2047,6 +2219,11 @@ class Application:
         if self.audio_recording_service:
             self.audio_recording_service.cleanup()
 
+        for device_renderer in getattr(self, "_device_prompt_renderers", []):
+            try:
+                await device_renderer.close("shutdown")
+            except Exception as e:
+                logger.debug(f"device prompt renderer close failed: {e!r}")
         renderer = getattr(self, "live_voice_renderer", None)
         if renderer is not None:
             try:

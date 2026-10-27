@@ -43,6 +43,8 @@ class SpeakerProbe:
     def __init__(self, male_name: str, female_name: str):
         self.male_name = male_name
         self.female_name = female_name
+        # The device this probe listens on (names its speaker sensor).
+        self.device_id: Optional[str] = None
         self._buf = bytearray()
         self._capturing = False
         self._classifying = False
@@ -191,7 +193,7 @@ class SpeakerProbe:
             )
             try:
                 from .ha_sensors import PUBLISHER
-                await PUBLISHER.speaker(label, name, metric, method)
+                await PUBLISHER.speaker(label, name, metric, method, self.device_id)
             except Exception:
                 pass
             if self.on_verdict is not None:

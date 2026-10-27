@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.audio.utils import create_stream_resampler
 
+from app.device_config import DeviceDirectory
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.raw_audio_serializer import RawAudioSerializer
@@ -596,11 +597,16 @@ class WebSocketHandler:
         # On-demand GPT-Live session lifetime. Set by main.py on the Live
         # runtime only; None means the model session lives as long as the
         # device connection (the Realtime behaviour, which is free to idle).
-        # The spend ledger is deliberately SHARED by every device: the cap is
-        # an add-on-instance cap persisted to one file, NOT a household-wide
-        # cap across independently running add-ons.
+        # The instance spend ledger is shared by every device without caps of
+        # its own: an add-on-instance cap persisted to one file, NOT a
+        # household-wide cap across independently running add-ons.
         self.live_session_policy = None
         self.live_spend_ledger = None
+        # Per-device settings (app/device_config.py). A device with its own
+        # caps gets its own ledger from ``device_ledger_factory``.
+        self.device_directory = DeviceDirectory()
+        self.device_ledger_factory = None
+        self._device_ledgers: dict = {}
         # Called with (connection, reason) when the spend cutoff refuses a turn.
         self.budget_refusal_speaker = None
         self._background: set = set()
@@ -671,11 +677,16 @@ class WebSocketHandler:
                 # The discussion ended with the session: the device's
                 # follow-up window goes back to the operator's.
                 discussion_hello[0] = False
-                self._spawn(connection.send_json(self.hello_payload()))
+                self._spawn(connection.send_json(self.hello_payload(connection.device_id)))
             # Publish on every close, so the session-minute total a spend
             # watchdog reads is never more than one session stale.
             try:
-                PUBLISHER.live_session_cost(gate.snapshot())
+                # Each sensor always shows one ledger: a configured device's
+                # own sensor shows the ledger it is charged to, and the
+                # instance sensor only ever shows the instance ledger.
+                PUBLISHER.live_session_cost(
+                    gate.snapshot(), device_id=connection.device_id,
+                    shared=gate_ledger is self.live_spend_ledger)
             except Exception as e:
                 logger.debug(f"live cost sensor publish failed: {e!r}")
             # Closing the paid model session is also a hard device turn
@@ -696,9 +707,10 @@ class WebSocketHandler:
                     f"GPT-Live session closed: {getattr(charge, 'reason', 'closed')}"
                 ))
 
+        gate_ledger = self.ledger_for(connection.device_id)
         gate = LiveSessionGate(
             service, device_id=connection.device_id, policy=policy,
-            ledger=self.live_spend_ledger, on_refused=_refused,
+            ledger=gate_ledger, on_refused=_refused,
             on_closed=_charged,
         )
         # Activity -> deadlines. Only audible output counts as the model being
@@ -732,7 +744,8 @@ class WebSocketHandler:
                     discussion_hello[0] = True
                     follow_up = int(_env_float("DISCUSSION_FOLLOW_UP_MS", 10000.0))
                     self._spawn(connection.send_json(
-                        dict(self.hello_payload(), follow_up_ms=max(self.follow_up_ms, follow_up))))
+                        dict(self.hello_payload(connection.device_id),
+                             follow_up_ms=max(self.follow_up_ms_for(connection.device_id), follow_up))))
             service.on_discussion = _discussion
         logger.info(
             f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
@@ -749,7 +762,7 @@ class WebSocketHandler:
 
         Returns None when the option is off or there is no follow-up window.
         """
-        if not self.follow_up_hold or self.follow_up_ms <= 0:
+        if not self.follow_up_hold or self.follow_up_ms_for(connection.device_id) <= 0:
             return None
         phase_emitter = connection.phase_emitter
         serializer = connection.serializer
@@ -952,7 +965,7 @@ class WebSocketHandler:
         # transport.output(), so it acts on the final audio stream the device
         # receives.
         # Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
-        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_buffer_ms))
+        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id)))
 
         pipeline_components.append(transport.output())
         
@@ -1627,7 +1640,41 @@ class WebSocketHandler:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    def hello_payload(self) -> dict:
+    def profile_for(self, device_id: Optional[str]):
+        """The device's settings: the ones resolved when it connected, else
+        the configured ones (a device that is not connected right now)."""
+        if not device_id:
+            return None
+        connection = self.devices.get(device_id)
+        if connection is not None:
+            return connection.profile
+        return self.device_directory.get(device_id)
+
+    def _device_value(self, device_id: Optional[str], name: str, default):
+        profile = self.profile_for(device_id)
+        value = getattr(profile, name, None) if profile is not None else None
+        return default if value is None else max(0, int(value))
+
+    def output_lead_ms_for(self, device_id: Optional[str]) -> int:
+        return self._device_value(device_id, "output_lead_buffer_ms", self.output_lead_buffer_ms)
+
+    def follow_up_ms_for(self, device_id: Optional[str]) -> int:
+        profile = self.profile_for(device_id)
+        seconds = getattr(profile, "follow_up_listen_seconds", None) if profile is not None else None
+        return self.follow_up_ms if seconds is None else max(0, min(60, int(seconds))) * 1000
+
+    def ledger_for(self, device_id: Optional[str]):
+        """The spend ledger a device's sessions are charged to: its own when
+        the device has its own caps, else the instance's."""
+        profile = self.profile_for(device_id)
+        if profile is None or not profile.has_own_caps or self.device_ledger_factory is None:
+            return self.live_spend_ledger
+        ledger = self._device_ledgers.get(profile.name)
+        if ledger is None:
+            ledger = self._device_ledgers[profile.name] = self.device_ledger_factory(profile)
+        return ledger
+
+    def hello_payload(self, device_id: Optional[str] = None) -> dict:
         """The handshake the device expects immediately after connecting.
 
         follow_up_ms tells the device how long to hold the mic open after a
@@ -1642,10 +1689,12 @@ class WebSocketHandler:
             "type": "hello",
             "proto": 2,
             "audio_out": "pcm",
-            "follow_up_ms": self.follow_up_ms,
-            "follow_up_open_delay_ms": self.follow_up_open_delay_ms,
-            "wake_open_delay_ms": self.wake_open_delay_ms,
-            "playback_prebuffer_ms": self.playback_prebuffer_ms,
+            "follow_up_ms": self.follow_up_ms_for(device_id),
+            "follow_up_open_delay_ms": self._device_value(
+                device_id, "follow_up_open_delay_ms", self.follow_up_open_delay_ms),
+            "wake_open_delay_ms": self._device_value(device_id, "wake_open_delay_ms", self.wake_open_delay_ms),
+            "playback_prebuffer_ms": self._device_value(
+                device_id, "playback_prebuffer_ms", self.playback_prebuffer_ms),
             # 1 = the operator opted in to storing the pre-wake trigger snippet
             # for false-wake review; firmware also requires its own switch.
             "trigger_capture": 1 if (self.trigger_capture and self.wake_events.storing_audio()) else 0,
@@ -1679,7 +1728,8 @@ class WebSocketHandler:
             await websocket.close(code=1008)
             return
         await websocket.accept()
-        device_id = device_id_from_websocket(websocket)
+        device_id = device_id_from_websocket(websocket, {
+            p.port: p.name for p in self.device_directory.profiles if p.port is not None})
         logger.info(
             f"🔗 device {device_id} connected ({len(self.devices) + 1} total)"
             + ("" if decision.authenticated else f" [{decision.reason}]")
@@ -1687,7 +1737,9 @@ class WebSocketHandler:
 
         serializer = RawAudioSerializer(device_id)
         connection = DeviceConnection(
-            device_id=device_id, websocket=websocket, serializer=serializer
+            device_id=device_id, websocket=websocket, serializer=serializer,
+            # Resolved once here; every per-device setting reads this.
+            profile=self.device_directory.get(device_id),
         )
         connection.transport = self.create_transport(websocket, serializer)
         connection.turn_timeline = TurnTimeline(device_id, publish=PUBLISHER.latency)
@@ -1751,7 +1803,7 @@ class WebSocketHandler:
 
             displaced = await self.devices.add(connection)
             registered = True
-            await connection.send_json(self.hello_payload())
+            await connection.send_json(self.hello_payload(connection.device_id))
 
             if displaced is not None:
                 await self._teardown(displaced)

@@ -270,6 +270,35 @@ per-device counts, kept across restarts), `_openai_cost_today`, `_voice_prints`
 and `binary_sensor.voicepe_kitchen_enrollment_active` for dashboards and
 automations.
 
+### Several devices
+
+One add-on instance can serve several Voice PEs. The `devices` option names
+each one and lets it differ from the instance settings:
+
+```yaml
+devices:
+  - name: hallway
+    port: 8082                 # optional: listen here too; connections on it are this device
+    announce_port: 8091        # optional: announcements here without a device_id are for it
+    follow_up_listen_seconds: 4
+    timer_ring_entity: switch.hallway_voice_timer_ringing
+    room: hallway              # sent to your agent; default = the name
+    voice: cedar               # GPT-Live voice for this device, prompts included
+    live_max_usd_per_day: 1    # its own GPT-Live caps and ledger
+    live_max_session_minutes_per_day: 20
+```
+
+A device is recognised by the `device_id` in its URL
+(`ws://<ha-host>:8080/?device_id=hallway`, any letter case), else by its own
+`port`. Every override is optional and falls back to the instance setting.
+A configured device publishes its own `sensor.voicepe_<name>_*` set (latency,
+wake word, speaker, timers, wake counts, GPT-Live cost); the instance's
+sensors keep the totals. A port that is already in use, or that collides with
+another port of this add-on, is reported in the log and skipped; the other
+devices keep working. A device with both caps at 0 has no spend limit and is
+flagged in the log. Unknown devices still connect with the instance settings.
+More in [getting started](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/getting-started.md#per-device-settings).
+
 ## 11. Reading the logs
 
 The add-on log shows each turn: one `⏱️ turn` line with its timings (no words),

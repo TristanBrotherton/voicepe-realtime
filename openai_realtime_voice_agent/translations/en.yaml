@@ -668,3 +668,12 @@ configuration:
     description: >-
       Bearer token protecting the announce endpoint. Generate a long random
       string; anyone on your LAN with this token can speak through the device.
+  devices:
+    name: "🧩 Fork · Devices"
+    description: >-
+      Several Voice PEs on this one add-on. Each entry names a device (name)
+      and can give it the port it connects to (port; the device is then
+      known by that port), its own announce port, and its own follow-up
+      window, delays, buffers, timer ring switch, room, voice and GPT-Live
+      daily caps. Anything left out uses the setting above. Empty: one set of
+      settings for every device, as before.

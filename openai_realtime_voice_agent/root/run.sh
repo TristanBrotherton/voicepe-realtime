@@ -45,6 +45,9 @@ MCP_TOOL_ALLOWLIST=$(bashio::config 'mcp_tool_allowlist')
 OPENCLAW_URL=$(bashio::config 'openclaw_url')
 ANNOUNCE_PORT=$(bashio::config 'announce_port')
 ANNOUNCE_TOKEN=$(bashio::config 'announce_token')
+# Per-device settings, as JSON (app/device_config.py).
+# bashio prints each list entry as JSON; jq -s gathers them into one array.
+DEVICES_JSON=$(bashio::config 'devices' | jq -sc '[.[] | objects]' 2>/dev/null || echo '[]')
 
 # --- ⚙️ Advanced ---
 WEBSOCKET_PORT=$(bashio::config 'websocket_port')
@@ -105,6 +108,7 @@ export MCP_TOOL_ALLOWLIST
 export OPENCLAW_URL
 export ANNOUNCE_PORT
 export ANNOUNCE_TOKEN
+export DEVICES_JSON
 export WEBSOCKET_PORT
 export SESSION_REUSE_TIMEOUT_SECONDS
 export MAX_CONTEXT_MESSAGES

@@ -446,7 +446,8 @@ def identified_speaker(llm) -> str:
         return ""
 
 
-def register_openclaw_tool(llm, device_id: str = "") -> None:
+def register_openclaw_tool(llm, device_id: str = "", room: str = "") -> None:
+    bridge_room = room
     async def _ask(params) -> None:
         question = ((params.arguments or {}).get("question") or "").strip()
         if not question:
@@ -457,7 +458,7 @@ def register_openclaw_tool(llm, device_id: str = "") -> None:
         # room + device_id tell the bridge where to announce a late answer
         # when a turn outlives the sync window (report-back to the device
         # that asked, not to whichever room spoke last).
-        room = os.environ.get("INSTANCE_NAME", "").strip().lower()
+        room = (bridge_room or os.environ.get("INSTANCE_NAME", "")).strip().lower()
         payload = {**bridge_request_fields(
             question, device_id or room,
             str(getattr(params, "tool_call_id", "") or "").strip(), mode), "room": room}

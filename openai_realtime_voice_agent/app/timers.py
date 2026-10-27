@@ -35,7 +35,7 @@ def _ring_entity(device_id: str, allow_legacy: bool = True) -> str:
     mappings = os.environ.get("TIMER_RING_ENTITIES", "")
     for mapping in mappings.split(","):
         key, separator, entity = mapping.partition("=")
-        if separator and key.strip() == device_id:
+        if separator and key.strip().lower() == (device_id or "").lower():
             return entity.strip()
     return os.environ.get("TIMER_RING_ENTITY", "").strip() if allow_legacy else ""
 
@@ -146,7 +146,7 @@ class TimerRegistry:
         try:
             import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self))
+            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
         except Exception:
             pass
         return {"id": tid, "label": self._timers[tid]["label"], "seconds": seconds}
@@ -171,7 +171,7 @@ class TimerRegistry:
         try:
             import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self))
+            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
         except Exception:
             pass
         return {"cancelled": tid, "label": t["label"]}

@@ -258,9 +258,41 @@ device gets an independent OpenAI session, conversation history, audio stream,
 speaker-recognition state, and enrollment flow, so people can use different
 rooms at the same time.
 
-All devices in an instance share its configuration: persona, voice, Home
-Assistant access, device token, and `instance_name` sensor prefix (the sensors
-carry per-device detail in their attributes). Give each device its own timer
-bell with `timer_ring_entities`. Run separate add-on instances only when rooms
-need different configuration; assign each extra instance a unique
-`websocket_port` (avoid `8081`, used by dev builds).
+All devices in an instance share its configuration: persona, Home Assistant
+access, device token, and `instance_name` sensor prefix (the sensors carry
+per-device detail in their attributes). Give each device its own timer bell
+with `timer_ring_entities`.
+
+### Per-device settings
+
+The `devices` option names each device and lets it differ from the instance
+settings. A device is recognised by the `device_id` in its URL
+(`ws://<ha-host>:8080/?device_id=hallway`) or, if it has one, by its own
+`port`: the add-on then also listens on that port, so devices that each had
+their own add-on copy can move onto one instance without a reflash.
+
+```yaml
+devices:
+  - name: hallway
+    port: 8082                 # optional: listen here too; connections on it are this device
+    announce_port: 8091        # optional: announcements here without a device_id are for it
+    follow_up_listen_seconds: 4
+    timer_ring_entity: switch.hallway_voice_timer_ringing
+    room: hallway              # sent to your agent; default = the name
+    voice: cedar               # GPT-Live voice for this device
+    live_max_usd_per_day: 1    # its own GPT-Live caps and ledger
+    live_max_session_minutes_per_day: 20
+```
+
+Every override is optional and falls back to the instance setting:
+`follow_up_listen_seconds`, `follow_up_open_delay_ms`, `wake_open_delay_ms`,
+`playback_prebuffer_ms`, `output_lead_buffer_ms`, `timer_ring_entity`, `room`,
+`voice` and the two GPT-Live caps. A device with its own caps is charged on
+its own ledger; a device without them shares the instance's caps. Unknown
+devices still connect with the instance settings. Names match in any letter
+case. A configured device publishes its own `sensor.voicepe_<name>_*` sensors,
+and its spoken prompts use its own voice and ledger. A device `port` or
+`announce_port` that is busy or collides with another port of the add-on is
+logged and skipped without taking the other devices down; a device port may
+not be the instance's own `websocket_port`. One add-on restart (an update or
+an option change) reconnects every device on it.

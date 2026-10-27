@@ -88,6 +88,7 @@ Two places hold configuration:
 | `openclaw_url` | *(empty)* | Direct endpoint of your agent bridge. Enables the `ask_openclaw` escalation tool (called directly, ~2.5-minute budget, bypassing HA MCP's 60 s cap) and the `recall_memory` text search. Contract in [Agent Integration](agent-integration.md). |
 | `announce_port` | `0` | Port for the announce endpoint — a LAN route back to the device so an agent can speak in the room. Enabled only when **both** this and `announce_token` are set. |
 | `announce_token` | *(empty)* | Bearer token for the announce endpoint. The add-on runs on the host network, so the token is the lock — generate a long random one. |
+| `devices` | *(empty)* | Several Voice PEs on one add-on: per-device name, port, announce port and settings. See [Per-device settings](getting-started.md#per-device-settings). |
 | `mcp_persistent_session` | *(hidden)* `true` | Reuse one Home Assistant tool session instead of opening a new one per command. |
 
 ## ⚙️ Advanced

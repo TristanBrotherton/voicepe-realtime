@@ -315,6 +315,9 @@ class RawAudioSerializer(FrameSerializer):
             + (f" turn={self.current_turn_id}" if self.current_turn_id else "")
             + (f" model={self.wake_meta.get('model')} cutoff={self.wake_meta.get('cutoff')}"
                f" window={self.wake_meta.get('window')}" if self.wake_meta.get("model") else "")
+            # Last, so parsers of the fields above are unaffected; on a shared
+            # instance it says which device woke.
+            + f" device={self._device_id}"
         )
         # A wake is the strongest signal that THIS device is the one in use.
         if self._on_activity is not None:
