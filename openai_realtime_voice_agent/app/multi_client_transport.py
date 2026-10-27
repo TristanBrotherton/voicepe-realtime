@@ -5,7 +5,12 @@ import typing
 from typing import Callable, Optional
 
 from loguru import logger
-from pipecat.frames.frames import EndFrame, OutputTransportMessageFrame, TTSAudioRawFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    OutputAudioRawFrame,
+    OutputTransportMessageFrame,
+    TTSAudioRawFrame,
+)
 from starlette.websockets import WebSocket, WebSocketState
 
 from pipecat.transports.websocket.fastapi import (
@@ -149,7 +154,8 @@ class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
     At other rates the filter would hold a tail back, but flushing it here
     would reset the stream at every batch seam of one reply and click (pipecat
     flushes it only at the end of speech); batches are byte-exact at equal
-    rates only, which is the one configuration the serializer speaks.
+    rates only, which is the one configuration the serializer speaks, and
+    audio at any other rate is warned about once.
 
     pipecat 1.13 has no public hook for "flush the tail before this message"
     (``_enqueue_flushed_audio_buffer`` pads to a full chunk and is private
@@ -158,12 +164,23 @@ class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
     upgrade.
     """
 
+    _rate_warned = False
+
     async def _handle_frame(self, frame):
+        if isinstance(frame, OutputAudioRawFrame) and not self._rate_warned:
+            sender = self._media_senders.get(frame.transport_destination)
+            if sender is not None and frame.sample_rate != sender.sample_rate:
+                self._rate_warned = True
+                logger.warning(
+                    f"{self} reply audio at {frame.sample_rate} Hz on a {sender.sample_rate} Hz "
+                    "transport: the resampler holds a tail back, so an output_batch_end "
+                    "marker is not guaranteed to follow all of its batch's audio"
+                )
         if (isinstance(frame, OutputTransportMessageFrame)
                 and isinstance(frame.message, dict)
                 and frame.message.get('type') == 'output_batch_end'):
             sender = self._media_senders.get(frame.transport_destination)
-            if sender is not None and sender._audio_runs:
+            if sender is not None:
                 while sender._audio_runs:
                     audio, uninterruptible = sender._take_audio_chunk()
                     tail = TTSAudioRawFrame(

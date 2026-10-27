@@ -134,7 +134,7 @@ class TestBatchFenceFlush(unittest.IsolatedAsyncioTestCase):
 
     async def feed(self, pcm, rate):
         from pipecat.frames.frames import TTSAudioRawFrame
-        await self.sender.handle_audio_frame(TTSAudioRawFrame(pcm, sample_rate=rate, num_channels=1))
+        await self.out._handle_frame(TTSAudioRawFrame(pcm, sample_rate=rate, num_channels=1))
 
     async def fence(self, batch):
         from pipecat.frames.frames import OutputTransportMessageFrame
@@ -153,6 +153,18 @@ class TestBatchFenceFlush(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.queued[-1], marker, "the marker goes out last")
         self.assertEqual(self.audio(), pcm, "every sample precedes the marker, unmodified")
         self.assertEqual(len(self.sender._audio_runs), 0, "nothing held back")
+
+    async def test_audio_at_another_rate_is_warned_about_once(self):
+        from loguru import logger as loguru_logger
+
+        lines = []
+        sink = loguru_logger.add(lambda message: lines.append(str(message)), level="WARNING")
+        self.addCleanup(loguru_logger.remove, sink)
+        await self.feed(self.tone(2400, 24000), 24000)
+        self.assertEqual([l for l in lines if "16000" in l], [])
+        await self.feed(self.tone(1600, 16000), 16000)
+        await self.feed(self.tone(1600, 16000), 16000)
+        self.assertEqual(len([l for l in lines if "not guaranteed" in l]), 1)
 
     async def test_a_reply_split_into_batches_resamples_like_an_unsplit_one(self):
         # At another rate the resampler holds a filter tail; a fence must not
