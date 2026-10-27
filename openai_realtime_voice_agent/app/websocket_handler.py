@@ -8,8 +8,8 @@ import uuid
 from typing import Any, Optional, Callable, Awaitable, Dict
 
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
@@ -795,7 +795,7 @@ class WebSocketHandler:
         self,
         connection: DeviceConnection,
         activity_callback: Optional[Callable[[], None]] = None
-    ) -> tuple[Pipeline, PipelineRunner, PipelineTask]:
+    ) -> tuple[Pipeline, WorkerRunner, PipelineWorker]:
         """Build the pipeline from one connection's resources.
 
         Args:
@@ -804,7 +804,7 @@ class WebSocketHandler:
             activity_callback: Optional callback for session activity tracking
 
         Returns:
-            Tuple of (Pipeline, PipelineRunner, PipelineTask)
+            Tuple of (Pipeline, WorkerRunner, PipelineWorker)
         """
         transport = connection.transport
         openai_service = connection.openai_service
@@ -974,14 +974,14 @@ class WebSocketHandler:
         # Create pipeline runner and task
         # Disable idle timeout - server should always stay ready for connections
         # handle_sigint=False is REQUIRED now that there is a runner per
-        # connection: PipelineRunner installs a process-wide SIGINT handler by
+        # connection: WorkerRunner installs a process-wide SIGINT handler by
         # default, so each new device would clobber the previous one's and a
         # disconnect would tear down shutdown handling for the whole add-on.
         # The process owns its own signal handling in main().
-        runner = PipelineRunner(handle_sigint=False)
+        runner = WorkerRunner(handle_sigint=False)
         # Metrics on: pipecat's TTFB/processing metrics feed the turn timeline
         # (TimelineMetricsTap) as a cross-check of our own stage stamps.
-        task = PipelineTask(
+        task = PipelineWorker(
             pipeline,
             params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
             idle_timeout_secs=None,
@@ -1733,7 +1733,7 @@ class WebSocketHandler:
             @connection.transport.event_handler("on_client_disconnected")
             async def _stop_disconnected_task(_transport, _websocket):
                 # Pipecat's FastAPI input transport signals this event but does
-                # not stop PipelineRunner itself. Cancel only this device's task
+                # not stop the WorkerRunner itself. Cancel only this device's task
                 # so serve_connection reaches its per-device cleanup.
                 #
                 # Pipecat invokes handlers as handler(emitter, *event_args), so
@@ -1764,7 +1764,8 @@ class WebSocketHandler:
                 await on_client_connected(device_id)
 
             # Blocks until the device disconnects (or the pipeline ends).
-            await runner.run(task)
+            await runner.add_workers(task)
+            await runner.run()
         except asyncio.CancelledError:
             raise
         except Exception as e:

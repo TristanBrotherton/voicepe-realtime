@@ -24,8 +24,8 @@ from unittest.mock import patch
 
 from pipecat.frames.frames import StartFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from starlette.websockets import WebSocketState
@@ -176,10 +176,11 @@ class DevicePath:
         if self.tail is not None:
             stages.append(self.tail)
         self.pipeline = Pipeline(stages)
-        self.task = PipelineTask(self.pipeline, idle_timeout_secs=None,
+        self.task = PipelineWorker(self.pipeline, idle_timeout_secs=None,
                                  cancel_on_idle_timeout=False)
-        self.runner = PipelineRunner(handle_sigint=False)
-        self.run = asyncio.create_task(self.runner.run(self.task))
+        self.runner = WorkerRunner(handle_sigint=False)
+        await self.runner.add_workers(self.task)
+        self.run = asyncio.create_task(self.runner.run())
         await asyncio.wait_for(self.ready.started.wait(), 5)
         await asyncio.wait_for(self._model_ready(), 5)
         self.model.push(fx.session_started())

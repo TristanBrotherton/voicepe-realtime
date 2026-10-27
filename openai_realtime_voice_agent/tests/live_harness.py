@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from pipecat.frames.frames import StartFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameProcessor
 
 import app.live_service as live_service_module
@@ -131,10 +131,11 @@ class LiveHarness:
         self.service.device_id = "kitchen"
         self.source, self.sink = Tap(), Tap()
         self.pipeline = Pipeline([self.source, self.service, self.sink])
-        self.task = PipelineTask(self.pipeline, idle_timeout_secs=None,
+        self.task = PipelineWorker(self.pipeline, idle_timeout_secs=None,
                                  cancel_on_idle_timeout=False)
-        self.runner = PipelineRunner(handle_sigint=False)
-        self.run = asyncio.create_task(self.runner.run(self.task))
+        self.runner = WorkerRunner(handle_sigint=False)
+        await self.runner.add_workers(self.task)
+        self.run = asyncio.create_task(self.runner.run())
         await asyncio.wait_for(self.sink.started.wait(), 5)
         if not self.service.on_demand:
             await asyncio.wait_for(self._socket_ready(), 5)

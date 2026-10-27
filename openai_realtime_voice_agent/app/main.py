@@ -5,9 +5,6 @@ import asyncio
 import logging
 from typing import Optional
 import dotenv
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness

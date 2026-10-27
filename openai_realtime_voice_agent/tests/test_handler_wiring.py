@@ -268,7 +268,8 @@ class TestDisplacedSessionWithRecording(unittest.IsolatedAsyncioTestCase):
 
     async def test_displaced_pipeline_cancels_promptly_and_cleanly(self):
         old = build_runnable(self.handler, "kitchen")
-        running = asyncio.create_task(old.runner.run(old.task))
+        await old.runner.add_workers(old.task)
+        running = asyncio.create_task(old.runner.run())
         await asyncio.wait_for(old.transport.output().started.wait(), 5)
         frame = InputAudioRawFrame(audio=b"\x01\x00" * 320, sample_rate=16000, num_channels=1)
         await old.task.queue_frames([frame] * 10)

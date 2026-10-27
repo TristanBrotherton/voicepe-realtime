@@ -57,7 +57,10 @@ class LiveServerTestCase(unittest.IsolatedAsyncioTestCase):
         # genuinely exercised.
         def fake_build(connection, activity_callback=None):
             class Runner:
-                async def run(self, _task):
+                async def add_workers(self, *_workers):
+                    return None
+
+                async def run(self):
                     async for message in connection.transport.client.receive():
                         await connection.serializer.deserialize(message)
 
