@@ -16,12 +16,11 @@ updates:
     cooldown:
       default-days: 7
     ignore:
-      # pipecat 1.x is a migration, not a bump: it breaks the add-on at import
-      # and changes tool, interruption and audio behaviour. The parked work is
-      # on the feat/pipecat-1.13 branch; patch releases of the pinned 0.0.x
-      # line still come through.
+      # Any pipecat past 0.0.97 is a migration, not a bump: 0.0.108 already
+      # breaks the add-on at import (most test modules fail to load), and 1.x
+      # also changes tool, interruption and audio behaviour. The parked work
+      # is on the feat/pipecat-1.13 branch.
       - dependency-name: "pipecat-ai"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # Hash-locked CI tools (zizmor, bandit).
   - package-ecosystem: "pip"
