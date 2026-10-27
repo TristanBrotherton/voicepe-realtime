@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.audio.utils import create_stream_resampler
 
+from app.device_config import DeviceDirectory
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.raw_audio_serializer import RawAudioSerializer
@@ -601,6 +602,11 @@ class WebSocketHandler:
         # cap across independently running add-ons.
         self.live_session_policy = None
         self.live_spend_ledger = None
+        # Per-device settings (app/device_config.py). A device with its own
+        # caps gets its own ledger from ``device_ledger_factory``.
+        self.device_directory = DeviceDirectory()
+        self.device_ledger_factory = None
+        self._device_ledgers: dict = {}
         # Called with (connection, reason) when the spend cutoff refuses a turn.
         self.budget_refusal_speaker = None
         self._background: set = set()
@@ -671,7 +677,7 @@ class WebSocketHandler:
                 # The discussion ended with the session: the device's
                 # follow-up window goes back to the operator's.
                 discussion_hello[0] = False
-                self._spawn(connection.send_json(self.hello_payload()))
+                self._spawn(connection.send_json(self.hello_payload(connection.device_id)))
             # Publish on every close, so the session-minute total a spend
             # watchdog reads is never more than one session stale.
             try:
@@ -698,7 +704,7 @@ class WebSocketHandler:
 
         gate = LiveSessionGate(
             service, device_id=connection.device_id, policy=policy,
-            ledger=self.live_spend_ledger, on_refused=_refused,
+            ledger=self.ledger_for(connection.device_id), on_refused=_refused,
             on_closed=_charged,
         )
         # Activity -> deadlines. Only audible output counts as the model being
@@ -732,7 +738,8 @@ class WebSocketHandler:
                     discussion_hello[0] = True
                     follow_up = int(_env_float("DISCUSSION_FOLLOW_UP_MS", 10000.0))
                     self._spawn(connection.send_json(
-                        dict(self.hello_payload(), follow_up_ms=max(self.follow_up_ms, follow_up))))
+                        dict(self.hello_payload(connection.device_id),
+                             follow_up_ms=max(self.follow_up_ms_for(connection.device_id), follow_up))))
             service.on_discussion = _discussion
         logger.info(
             f"🪙 GPT-Live sessions for {connection.device_id} are on demand: "
@@ -749,7 +756,7 @@ class WebSocketHandler:
 
         Returns None when the option is off or there is no follow-up window.
         """
-        if not self.follow_up_hold or self.follow_up_ms <= 0:
+        if not self.follow_up_hold or self.follow_up_ms_for(connection.device_id) <= 0:
             return None
         phase_emitter = connection.phase_emitter
         serializer = connection.serializer
@@ -952,7 +959,8 @@ class WebSocketHandler:
         # transport.output(), so it acts on the final audio stream the device
         # receives.
         # Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
-        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_buffer_ms))
+        pipeline_components.append(OutputLeadBuffer(lead_ms=self._device_value(
+            connection.device_id, "output_lead_buffer_ms", self.output_lead_buffer_ms)))
 
         pipeline_components.append(transport.output())
         
@@ -1627,7 +1635,28 @@ class WebSocketHandler:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    def hello_payload(self) -> dict:
+    def _device_value(self, device_id: Optional[str], name: str, default):
+        profile = self.device_directory.get(device_id) if device_id else None
+        value = getattr(profile, name, None) if profile is not None else None
+        return default if value is None else max(0, int(value))
+
+    def follow_up_ms_for(self, device_id: Optional[str]) -> int:
+        profile = self.device_directory.get(device_id) if device_id else None
+        seconds = getattr(profile, "follow_up_listen_seconds", None) if profile is not None else None
+        return self.follow_up_ms if seconds is None else max(0, min(60, int(seconds))) * 1000
+
+    def ledger_for(self, device_id: Optional[str]):
+        """The spend ledger a device's sessions are charged to: its own when
+        the device has its own caps, else the instance's."""
+        profile = self.device_directory.get(device_id) if device_id else None
+        if profile is None or not profile.has_own_caps or self.device_ledger_factory is None:
+            return self.live_spend_ledger
+        ledger = self._device_ledgers.get(profile.name)
+        if ledger is None:
+            ledger = self._device_ledgers[profile.name] = self.device_ledger_factory(profile)
+        return ledger
+
+    def hello_payload(self, device_id: Optional[str] = None) -> dict:
         """The handshake the device expects immediately after connecting.
 
         follow_up_ms tells the device how long to hold the mic open after a
@@ -1642,10 +1671,12 @@ class WebSocketHandler:
             "type": "hello",
             "proto": 2,
             "audio_out": "pcm",
-            "follow_up_ms": self.follow_up_ms,
-            "follow_up_open_delay_ms": self.follow_up_open_delay_ms,
-            "wake_open_delay_ms": self.wake_open_delay_ms,
-            "playback_prebuffer_ms": self.playback_prebuffer_ms,
+            "follow_up_ms": self.follow_up_ms_for(device_id),
+            "follow_up_open_delay_ms": self._device_value(
+                device_id, "follow_up_open_delay_ms", self.follow_up_open_delay_ms),
+            "wake_open_delay_ms": self._device_value(device_id, "wake_open_delay_ms", self.wake_open_delay_ms),
+            "playback_prebuffer_ms": self._device_value(
+                device_id, "playback_prebuffer_ms", self.playback_prebuffer_ms),
             # 1 = the operator opted in to storing the pre-wake trigger snippet
             # for false-wake review; firmware also requires its own switch.
             "trigger_capture": 1 if (self.trigger_capture and self.wake_events.storing_audio()) else 0,
@@ -1679,7 +1710,8 @@ class WebSocketHandler:
             await websocket.close(code=1008)
             return
         await websocket.accept()
-        device_id = device_id_from_websocket(websocket)
+        device_id = device_id_from_websocket(websocket, {
+            p.port: p.name for p in self.device_directory.profiles if p.port is not None})
         logger.info(
             f"🔗 device {device_id} connected ({len(self.devices) + 1} total)"
             + ("" if decision.authenticated else f" [{decision.reason}]")
@@ -1751,7 +1783,7 @@ class WebSocketHandler:
 
             displaced = await self.devices.add(connection)
             registered = True
-            await connection.send_json(self.hello_payload())
+            await connection.send_json(self.hello_payload(connection.device_id))
 
             if displaced is not None:
                 await self._teardown(displaced)

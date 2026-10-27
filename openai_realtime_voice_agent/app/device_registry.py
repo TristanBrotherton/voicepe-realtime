@@ -35,10 +35,20 @@ def sanitize_device_id(raw: str) -> str:
     return cleaned[:MAX_DEVICE_ID_LEN]
 
 
-def device_id_from_websocket(websocket: Any) -> str:
+def local_port(websocket: Any) -> Optional[int]:
+    """The port this connection came in on (the ASGI scope's ``server``)."""
+    try:
+        server = (getattr(websocket, "scope", None) or {}).get("server")
+        return int(server[1]) if server and server[1] is not None else None
+    except Exception:  # pragma: no cover - defensive, never fatal
+        return None
+
+
+def device_id_from_websocket(websocket: Any, port_names: Optional[Dict[int, str]] = None) -> str:
     """Derive a best-effort device identifier for a connection.
 
-    Prefers an explicit `?device_id=` from the connection URL, because the
+    Prefers an explicit `?device_id=` from the connection URL, then the name
+    configured for the port it connected to (``port_names``), because the
     fallback — the client IP — is not stable: it changes on DHCP renewal
     (orphaning that device's cached conversation context) and collapses two
     devices behind the same NAT into one identity.
@@ -60,6 +70,13 @@ def device_id_from_websocket(websocket: Any) -> str:
                     return explicit
     except Exception as e:  # pragma: no cover - defensive, never fatal
         logger.debug(f"could not read device_id from query string: {e!r}")
+
+    # A device configured by its port: one instance listening on the ports
+    # that used to belong to one add-on copy per device.
+    if port_names:
+        named = port_names.get(local_port(websocket))
+        if named:
+            return named
 
     client = getattr(websocket, "client", None)
     host = getattr(client, "host", None) if client else None

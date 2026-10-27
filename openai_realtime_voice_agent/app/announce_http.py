@@ -22,6 +22,7 @@ lands its answer in the conversation.
 import asyncio
 import logging
 import time
+from typing import Optional
 
 from aiohttp import web
 
@@ -44,9 +45,12 @@ _announce_lock = asyncio.Lock()
 
 
 async def start_announce_server(port: int, token: str, announcer, is_connected,
-                                task_sink=None) -> web.AppRunner:
+                                task_sink=None, default_device_id: Optional[str] = None) -> web.AppRunner:
     """``task_sink(task_id, text, ok) -> awaitable bool`` claims a result for a
-    pending background task (app.live_tasks.deliver_external_result)."""
+    pending background task (app.live_tasks.deliver_external_result).
+
+    ``default_device_id``: the device an announcement without a ``device_id``
+    is for (a port configured for one device in the ``devices`` option)."""
 
     async def claim_task(task_id: str, text: str, ok: bool, detail: str = "") -> bool:
         if task_sink is None or not task_id:
@@ -122,7 +126,7 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
         # Optional room selection. With several devices connected, "the
         # device" is ambiguous: an explicit device_id names the room, and
         # omitting it speaks on whichever device was last used.
-        device_id = (body.get("device_id") or "").strip() or None
+        device_id = (body.get("device_id") or "").strip() or default_device_id or None
         announcement_id = (body.get("announcement_id") or "").strip()[:200]
         if not is_connected(device_id):
             error = "device not connected" if device_id else "no device connected"

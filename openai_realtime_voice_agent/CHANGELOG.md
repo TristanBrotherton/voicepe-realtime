@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.0 (fork)
+
+### New: several Voice PEs on one add-on, each with its own settings
+
+- A new `devices` option names each device on this add-on and can give it
+  its own follow-up window, mic-open and wake delays, playback and output
+  buffers, timer ring switch, room (sent to your agent), GPT-Live voice and
+  GPT-Live daily caps. Anything a device leaves out uses the add-on's
+  setting. A device with its own caps is charged on its own ledger.
+- A device is recognised by the `device_id` in its URL or by its own `port`:
+  the add-on also listens on every device port, so devices that each had
+  their own add-on copy can move onto one add-on without a reflash. An
+  `announce_port` per device does the same for announcements.
+- With `devices` empty (the default) nothing changes.
+
 ## 0.19.24 (fork)
 
 ### Fixed: one device's failed Home Assistant call could cut off another's

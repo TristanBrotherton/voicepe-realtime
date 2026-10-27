@@ -135,3 +135,30 @@ class TestAnnounceHttp(AnnounceServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnnouncePortForADevice(AnnounceServerTestCase):
+    """An announce port configured for one device (the devices option)."""
+
+    async def asyncSetUp(self):
+        announce_http._recent.clear()
+        announce_http._pending.clear()
+        self.attempts = []
+        self.results = []
+        self.runner = await announce_http.start_announce_server(
+            0, TOKEN, self._announce, lambda device_id: device_id in self.connected,
+            default_device_id="office",
+        )
+        site = next(iter(self.runner.sites))
+        self.port = site._server.sockets[0].getsockname()[1]
+        self.session = ClientSession()
+
+    async def test_without_a_device_id_it_speaks_on_its_device(self):
+        async with self.post({"message": "Dinner is ready"}) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.attempts, [("Dinner is ready", "office")])
+
+    async def test_an_explicit_device_id_still_wins(self):
+        async with self.post({"message": "Dinner is ready", "device_id": "kitchen"}) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.attempts, [("Dinner is ready", "kitchen")])

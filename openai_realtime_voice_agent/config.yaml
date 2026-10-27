@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.19.24"
+version: "0.20.0"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -141,6 +141,10 @@ options:
   # "Authorization: Bearer <announce_token>" plays the message on the device.
   announce_port: 0
   announce_token: ""
+  # Several Voice PEs on this one add-on: name each device and, optionally,
+  # give it the port it connects to and its own settings. Empty = one
+  # instance-wide set of settings (see DOCS.md, "Several devices").
+  devices: []
 
   # --- ⚙️ Advanced ---
   websocket_port: 8080
@@ -221,6 +225,20 @@ schema:
   openclaw_url: str
   announce_port: int(0,65535)
   announce_token: str
+  devices:
+    - name: str
+      port: "int(1024,65535)?"
+      announce_port: "int(1024,65535)?"
+      follow_up_listen_seconds: "int(0,60)?"
+      follow_up_open_delay_ms: "int(0,5000)?"
+      wake_open_delay_ms: "int(0,5000)?"
+      playback_prebuffer_ms: "int(0,2000)?"
+      output_lead_buffer_ms: "int(0,2000)?"
+      live_max_usd_per_day: "float(0,1000)?"
+      live_max_session_minutes_per_day: "float(0,1440)?"
+      timer_ring_entity: str?
+      room: str?
+      voice: str?
   # --- ⚙️ Advanced ---
   websocket_port: int(1024,65535)
   session_reuse_timeout_seconds: int(0,3600)
