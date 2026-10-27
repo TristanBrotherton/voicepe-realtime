@@ -1851,6 +1851,89 @@ class StreamingAndLifecycle(Patched):
             self.assertIn("10:05", h.service._session_start_event()["session"]["instructions"])
 
 
+class AcknowledgementPlaysWhole(Patched):
+    """Kitchen 2026-10-26: the voice's "One moment, <name>." was cut off
+    mid-word ("one mo-") when the result came in, and what the gate held with
+    it was dropped. An acknowledgement the user has started hearing finishes;
+    only the words after it are held or dropped."""
+
+    def setUp(self):
+        super().setUp()
+        from app import live_router
+        live_router.set_known_names(["Alex"])
+        self.addCleanup(live_router.set_known_names, [])
+
+    def backend(self):
+        backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Milk.")))
+        backend.gate.clear()
+        return backend
+
+    async def test_a_name_still_streaming_in_does_not_cut_it_off(self):
+        backend = self.backend()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("What's on the shopping list?")
+            await asyncio.sleep(0.15)
+            h.voice_says("One moment,", ms=300)
+            h.voice_says(" al", ms=100)  # a stream cuts names anywhere
+            h.voice_says("ex.", ms=100)
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(h.heard()), len(fx.tone(500)), "the whole acknowledgement, name and all")
+            backend.gate.set()
+            await h.wait_commentary()
+
+    async def test_words_after_the_acknowledgement_never_cut_it_off(self):
+        backend = self.backend()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("What's on the shopping list?")
+            await asyncio.sleep(0.15)
+            h.voice_says("One moment.", ms=300)
+            h.voice_says(" The list has milk.", ms=300)
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(h.heard()), len(fx.tone(300)),
+                             "the acknowledgement plays whole; the guess after it is held")
+            backend.gate.set()
+            await h.wait_commentary()
+            await asyncio.sleep(0.2)
+            self.assertEqual(len(h.heard()), len(fx.tone(300)), "the held guess is dropped unheard")
+
+    async def test_a_result_arriving_mid_name_keeps_the_acknowledgement(self):
+        backend = self.backend()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("What's on the shopping list?")
+            await asyncio.sleep(0.15)
+            h.voice_says("One moment,", ms=300)
+            h.voice_says(" al", ms=100)  # a stream cuts names anywhere
+            backend.gate.set()
+            await h.wait_commentary()
+            await asyncio.sleep(0.2)
+            self.assertEqual(len(h.heard()), len(fx.tone(300)),
+                             "what was spoken as the acknowledgement plays; the unfinished name does not")
+
+    async def test_an_acknowledgement_across_a_re_route_is_one_phrase(self):
+        backend = self.backend()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("What's on the")
+            await asyncio.sleep(0.15)
+            h.voice_says("One moment,", ms=300)
+            await h.user_says(" shopping list?", start_ms=2000)
+            await asyncio.sleep(0.15)
+            h.voice_says(" Alex.", ms=100)
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(h.heard()), len(fx.tone(400)), "the name ends the acknowledgement it began")
+            backend.gate.set()
+            await h.wait_commentary()
+
+    def test_a_name_cut_off_by_streaming_is_still_forming(self):
+        from app.live_router import ACK, ACK_PREFIX, NOT_ACK, acknowledgement_state
+        self.assertEqual(acknowledgement_state("One moment, al"), ACK_PREFIX)
+        self.assertEqual(acknowledgement_state("One moment, Alex"), ACK)
+        self.assertEqual(acknowledgement_state("Okay, al"), ACK_PREFIX)
+        # A finished word that is not a name, or a claim before it, is not.
+        self.assertEqual(acknowledgement_state("One moment, al."), NOT_ACK)
+        self.assertEqual(acknowledgement_state("It's on, al"), NOT_ACK)
+        self.assertEqual(acknowledgement_state("One moment, bo"), NOT_ACK)
+
+
 class IntentRecognizerWire(unittest.IsolatedAsyncioTestCase):
     async def test_a_debug_match_is_parsed_and_nothing_is_executed(self):
         sent = []
