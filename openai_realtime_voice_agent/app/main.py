@@ -1483,7 +1483,9 @@ class Application:
         if self.mcp_client:
             try:
                 logger.info("🔧 Fetching MCP tool definitions...")
-                mcp_tools_schema = await self.mcp_client.get_tools_schema()
+                # Opens the persistent session on first use; the schemas
+                # carry pipecat's call handler, wrapped per tool below.
+                mcp_tools_schema = await self.mcp_client.tools()
 
                 # Convert MCP tool schemas to OpenAI format, applying the
                 # optional allow-list so the realtime session isn't flooded
@@ -1863,15 +1865,22 @@ class Application:
             logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
         logger.info("✅ Registered timer + memory tools")
 
-        # Register MCP tool handlers if available
+        # Register MCP tool handlers if available. Each handler is pipecat's
+        # own tool wrapper under our session policy (app/mcp_service.py);
+        # the MCP client is shared by every device, so it is registered
+        # without pipecat's per-service teardown cleanup, which would close
+        # the shared session whenever one device disconnected.
         if self.mcp_client and mcp_tools_schema:
             try:
-                await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
+                for function_schema in mcp_tools_schema.standard_tools:
+                    service.register_function(
+                        function_schema.name, self.mcp_client.guarded_handler(function_schema)
+                    )
                 logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
-        # MUST come AFTER register_tools_schema: pipecat registers a handler
-        # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+        # MUST come AFTER the MCP registration: a handler is registered for
+        # EVERY MCP tool (our allow-list/dedup only trims the definitions
         # sent to the model, not handler registration), so a same-named
         # ask_openclaw script silently rebinds the tool back onto the HA MCP
         # path and its 60s cap. Observed live 2026-07-13: "It failed. I

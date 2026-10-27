@@ -1,24 +1,34 @@
 """Persistent MCP session reuse and the bounded web search tool."""
 import asyncio
 import contextlib
+import dataclasses
 import unittest
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
+import pipecat.services.mcp_service as mcp_module
 from pipecat.services.mcp_service import StreamableHttpParameters
 
 from app import web_search_tool
 from app.mcp_service import PersistentMCPClient
 
+TOOL_NAMES = ("HassTurnOn", "HassTurnOff", "HassLightSet", "HassListAddItem",
+              "HassTurnOn0", "HassTurnOn1", "HassTurnOn2", "HassTurnOn3")
+
 
 class FakeSession:
-    instances = 0
+    """Enough of an MCP ClientSession for pipecat's client: opened by its
+    owner task as an async context manager, initialised, then asked for tool
+    listings and tool calls."""
 
-    def __init__(self, read, write, fail_calls=False):
+    instances = 0
+    fail_calls = False
+
+    def __init__(self, read, write):
         FakeSession.instances += 1
         self.calls = []
-        self.fail_calls = fail_calls
-        self.pings = 0
+        self.lists = 0
 
     async def __aenter__(self):
         return self
@@ -29,87 +39,142 @@ class FakeSession:
     async def initialize(self):
         return None
 
-    async def send_ping(self):
-        self.pings += 1
+    async def list_tools(self):
+        self.lists += 1
+        return SimpleNamespace(tools=[
+            SimpleNamespace(name=name, description=f"{name} tool",
+                            input_schema={"type": "object", "properties": {}, "required": []})
+            for name in TOOL_NAMES
+        ])
 
     async def call_tool(self, name, arguments=None):
         self.calls.append(name)
-        if self.fail_calls:
+        if FakeSession.fail_calls:
             raise RuntimeError("connection reset after send")
-        return SimpleNamespace(content=[SimpleNamespace(text=f"{name} ok")])
+        return SimpleNamespace(content=[mcp_module.TextContent(type="text", text=f"{name} ok")])
 
 
 @contextlib.asynccontextmanager
-async def fake_transport(**_kwargs):
-    yield ("read", "write", None)
+async def fake_transport(_params):
+    yield ("read", "write")
 
 
+@dataclasses.dataclass
 class Params:
-    def __init__(self, name):
-        self.function_name = name
-        self.tool_call_id = "t"
-        self.arguments = {}
-        self.results = []
+    """The FunctionCallParams fields the guarded handler reads and replaces."""
 
-    async def result_callback(self, result):
-        self.results.append(result)
+    function_name: str
+    result_callback: Any
+    tool_call_id: str = "t"
+    arguments: dict = dataclasses.field(default_factory=dict)
 
 
-def make_client(fail_calls=False):
-    client = PersistentMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
-    client._client = fake_transport
-    client._session = lambda r, w: FakeSession(r, w, fail_calls=fail_calls)
-    return client
+def make_params(name):
+    results = []
+
+    async def result_callback(result, *, properties=None):
+        results.append(result)
+
+    params = Params(name, result_callback)
+    params.results = results
+    return params
 
 
 class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
-    async def test_tool_calls_reuse_one_session(self):
+    """The session policy on top of pipecat 1.x's own persistent MCPClient.
+
+    pipecat's client is exercised for real; only the MCP SDK underneath it
+    (the streamable-HTTP transport and the ClientSession) is faked.
+    """
+
+    async def asyncSetUp(self):
         FakeSession.instances = 0
-        client = make_client()
+        FakeSession.fail_calls = False
+        self.sessions = []
+
+        def session_factory(read, write):
+            session = FakeSession(read, write)
+            self.sessions.append(session)
+            return session
+
+        self._patches = [
+            patch.object(mcp_module, "_streamable_http_transport", fake_transport),
+            patch.object(mcp_module, "ClientSession", session_factory),
+        ]
+        for p in self._patches:
+            p.start()
+        self.client = PersistentMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
+        self.handlers = {}
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        for p in self._patches:
+            p.stop()
+
+    async def call(self, name):
+        if name not in self.handlers:
+            schema = await self.client.tools()
+            for function_schema in schema.standard_tools:
+                self.handlers[function_schema.name] = self.client.guarded_handler(function_schema)
+        params = make_params(name)
+        await self.handlers[name](params)
+        return params
+
+    async def test_tool_calls_reuse_one_session(self):
         for name in ("HassTurnOn", "HassTurnOff", "HassLightSet"):
-            params = Params(name)
-            await client._streamable_http_tool_wrapper(params)
+            params = await self.call(name)
             self.assertEqual(params.results, [f"{name} ok"])
         self.assertEqual(FakeSession.instances, 1)
-        self.assertEqual(client.session_opens, 1)
-        await client.aclose()
+        self.assertEqual(self.client.session_opens, 1)
+        self.assertEqual(self.sessions[0].calls, ["HassTurnOn", "HassTurnOff", "HassLightSet"])
 
     async def test_concurrent_calls_share_the_session(self):
-        FakeSession.instances = 0
-        client = make_client()
-        params = [Params(f"HassTurnOn{i}") for i in range(4)]
-        await asyncio.gather(*(client._streamable_http_tool_wrapper(p) for p in params))
+        await self.call("HassTurnOn")  # registers the handlers
+        results = await asyncio.gather(*(self.call(f"HassTurnOn{i}") for i in range(4)))
         self.assertEqual(FakeSession.instances, 1)
-        self.assertTrue(all(p.results for p in params))
-        await client.aclose()
+        self.assertTrue(all(p.results for p in results))
 
-    async def test_idle_session_is_pinged_before_reuse(self):
-        client = make_client()
-        await client._streamable_http_tool_wrapper(Params("HassTurnOn"))
-        client._last_used -= client.IDLE_PING_S + 1
-        await client._streamable_http_tool_wrapper(Params("HassTurnOn"))
-        self.assertEqual(client._persistent_session.pings, 1)
-        await client.aclose()
+    async def test_idle_session_is_probed_before_reuse(self):
+        await self.call("HassTurnOn")
+        listings = self.sessions[0].lists
+        self.client._last_used -= self.client.IDLE_PING_S + 1
+        await self.call("HassTurnOn")
+        self.assertEqual(self.sessions[0].lists, listings + 1, "one probe round trip before reuse")
+        self.assertEqual(FakeSession.instances, 1, "a healthy idle session is kept")
+
+    async def test_dead_idle_session_is_reopened_before_sending(self):
+        await self.call("HassTurnOn")
+        original = self.sessions[0]
+
+        async def broken_list_tools():
+            raise RuntimeError("session gone")
+
+        original.list_tools = broken_list_tools
+        self.client._last_used -= self.client.IDLE_PING_S + 1
+        params = await self.call("HassTurnOn")
+        self.assertEqual(params.results, ["HassTurnOn ok"])
+        self.assertEqual(FakeSession.instances, 2)
+        self.assertEqual(original.calls, ["HassTurnOn"], "nothing was sent on the dead session")
 
     async def test_failure_after_sending_is_not_retried(self):
-        client = make_client(fail_calls=True)
-        params = Params("HassListAddItem")
-        await client._streamable_http_tool_wrapper(params)
+        await self.call("HassTurnOn")  # registers the handlers on a healthy session
+        FakeSession.fail_calls = True
+        params = await self.call("HassListAddItem")
         self.assertEqual(len(params.results), 1)
         self.assertIn("may or may not have completed", params.results[0])
-        await client.aclose()
+        self.assertEqual(self.sessions[0].calls, ["HassTurnOn", "HassListAddItem"], "sent exactly once")
 
     async def test_unreachable_home_assistant_reports_cleanly(self):
-        client = make_client()
+        await self.call("HassTurnOn")  # registers the handlers
+        await self.client.aclose()
 
         @contextlib.asynccontextmanager
-        async def broken(**_kwargs):
+        async def broken(_params):
             raise OSError("connection refused")
             yield  # pragma: no cover
 
-        client._client = broken
-        params = Params("HassTurnOn")
-        await client._streamable_http_tool_wrapper(params)
+        with patch.object(mcp_module, "_streamable_http_transport", broken):
+            params = await self.call("HassTurnOn")
         self.assertIn("not reachable", params.results[0])
 
 
