@@ -9,7 +9,7 @@ import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, OutputTransportMessageFrame, Frame
-from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializerType
+from pipecat.serializers.base_serializer import FrameSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +61,16 @@ def parse_wake_meta(data: Dict[str, Any]) -> Dict[str, Any]:
 class RawAudioSerializer(FrameSerializer):
     """Treats binary messages as raw PCM and routes text frames to handlers.
 
-    pipecat 0.0.97's websocket transport routes EVERY inbound frame through
-    this serializer, so the device's JSON control messages (wake, interrupt,
-    ping, flush, flags, metrics) are dispatched here. None of them injects a
-    pipeline frame, and none may block: the receive loop is also the path
-    that delivers the user's audio.
+    pipecat's websocket transport routes EVERY inbound frame through this
+    serializer, so the device's JSON control messages (wake, interrupt, ping,
+    flush, flags, metrics) are dispatched here. None of them injects a
+    pipeline frame (``deserialize`` returns None, the documented "nothing to
+    push"), and none may block: the receive loop is also the path that
+    delivers the user's audio.
     """
 
     def __init__(self, device_id: str, input_sample_rate: int | None = None):
+        super().__init__()
         self._device_id = device_id
         # The Voice PE firmware streams 16 kHz PCM16 mono; the InputResampler
         # processor upsamples to the 24 kHz OpenAI requires.
@@ -196,10 +198,6 @@ class RawAudioSerializer(FrameSerializer):
                 await handler(*args)
         except Exception as e:
             logger.warning(f"⚠️ device {name} handler failed: {e!r}")
-
-    @property
-    def type(self) -> FrameSerializerType:
-        return FrameSerializerType.BINARY
 
     def _enrolling(self) -> bool:
         return (
@@ -423,8 +421,8 @@ class RawAudioSerializer(FrameSerializer):
         if self._oob_done is not None:
             self._oob_done.set()
 
-    async def serialize(self, frame: Frame) -> bytes | str:
-        """Raw PCM plus ordered Live batch fences; other frames are ignored."""
+    async def serialize(self, frame: Frame) -> bytes | str | None:
+        """Raw PCM plus ordered Live batch fences; other frames are ignored (None)."""
         if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
             if frame.message.get('type') == 'output_batch_end':
                 if self.on_output_batch_end is not None:
@@ -443,4 +441,4 @@ class RawAudioSerializer(FrameSerializer):
                 except Exception:
                     pass
             return frame.audio
-        return b""
+        return None

@@ -1668,7 +1668,7 @@ class QueuedResultsLifecycle(Patched):
             self.assertEqual(op.result.kind, "failed", "it says it was not done")
             before = len(h.socket.of("session.commentary.append"))
             h.service._task_flush_again = False
-            await h.service._cancel(h.service._task_flush_task)
+            await h.service._stop_task(h.service._task_flush_task)
             await asyncio.wait_for(h.service.close_session("idle"), 10)
             self.assertEqual(len(h.socket.of("session.commentary.append")), before,
                              "nothing is spoken into the closing session")

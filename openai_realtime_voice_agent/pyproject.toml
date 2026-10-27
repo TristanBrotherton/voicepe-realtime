@@ -7,13 +7,15 @@ packages = [{include = "app", from = "."}]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
-# Pinned to the 0.0.x line: this codebase targets the Pipecat 0.0.x API
-# (FrameSerializerType, OpenAIRealtimeLLMService, SessionProperties events,
-# WebsocketServerParams). Without a lockfile pip otherwise resolves Pipecat
-# 1.x, whose changed API breaks the imports. 0.0.97 is the version this was
-# developed/tested against. On any Pipecat upgrade, verify the custom mixed
-# transport against its websocket client, callbacks, and input/output internals.
-pipecat-ai = {extras = ["mcp", "openai", "websocket"], version = "0.0.97"}
+# Pinned exactly: this codebase targets the Pipecat 1.x API (LLMContext,
+# InterruptionFrame, FrameSerializer as a BaseObject, FastAPI websocket
+# client without a binary/text mode, MCPClient with one owned session).
+# 1.13.0 is the version this was developed/tested against. On any Pipecat
+# upgrade, re-check the places that reach into pipecat internals (each is
+# commented): the custom mixed transport (websocket client, media sender
+# buffer), the tool-wait override in app/tool_guards.py, the realtime
+# service's context pre-seed and the Live service's reconnect hooks.
+pipecat-ai = {extras = ["mcp", "openai", "websocket"], version = "1.13.0"}
 python-dotenv = ">=1.0.0"
 # Voice-print speaker ID (fork): ONNX speaker-embedding runtime. Ships
 # manylinux aarch64/amd64 wheels; the model file itself is fetched in the

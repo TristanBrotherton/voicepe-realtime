@@ -9,6 +9,7 @@ from pipecat.frames.frames import EndFrame, OutputTransportMessageFrame, TTSAudi
 from starlette.websockets import WebSocket, WebSocketState
 
 from pipecat.transports.websocket.fastapi import (
+    _WS_CLOSE_TIMEOUT_DEFAULT,
     FastAPIWebsocketClient,
     FastAPIWebsocketInputTransport,
     FastAPIWebsocketOutputTransport,
@@ -25,17 +26,19 @@ class MixedFastAPIWebsocketClient(FastAPIWebsocketClient):
     a mode fixed at construction time.
     """
 
-    def __init__(self, websocket: WebSocket, callbacks):
+    def __init__(self, websocket: WebSocket, callbacks, ws_close_timeout: float = _WS_CLOSE_TIMEOUT_DEFAULT):
         """Initialize the client.
 
         Args:
             websocket: The FastAPI/starlette WebSocket connection.
             callbacks: The transport's FastAPIWebsocketCallbacks.
+            ws_close_timeout: How long disconnect() waits for the close handshake.
         """
-        # `is_binary` is inherited but never consulted — both receive() and
-        # send() are overridden to decide per message. It is set to True only
-        # so any base-class code that reads it assumes the audio path.
-        super().__init__(websocket, True, callbacks)
+        # The stock client reads text and binary alike since pipecat 1.x, but
+        # its receive() iterator ends on the first frame of the other kind
+        # that carries no payload, and its send() takes no lock; both
+        # overrides below stay.
+        super().__init__(websocket, callbacks, ws_close_timeout=ws_close_timeout)
         # The pipeline's output transport writes audio bytes while the phase
         # emitter writes JSON text, from different tasks, to the same socket.
         # starlette does not serialize concurrent sends, so interleaved frames
@@ -131,11 +134,20 @@ class MixedFastAPIWebsocketInputTransport(FastAPIWebsocketInputTransport):
 
 
 class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
-    """Pipecat 0.0.97: flush partial PCM before an ordered Live batch fence.
+    """Flush partial PCM before an ordered Live batch fence.
 
-    Pipecat buffers sub-chunk tails across ordinary message frames. Without
-    this pinned-version adapter an end marker could precede its final samples.
-    No padding or PCM modification; Realtime frames are unaffected.
+    pipecat's media sender only queues whole ``audio_chunk_size`` chunks and
+    keeps the sub-chunk tail back until the next audio or a TTSStoppedFrame,
+    while an ordinary message frame is queued at once. Without this adapter
+    an ``output_batch_end`` marker could precede its final samples. The tail
+    goes out as it is: no padding, no PCM modification; Realtime frames are
+    unaffected.
+
+    pipecat 1.13 has no public hook for "flush the tail before this message"
+    (``_enqueue_flushed_audio_buffer`` pads to a full chunk and is private
+    too), so this reaches into ``MediaSender``'s buffer: ``_audio_runs``,
+    ``_take_audio_chunk`` and ``_audio_queue``. Re-check on every pipecat
+    upgrade.
     """
 
     async def _handle_frame(self, frame):
@@ -143,12 +155,16 @@ class BatchFastAPIWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
                 and isinstance(frame.message, dict)
                 and frame.message.get('type') == 'output_batch_end'):
             sender = self._media_senders.get(frame.transport_destination)
-            if sender is not None and sender._audio_buffer:
-                tail = TTSAudioRawFrame(bytes(sender._audio_buffer),
-                    sample_rate=sender.sample_rate, num_channels=self._params.audio_out_channels)
-                tail.transport_destination = frame.transport_destination
-                sender._audio_buffer.clear()
-                await sender._audio_queue.put(tail)
+            if sender is not None and sender._audio_runs:
+                while sender._audio_runs:
+                    audio, uninterruptible = sender._take_audio_chunk()
+                    tail = TTSAudioRawFrame(
+                        audio, sample_rate=sender.sample_rate,
+                        num_channels=self._params.audio_out_channels,
+                    )
+                    tail.transport_destination = frame.transport_destination
+                    tail.interruptible = not uninterruptible
+                    await sender._audio_queue.put(tail)
         await super()._handle_frame(frame)
 
 
@@ -180,7 +196,9 @@ class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
         # to the input/output processors, so both have to be rebuilt around the
         # mixed client. The discarded objects hold no resources — their
         # constructors only assign fields — so this costs nothing at runtime.
-        self._client = MixedFastAPIWebsocketClient(websocket, self._callbacks)
+        self._client = MixedFastAPIWebsocketClient(
+            websocket, self._callbacks, ws_close_timeout=self._params.ws_close_timeout
+        )
         self._input = MixedFastAPIWebsocketInputTransport(
             self, self._client, self._params, name=self._input_name
         )

@@ -6,7 +6,7 @@ from typing import Dict, Any, Callable, Awaitable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
-    from pipecat.transports.websocket.server import WebsocketServerTransport
+    from pipecat.transports.websocket.server import SingleClientWebsocketServerTransport
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def execute_disconnect_tool(
 
 
 def create_disconnect_callback(
-    transport: Optional["WebsocketServerTransport"],
+    transport: Optional["SingleClientWebsocketServerTransport"],
     reason: str = "user_requested"
 ) -> Callable[[], Awaitable[None]]:
     """
@@ -95,9 +95,9 @@ def create_disconnect_callback(
                 logger.warning("⚠️ No transport available for disconnect")
                 return
             
-            from pipecat.transports.websocket.server import WebsocketServerTransport
-            if not isinstance(transport, WebsocketServerTransport):
-                logger.warning("⚠️ Transport is not a WebsocketServerTransport")
+            from pipecat.transports.websocket.server import SingleClientWebsocketServerTransport
+            if not isinstance(transport, SingleClientWebsocketServerTransport):
+                logger.warning("⚠️ Transport is not a SingleClientWebsocketServerTransport")
                 return
             
             # WebSocket transport - try to disconnect the client
@@ -157,7 +157,7 @@ def create_disconnect_callback(
 
 
 def create_disconnect_tool_handler(
-    transport: Optional["WebsocketServerTransport"]
+    transport: Optional["SingleClientWebsocketServerTransport"]
 ) -> Callable[["FunctionCallParams"], Awaitable[None]]:
     """
     Create a disconnect tool handler for Pipecat's OpenAI Realtime Service.

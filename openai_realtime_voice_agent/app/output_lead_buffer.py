@@ -29,7 +29,7 @@ a gap never re-arms the hold.
 If audio stalls entirely mid-hold, an asyncio watchdog flushes the held lead at
 max_hold_ms — the cap does not depend on another frame arriving.
 
-Barge-in safety: on StartInterruptionFrame the held audio is DROPPED (the user
+Barge-in safety: on InterruptionFrame the held audio is DROPPED (the user
 interrupted — never burst stale reply audio), and an in-flight flush stops at
 the next frame boundary (generation guard). The device also flushes its PSRAM
 queue authoritatively on 'stop', so anything already sent is discarded there
@@ -57,7 +57,7 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
     Frame,
     OutputAudioRawFrame,
-    StartInterruptionFrame,
+    InterruptionFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
@@ -192,7 +192,7 @@ class OutputLeadBuffer(FrameProcessor):
 
         # Barge-in: the user interrupted. Drop held (never-heard) audio and let
         # the interruption propagate. The next reply re-buffers naturally.
-        if isinstance(frame, StartInterruptionFrame):
+        if isinstance(frame, InterruptionFrame):
             if self._held:
                 logger.debug(f"🛑 OutputLeadBuffer dropping {len(self._held)} held frame(s) on interruption")
             self._drop()

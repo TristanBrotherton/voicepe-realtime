@@ -73,13 +73,15 @@ class TestMixedTransport(unittest.IsolatedAsyncioTestCase):
             [("bytes", b"\xaa\xbb"), ("text", '{"type":"phase","value":"listening"}')],
         )
 
-    async def test_stock_client_drops_control_frames(self):
-        # Documents why the mixed client exists: the stock binary-mode client
-        # silently drops every text control frame.
-        base = FastAPIWebsocketClient(FakeWebSocket(INBOUND), True, object())
+    async def test_stock_client_reads_both_kinds_since_pipecat_1(self):
+        # pipecat 0.0.x's binary-mode client silently dropped every text
+        # control frame, which is why the mixed client exists. Since 1.x the
+        # stock client reads both kinds in order too; what the mixed client
+        # still adds is the per-type send, the send lock and the audio tap.
+        base = FastAPIWebsocketClient(FakeWebSocket(INBOUND), object())
         got = await drain(base)
-        self.assertTrue(all(isinstance(m, (bytes, bytearray)) for m in got))
-        self.assertEqual(len(got), 2)
+        self.assertEqual(got, await drain(MixedFastAPIWebsocketClient(FakeWebSocket(INBOUND), object())))
+        self.assertEqual(len(got), 5)
 
     async def test_disconnect_terminates_iteration(self):
         self.assertEqual(await drain(MixedFastAPIWebsocketClient(FakeWebSocket([]), object())), [])

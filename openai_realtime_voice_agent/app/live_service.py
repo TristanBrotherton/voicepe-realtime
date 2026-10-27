@@ -47,7 +47,6 @@ from websockets.exceptions import ConnectionClosed
 
 from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import (
-    AggregationType,
     CancelFrame,
     EndFrame,
     Frame,
@@ -55,11 +54,14 @@ from pipecat.frames.frames import (
     FunctionCallResultFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMServiceMetadataFrame,
     OutputTransportMessageFrame,
     StartFrame,
+    TextType,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSTextFrame,
@@ -67,13 +69,11 @@ from pipecat.frames.frames import (
     UserStoppedSpeakingFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.utils.time import time_now_iso8601
 
 from app.live_audio import WITHHELD_REASONS, LiveOutputAudio, OutputAudioCapture, OutputChunk
-from pipecat.frames.frames import StartInterruptionFrame
 from app.live_evidence import TurnEvidence
 from app.live_router import (
     ACK,
@@ -1103,8 +1103,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         """Shutdown: no pre-opened socket outlives the service."""
         self._warm_closed = True
         keeper, self._warm_keeper = self._warm_keeper, None
-        await self._cancel(keeper)
-        await self._cancel(self._warm_task)
+        await self._stop_task(keeper)
+        await self._stop_task(self._warm_task)
         socket, self._warm_socket = self._warm_socket, None
         if socket is not None:
             await self._close_quietly(socket)
@@ -1279,11 +1279,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._send_user_audio(frame)
         elif isinstance(frame, LLMContextFrame):
             self._context = frame.context
-        elif isinstance(frame, OpenAILLMContextFrame):
-            try:
-                self._context = LLMContext.from_openai_context(frame.context)
-            except Exception:  # pragma: no cover - defensive
-                pass
         await self.push_frame(frame, direction)
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
@@ -1448,7 +1443,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # turn as admission silence — when the truthful account is that the
         # user interrupted it. An interrupted prompt must also never go on to
         # arm a consequential action.
-        await self._cancel(self._drain_timeout_task)
+        await self._stop_task(self._drain_timeout_task)
         self._drain_timeout_task = None
         self._drain_pending = None
         self._drain_batches.clear()
@@ -1593,7 +1588,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._user_transcript_seen_for_response = False
             self._heard_audio_this_turn = False
             self._unresolved_continuation = False
-            await self._cancel(self._silence_task)
+            await self._stop_task(self._silence_task)
             self._silence_task = None
             socket, self._websocket = self._websocket, None
             if socket is not None:
@@ -1603,12 +1598,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     socket_closed = False
                     logger.debug(f"live socket close: {e!r}")
             receive, self._receive_task = self._receive_task, None
-            await self._cancel(receive)
+            await self._stop_task(receive)
             audio, self._audio_task = self._audio_task, None
-            await self._cancel(audio)
+            await self._stop_task(audio)
             dropped = self._drain_output_audio()
             for turn in (self._user_turn, self._assistant_turn):
-                await self._cancel(turn.timer)
+                await self._stop_task(turn.timer)
                 turn.timer = None
             await self._release_delegations("disconnect")
             # A call observed but never answered is a diagnosable failure, not
@@ -1633,15 +1628,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._stream_seal_context = None
             self._drain_batches.clear()
             self._confirmation_prompts_pending.clear()
-            await self._cancel(self._drain_timeout_task)
+            await self._stop_task(self._drain_timeout_task)
             self._drain_timeout_task = None
-            await self._cancel(self._alignment_task)
+            await self._stop_task(self._alignment_task)
             self._alignment_task = None
-            await self._cancel(self._reply_resolution_task)
+            await self._stop_task(self._reply_resolution_task)
             self._reply_resolution_task = None
             self.actions.reset()
             self._in_flight.clear()
-            await self._cancel(self._silent_task)
+            await self._stop_task(self._silent_task)
             self._silent_task = None
             if self.router is not None:
                 await self._router_supersede("disconnect")
@@ -2476,7 +2471,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         pending["prompt_complete"] = event.prompt_complete
         if event.text.strip():
-            frame = TTSTextFrame(event.text, aggregated_by=AggregationType.SENTENCE)
+            frame = TTSTextFrame(event.text, text_type=TextType.SENTENCE)
             frame.includes_inter_frame_spaces = True
             await self.push_frame(frame)
         await self.push_frame(LLMFullResponseEndFrame())
@@ -2486,7 +2481,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         duration = pending["pcm_bytes"] / (LIVE_SAMPLE_RATE * 2)
         timeout = duration + 10.0
         self._reply_playout_until = time.monotonic() + timeout
-        await self._cancel(self._drain_timeout_task)
+        await self._stop_task(self._drain_timeout_task)
         self._drain_timeout_task = self._spawn(
             self._drain_watch(pending, timeout), "live-device-drain"
         )
@@ -2527,7 +2522,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                                "output_drained": False,
                                "prompt_complete": reply.prompt_complete}
         self._drain_batches[batch_id] = self._drain_pending
-        await self._cancel(self._drain_timeout_task)
+        await self._stop_task(self._drain_timeout_task)
         if self._suppress_output or not admission.can_deliver(reply) or self._reply_busy():
             return
         self._drain_timeout_task = self._spawn(
@@ -2536,7 +2531,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     sum(len(c.pcm) for c in reply.chunks), duration)
         await self.push_frame(LLMFullResponseStartFrame())
         if reply.text.strip():
-            frame = TTSTextFrame(reply.text, aggregated_by=AggregationType.SENTENCE)
+            frame = TTSTextFrame(reply.text, text_type=TextType.SENTENCE)
             frame.includes_inter_frame_spaces = True
             await self.push_frame(frame)
         for chunk in reply.chunks:
@@ -2575,7 +2570,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         return dropped
 
     async def _speech_segment_started(self) -> None:
-        await self._cancel(self._silent_task)
+        await self._stop_task(self._silent_task)
         self._silent_task = None
         for callback in list(self._response_started_callbacks):
             try:
@@ -2713,14 +2708,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 InterimTranscriptionFrame(turn.text, "", time_now_iso8601()), FrameDirection.UPSTREAM
             )
         else:
-            frame = TTSTextFrame(delta, aggregated_by=AggregationType.SENTENCE)
+            frame = TTSTextFrame(delta, text_type=TextType.SENTENCE)
             frame.includes_inter_frame_spaces = True
             await self.push_frame(frame)
-        await self._cancel(turn.timer)
+        await self._stop_task(turn.timer)
         gap = USER_TURN_GAP_S if role == "user" else ASSISTANT_TURN_GAP_S
         turn.timer = self._spawn(self._close_turn_after(role, gap), f"live-turn-{role}")
         if role == "user" and self.chat_classifier is not None and self.router is not None:
-            await self._cancel(self._spec_timer)
+            await self._stop_task(self._spec_timer)
             self._spec_timer = self._spawn(self._speculative_classify(), "live-classify-spec")
 
     async def _close_turn_after(self, role: str, gap: float) -> None:
@@ -2732,7 +2727,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     async def _close_open_turns(self) -> None:
         for role in ("user", "assistant"):
             turn = self._user_turn if role == "user" else self._assistant_turn
-            await self._cancel(turn.timer)
+            await self._stop_task(turn.timer)
             turn.timer = None
             await self._end_turn(role)
 
@@ -2750,11 +2745,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     self._spec_classify = None
                 await self._router_on_user_speech(continuation)
             if not continuation:
-                await self._cancel(self._alignment_task)
+                await self._stop_task(self._alignment_task)
                 self._alignment_task = None
-                await self._cancel(self._reply_resolution_task)
+                await self._stop_task(self._reply_resolution_task)
                 self._reply_resolution_task = None
-                await self._cancel(self._drain_timeout_task)
+                await self._stop_task(self._drain_timeout_task)
                 self._drain_timeout_task = None
                 self._drain_pending = None
                 self._drain_batches.clear()
@@ -2780,7 +2775,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._heard_audio_this_turn = False
                 self._user_transcript_seen_for_response = True
                 # The provisional first utterance retains its repeat fence.
-            await self._cancel(self._silent_task)
+            await self._stop_task(self._silent_task)
             self._silent_task = None
             timeline = self.turn_timeline
             if timeline is not None:
@@ -2825,7 +2820,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 # can dispatch. Do not increment it a second time here.
                 timeline.mark("speech_stopped")
             await self._broadcast(UserStoppedSpeakingFrame)
-            await self._cancel(self._silent_task)
+            await self._stop_task(self._silent_task)
             if self.router is not None:
                 # Router mode: the app routes the request now. There is no
                 # silent wait and no rescue; tools never depend on the voice
@@ -2950,7 +2945,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # it judged the previous turn's text, found nothing to rescue, and
             # refused a request that had never been tried. A later fragment
             # still merges under the fragment rule.
-            await self._cancel(self._user_turn.timer)
+            await self._stop_task(self._user_turn.timer)
             self._user_turn.timer = None
             await self._end_turn("user")
         if self._can_rescue_through_backend():
@@ -2972,7 +2967,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 await prompts.say("error_not_done", self.device_id)
             except Exception as e:
                 logger.debug(f"could not speak the refusal: {e!r}")
-        await self._cancel(self._silent_task)
+        await self._stop_task(self._silent_task)
         self._silent_task = None
         self._note(self.on_silent_response)
 
@@ -3007,7 +3002,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         await self._send_or_queue(request)
         # One rescue only. If the backend also produces nothing, the next
         # watchdog pass takes the ordinary silent-turn close path.
-        await self._cancel(self._silent_task)
+        await self._stop_task(self._silent_task)
         self._silent_task = self._spawn(self._silent_response_watch(), "live-silent-rescue")
 
     async def _silent_response_watch(self) -> None:
@@ -3101,10 +3096,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._drain_pending = None
             self._stream_pending = None
             self._drain_batches.clear()
-            await self._cancel(self._alignment_task)
+            await self._stop_task(self._alignment_task)
             self._alignment_task = None
             if had_output:
-                await self.push_frame(StartInterruptionFrame())
+                await self.push_frame(InterruptionFrame())
 
     async def _on_delegation_created(self, evt: dict) -> None:
         delegation = evt.get("delegation") or {}
@@ -3143,7 +3138,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         timeline = self.turn_timeline
         if timeline is not None:
             timeline.mark("response_created")
-        await self._cancel(self._silent_task)
+        await self._stop_task(self._silent_task)
         self._silent_task = None
         if did and did not in self._delegations:
             # Backend work counts as model activity for the thinking watchdog,
@@ -3457,7 +3452,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 op.abandoned = True
                 op.task.cancel()
                 self._op = None
-            await self._cancel(self._fallback_task)
+            await self._stop_task(self._fallback_task)
             self._fallback_task = None
             return
         await self._router_supersede("new utterance")
@@ -3482,11 +3477,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 logger.info(f"🧭 router: {op.op_id} superseded ({reason}) before any tool ran")
                 op.abandoned = True
                 op.task.cancel()
-        await self._cancel(self._fallback_task)
+        await self._stop_task(self._fallback_task)
         self._fallback_task = None
-        await self._cancel(self._progress_task)
+        await self._stop_task(self._progress_task)
         self._progress_task = None
-        await self._cancel(self._gate_release_task)
+        await self._stop_task(self._gate_release_task)
         self._gate_release_task = None
         dropped = len(self._gate_lag) + len(self._gate_held)
         if dropped:
@@ -3579,9 +3574,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # This utterance is the reply to a pending confirmation, if one was
         # asked; the router and the action gate decide what it means.
         self._confirmation_awaiting = False
-        await self._cancel(self._fallback_task)
+        await self._stop_task(self._fallback_task)
         self._fallback_task = self._spawn(self._fallback_ack_watch(op), "live-fallback-ack")
-        await self._cancel(self._progress_task)
+        await self._stop_task(self._progress_task)
         self._progress_task = None
         # After the soft budget the request becomes a background task: the
         # voice says so, the gate opens and the session may close (the old
@@ -4121,7 +4116,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if timeline is not None:
             timeline.mark("response_created")
         if self._user_turn.open:
-            await self._cancel(self._user_turn.timer)
+            await self._stop_task(self._user_turn.timer)
             self._user_turn.timer = None
             await self._end_turn("user")
         op = self._op
@@ -4516,9 +4511,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._router_deliver(op)
             self._finish_task(op, SESSION)
             return
-        await self._cancel(self._fallback_task)
+        await self._stop_task(self._fallback_task)
         self._fallback_task = self._spawn(self._fallback_ack_watch(op), "live-fallback-ack")
-        await self._cancel(op.watch)
+        await self._stop_task(op.watch)
         op.watch = self._spawn(self._task_promote_watch(op), f"live-task-watch-{op.op_id}")
 
     async def _task_promote_watch(self, op: RouterOp) -> None:
@@ -4549,7 +4544,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         logger.info(f"🧺 router: {op.op_id} promoted to a background task after "
                     f"{now - op.started_mono:.1f}s; the voice says so, the conversation goes on, "
                     "and the session may close")
-        await self._cancel(self._progress_task)
+        await self._stop_task(self._progress_task)
         self._progress_task = None
         heard_before = self._last_audible_mono
         self._gate_background()
@@ -4786,7 +4781,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                                         op.result.tools, op.result.timings)
         self._log_route(op, time.monotonic(), meta=False)
         if op.watch is not None and op.watch is not asyncio.current_task():
-            await self._cancel(op.watch)
+            await self._stop_task(op.watch)
             op.watch = None
         self._task_flush_soon("task done")
 
@@ -5100,7 +5095,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         live_tasks.unregister_sink(self._claim_external_result)
         for op in list(self._tasks.values()):
-            await self._cancel(op.watch)
+            await self._stop_task(op.watch)
             op.watch = None
             if op.task is not None and not op.task.done():
                 op.abandoned = True
@@ -5108,7 +5103,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 logger.warning(f"⚠️ background task {op.op_id} abandoned at shutdown; "
                                "its result could not be delivered")
         self._tasks.clear()
-        await self._cancel(self._task_flush_task)
+        await self._stop_task(self._task_flush_task)
         self._task_flush_task = None
 
     async def _router_progress_watch(self, op: RouterOp) -> None:
@@ -5320,7 +5315,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         """
         return asyncio.create_task(coro, name=f"{self.__class__.__name__}::{name}")
 
-    async def _cancel(self, task: Optional[asyncio.Task]) -> None:
+    async def _stop_task(self, task: Optional[asyncio.Task]) -> None:
+        """Cancel one of our own asyncio tasks and wait for it to unwind.
+
+        Not named ``_cancel``: pipecat's ``AIService._cancel(frame)`` is the
+        CancelFrame hook, and a same-named helper would shadow it.
+        """
         if task is None or task.done() or task is asyncio.current_task():
             return
         task.cancel()

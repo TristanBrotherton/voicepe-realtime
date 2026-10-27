@@ -6,7 +6,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     OutputAudioRawFrame,
-    StartInterruptionFrame,
+    InterruptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.processors.frame_processor import FrameProcessor
@@ -52,7 +52,7 @@ class TestOutputLeadBuffer(unittest.IsolatedAsyncioTestCase):
     async def test_interruption_drops_held_audio(self):
         held = audio_frame()
         await self.buffer.process_frame(held, FrameDirection.DOWNSTREAM)
-        interrupt = StartInterruptionFrame()
+        interrupt = InterruptionFrame()
         await self.buffer.process_frame(interrupt, FrameDirection.DOWNSTREAM)
 
         self.assertEqual(

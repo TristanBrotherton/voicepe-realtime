@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
-    StartInterruptionFrame,
+    InterruptionFrame,
     TTSAudioRawFrame,
     TTSTextFrame,
 )
@@ -190,7 +190,7 @@ class TestReplyPipeline(unittest.IsolatedAsyncioTestCase):
             await h.service._on_delegation_created(
                 fx.delegation_created('late_second_tool')
             )
-            await h.sink.wait_for(StartInterruptionFrame)
+            await h.sink.wait_for(InterruptionFrame)
             self.assertNotIn('late_second_tool', h.service._evidence.delegations)
             self.assertNotIn('late_second_tool', h.service._delegations)
             self.assertTrue(h.service._suppress_output)
