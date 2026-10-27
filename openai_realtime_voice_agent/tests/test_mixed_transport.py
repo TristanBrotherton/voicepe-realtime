@@ -87,5 +87,60 @@ class TestMixedTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await drain(MixedFastAPIWebsocketClient(FakeWebSocket([]), object())), [])
 
 
+class TestBatchFenceFlush(unittest.IsolatedAsyncioTestCase):
+    """An output_batch_end marker follows ALL of its batch's PCM.
+
+    pipecat's media sender resamples reply audio through a stream resampler
+    that keeps a filter tail back, and then cuts whole chunks, keeping the
+    sub-chunk rest back too. The fence has to flush both, or the marker
+    precedes the batch's last samples.
+    """
+
+    async def test_marker_follows_the_resampler_tail_and_the_partial_chunk(self):
+        import math
+
+        from pipecat.frames.frames import OutputTransportMessageFrame, TTSAudioRawFrame
+        from pipecat.transports.base_output import BaseOutputTransport
+        from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
+
+        from app.multi_client_transport import MixedFastAPIWebsocketTransport
+        from app.raw_audio_serializer import RawAudioSerializer
+
+        transport = MixedFastAPIWebsocketTransport(
+            FakeWebSocket([]),
+            FastAPIWebsocketParams(serializer=RawAudioSerializer("kitchen"),
+                                   audio_out_enabled=True, audio_out_sample_rate=24000),
+        )
+        out = transport.output()
+        chunk_size = 960 * 2  # 40 ms at 24 kHz mono 16-bit
+        sender = BaseOutputTransport.MediaSender(
+            out, destination=None, sample_rate=24000, audio_chunk_size=chunk_size, params=out._params
+        )
+        queued = []
+
+        class Queue:
+            async def put(self, frame):
+                queued.append(frame)
+
+        sender._audio_queue = Queue()
+        out._media_senders[None] = sender
+
+        # 100 ms of a 16 kHz tone: resampled to 24 kHz it is 2400 samples,
+        # i.e. 2.5 chunks, and the resampler holds its filter tail back.
+        samples_16k = 1600
+        pcm = b"".join(
+            int(8000 * math.sin(2 * math.pi * 440 * i / 16000)).to_bytes(2, "little", signed=True)
+            for i in range(samples_16k)
+        )
+        await sender.handle_audio_frame(TTSAudioRawFrame(pcm, sample_rate=16000, num_channels=1))
+        marker = OutputTransportMessageFrame(message={"type": "output_batch_end", "output_batch_id": "b1"})
+        await out._handle_frame(marker)
+
+        self.assertIs(queued[-1], marker, "the marker goes out last")
+        audio = b"".join(f.audio for f in queued if isinstance(f, TTSAudioRawFrame))
+        self.assertAlmostEqual(len(audio) // 2, 2400, delta=2, msg="every resampled sample precedes the marker")
+        self.assertEqual(sender._audio_runs, type(sender._audio_runs)(), "nothing held back")
+
+
 if __name__ == "__main__":
     unittest.main()

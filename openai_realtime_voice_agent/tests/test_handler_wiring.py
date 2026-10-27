@@ -286,5 +286,45 @@ class TestDisplacedSessionWithRecording(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(new.transport.output().started.is_set(), "replacement pipeline was touched")
 
 
+class TestPipelineWorkerDefaults(unittest.IsolatedAsyncioTestCase):
+    """The device pipeline runs as it did on pipecat 0.0.97's PipelineTask.
+
+    pipecat 1.x's PipelineWorker adds things the task never had: an
+    RTVIProcessor + RTVIObserver on every pipeline by default (the device
+    speaks its own protocol, not RTVI) and 20 s setup/start timeouts that
+    would tear a session down while its OpenAI socket is slow to connect.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        store = WakeEventStore(CaptureConfig(mode="off", probe_dir=self.tmp.name), instance="p")
+        self.handler = WebSocketHandler(wake_events=store)
+        self.handler.WEDGE_TIMEOUT_S = 60
+        self.connection = build_runnable(self.handler, "kitchen")
+
+    async def asyncTearDown(self):
+        for task in list(self.handler._background):
+            task.cancel()
+        await self.handler._teardown(self.connection)
+        self.tmp.cleanup()
+
+    def test_no_rtvi_processor_or_observer(self):
+        from pipecat.processors.frameworks.rtvi import RTVIObserver, RTVIProcessor
+
+        task = self.connection.task
+        with self.assertRaises(Exception):
+            task.rtvi
+        self.assertEqual(list(task._iter_processors(task._pipeline, RTVIProcessor)), [])
+        self.assertFalse(any(isinstance(o, RTVIObserver) for o in task._observer._observers))
+
+    def test_no_idle_setup_or_start_timeouts_and_no_heartbeats(self):
+        task = self.connection.task
+        self.assertIsNone(task._idle_timeout_secs)
+        self.assertIsNone(task._setup_timeout_secs)
+        self.assertIsNone(task._start_timeout_secs)
+        self.assertFalse(task._params.enable_heartbeats)
+        self.assertTrue(task._enable_turn_tracking, "as on 0.0.97")
+
+
 if __name__ == "__main__":
     unittest.main()

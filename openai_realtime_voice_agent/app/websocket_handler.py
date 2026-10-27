@@ -44,12 +44,13 @@ from app.session_controls import controls_for
 logger = logging.getLogger(__name__)
 
 # The OpenAI Realtime API works in 24 kHz PCM16. The Voice PE firmware plays
-# 24 kHz back and streams 16 kHz up. IMPORTANT: pipecat 0.0.97's websocket INPUT
-# transport does NOT resample (only the OUTPUT transport does), and OpenAI
-# Realtime's pcm16 input rate is hard-locked to 24000 (PCMAudioFormat.rate =
-# Literal[24000]) — you cannot tell it the audio is 16 kHz. So the device's
-# 16 kHz frames would be read 1.5x too fast / pitched up, garbling the whole
-# transcript. The InputResampler below upsamples 16k->24k in the pipeline.
+# 24 kHz back and streams 16 kHz up. IMPORTANT: pipecat's websocket INPUT
+# transport does NOT resample (1.13 included: only the OUTPUT transport's
+# media sender does), and OpenAI Realtime's pcm16 input rate is hard-locked to
+# 24000 (PCMAudioFormat.rate, "always 24000") — you cannot tell it the audio
+# is 16 kHz. So the device's 16 kHz frames would be read 1.5x too fast /
+# pitched up, garbling the whole transcript. The InputResampler below
+# upsamples 16k->24k in the pipeline.
 PIPELINE_SAMPLE_RATE = 24000
 
 
@@ -84,9 +85,9 @@ class SessionActivityTracker(FrameProcessor):
 class InputResampler(FrameProcessor):
     """Upsample incoming device mic audio to the OpenAI Realtime input rate.
 
-    The Voice PE streams 16 kHz PCM16. pipecat 0.0.97's websocket input transport
-    forwards those frames unchanged, and OpenAI Realtime reads pcm16 input at a
-    fixed 24 kHz — so without this the audio is interpreted ~1.5x too fast,
+    The Voice PE streams 16 kHz PCM16. pipecat's websocket input transport (1.13
+    included) forwards those frames unchanged, and OpenAI Realtime reads pcm16
+    input at a fixed 24 kHz — so without this the audio is interpreted ~1.5x too fast,
     badly degrading transcription (e.g. first word dropped, words mangled). This
     sits right after transport.input() and resamples each InputAudioRawFrame to
     out_rate. Uses a streaming resampler so there are no per-chunk edge artifacts.
@@ -152,13 +153,13 @@ class TimelineMetricsTap(FrameProcessor):
 class ConnectionRecovery(FrameProcessor):
     """Auto-reconnect the OpenAI Realtime session when its WebSocket dies.
 
-    pipecat 0.0.97's OpenAIRealtimeLLMService has NO reconnect logic: when the
-    OpenAI WS drops (1011 keepalive ping timeout, 1001 going away on the 60-min
-    cap, 1006, or any send/receive failure) it treats the send error as fatal and
-    floods ErrorFrame — ~15/s, one per forwarded mic frame — forever. The single
-    persistent session is then dead until the add-on restarts, so the device gets
-    no answer to any further turn (observed live: a 1011 flood after which the
-    next question got silence).
+    pipecat's OpenAIRealtimeLLMService has NO reconnect logic (1.13 included):
+    when the OpenAI WS drops (1011 keepalive ping timeout, 1001 going away on
+    the 60-min cap, 1006, or any send/receive failure) it pushes an ErrorFrame
+    per failed send ("Error sending client event") — ~15/s, one per forwarded
+    mic frame — forever. The single persistent session is then dead until the
+    add-on restarts, so the device gets no answer to any further turn (observed
+    live: a 1011 flood after which the next question got silence).
 
     This processor watches the ErrorFrames as they travel upstream to the task
     source, and on the first connection-death signature it:
@@ -981,11 +982,23 @@ class WebSocketHandler:
         runner = WorkerRunner(handle_sigint=False)
         # Metrics on: pipecat's TTFB/processing metrics feed the turn timeline
         # (TimelineMetricsTap) as a cross-check of our own stage stamps.
+        # pipecat 1.x's PipelineWorker adds what 0.0.97's PipelineTask never
+        # had; kept off so the device pipeline stays what it was: no
+        # RTVIProcessor + RTVIObserver (the device speaks its own protocol,
+        # not RTVI), and no 20 s setup/start timeouts, which would tear a
+        # session down while its OpenAI socket is slow to connect (the task
+        # waited; ConnectionRecovery and the wedge watchdog own that case).
+        # Heartbeats stay off and turn tracking stays on, as before;
+        # processor_unusable_policy keeps its CONTINUE default, which is the
+        # old behaviour (report the error, keep running).
         task = PipelineWorker(
             pipeline,
             params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
             idle_timeout_secs=None,
             cancel_on_idle_timeout=False,
+            enable_rtvi=False,
+            setup_timeout_secs=None,
+            start_timeout_secs=None,
         )
 
         logger.info(f"✅ Pipeline built for {client_id}")
