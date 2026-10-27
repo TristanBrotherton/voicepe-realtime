@@ -2,16 +2,21 @@
 import asyncio
 import contextlib
 import dataclasses
+import os
+import time
 import unittest
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pipecat.services.mcp_service as mcp_module
+from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.mcp_service import StreamableHttpParameters
 
 from app import web_search_tool
-from app.mcp_service import PersistentMCPClient
+from app.mcp_service import HomeAssistantMCPService, PersistentMCPClient
+from tests.test_runtime_selection import make_app
+from app.voice_runtime import REALTIME
 
 TOOL_NAMES = ("HassTurnOn", "HassTurnOff", "HassLightSet", "HassListAddItem",
               "HassTurnOn0", "HassTurnOn1", "HassTurnOn2", "HassTurnOn3")
@@ -20,27 +25,40 @@ TOOL_NAMES = ("HassTurnOn", "HassTurnOff", "HassLightSet", "HassListAddItem",
 class FakeSession:
     """Enough of an MCP ClientSession for pipecat's client: opened by its
     owner task as an async context manager, initialised, then asked for tool
-    listings and tool calls."""
+    listings, pings and tool calls. Like the real one, a call that finishes
+    after the session was closed fails."""
 
     instances = 0
-    fail_calls = False
+    fail_calls = False      # every call raises after "sending"
+    fail_names = ()         # these calls raise after "sending"
+    blocked = {}            # name -> asyncio.Event the call waits for before answering
+    list_delay = 0.0        # seconds a tool listing takes
 
     def __init__(self, read, write):
         FakeSession.instances += 1
         self.calls = []
         self.lists = 0
+        self.pings = 0
+        self.closed = False
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *exc):
+        self.closed = True
         return False
 
     async def initialize(self):
         return None
 
+    async def send_ping(self):
+        self.pings += 1
+        return None
+
     async def list_tools(self):
         self.lists += 1
+        if FakeSession.list_delay:
+            await asyncio.sleep(FakeSession.list_delay)
         return SimpleNamespace(tools=[
             SimpleNamespace(name=name, description=f"{name} tool",
                             input_schema={"type": "object", "properties": {}, "required": []})
@@ -49,8 +67,13 @@ class FakeSession:
 
     async def call_tool(self, name, arguments=None):
         self.calls.append(name)
-        if FakeSession.fail_calls:
+        if FakeSession.fail_calls or name in FakeSession.fail_names:
             raise RuntimeError("connection reset after send")
+        gate = FakeSession.blocked.get(name)
+        if gate is not None:
+            await gate.wait()
+        if self.closed:
+            raise RuntimeError("session closed under the call")
         return SimpleNamespace(content=[mcp_module.TextContent(type="text", text=f"{name} ok")])
 
 
@@ -87,9 +110,14 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
     (the streamable-HTTP transport and the ClientSession) is faked.
     """
 
+    persistent = True
+
     async def asyncSetUp(self):
         FakeSession.instances = 0
         FakeSession.fail_calls = False
+        FakeSession.fail_names = ()
+        FakeSession.blocked = {}
+        FakeSession.list_delay = 0.0
         self.sessions = []
 
         def session_factory(read, write):
@@ -103,7 +131,9 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         ]
         for p in self._patches:
             p.start()
-        self.client = PersistentMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
+        self.client = PersistentMCPClient(
+            StreamableHttpParameters(url="http://example.invalid/mcp"), persistent=self.persistent
+        )
         self.handlers = {}
 
     async def asyncTearDown(self):
@@ -111,14 +141,25 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         for p in self._patches:
             p.stop()
 
+    async def register(self):
+        schema = await self.client.tools()
+        for function_schema in schema.standard_tools:
+            self.handlers[function_schema.name] = self.client.guarded_handler(function_schema)
+
     async def call(self, name):
         if name not in self.handlers:
-            schema = await self.client.tools()
-            for function_schema in schema.standard_tools:
-                self.handlers[function_schema.name] = self.client.guarded_handler(function_schema)
+            await self.register()
         params = make_params(name)
         await self.handlers[name](params)
         return params
+
+    async def start_blocked_call(self, name):
+        """A call that has been sent and is waiting for its answer."""
+        FakeSession.blocked[name] = asyncio.Event()
+        task = asyncio.create_task(self.call(name))
+        while not any(name in session.calls for session in self.sessions):
+            await asyncio.sleep(0.005)
+        return task
 
     async def test_tool_calls_reuse_one_session(self):
         for name in ("HassTurnOn", "HassTurnOff", "HassLightSet"):
@@ -134,22 +175,23 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(FakeSession.instances, 1)
         self.assertTrue(all(p.results for p in results))
 
-    async def test_idle_session_is_probed_before_reuse(self):
+    async def test_idle_session_is_pinged_before_reuse(self):
         await self.call("HassTurnOn")
         listings = self.sessions[0].lists
         self.client._last_used -= self.client.IDLE_PING_S + 1
         await self.call("HassTurnOn")
-        self.assertEqual(self.sessions[0].lists, listings + 1, "one probe round trip before reuse")
+        self.assertEqual(self.sessions[0].pings, 1, "one ping before reuse")
+        self.assertEqual(self.sessions[0].lists, listings, "the probe is not a tool listing")
         self.assertEqual(FakeSession.instances, 1, "a healthy idle session is kept")
 
     async def test_dead_idle_session_is_reopened_before_sending(self):
         await self.call("HassTurnOn")
         original = self.sessions[0]
 
-        async def broken_list_tools():
+        async def broken_ping():
             raise RuntimeError("session gone")
 
-        original.list_tools = broken_list_tools
+        original.send_ping = broken_ping
         self.client._last_used -= self.client.IDLE_PING_S + 1
         params = await self.call("HassTurnOn")
         self.assertEqual(params.results, ["HassTurnOn ok"])
@@ -164,6 +206,48 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         self.assertIn("may or may not have completed", params.results[0])
         self.assertEqual(self.sessions[0].calls, ["HassTurnOn", "HassListAddItem"], "sent exactly once")
 
+    async def test_failure_after_sending_does_not_abort_other_calls(self):
+        await self.call("HassTurnOn")  # registers the handlers
+        other = await self.start_blocked_call("HassTurnOn1")
+        FakeSession.fail_names = ("HassListAddItem",)
+        failed = await self.call("HassListAddItem")
+        self.assertIn("may or may not have completed", failed.results[0])
+        self.assertFalse(self.sessions[0].closed, "not closed under the call still in flight")
+        FakeSession.blocked["HassTurnOn1"].set()
+        self.assertEqual((await other).results, ["HassTurnOn1 ok"])
+        self.assertEqual(FakeSession.instances, 1)
+        # Once nobody is on it, the session that failed is replaced.
+        self.assertTrue(self.sessions[0].closed)
+        self.assertEqual((await self.call("HassTurnOn2")).results, ["HassTurnOn2 ok"])
+        self.assertEqual(FakeSession.instances, 2)
+        self.assertEqual(self.sessions[1].calls, ["HassTurnOn2"])
+
+    async def test_session_closed_before_sending_is_reopened_not_reported_as_uncertain(self):
+        # pipecat raises _NotConnectedError when a call reaches it after the
+        # session was closed (its own drop of a dead session, or a close that
+        # slipped between our acquire and the send). Nothing was sent, so the
+        # call is retried on a new session, never answered with "may or may
+        # not have completed".
+        await self.register()
+        schema = (await self.client.tools()).standard_tools[0]
+        closed_once = []
+
+        async def closes_then_calls(params):
+            if not closed_once:
+                closed_once.append(True)
+                await self.client.close()
+            await schema.handler(params)
+
+        handler = self.client.guarded_handler(FunctionSchema(
+            name=schema.name, description=schema.description, properties=schema.properties,
+            required=schema.required, handler=closes_then_calls,
+        ))
+        params = make_params(schema.name)
+        await handler(params)
+        self.assertEqual(params.results, [f"{schema.name} ok"])
+        self.assertEqual(self.sessions[0].calls, [], "nothing was sent on the closed session")
+        self.assertEqual(self.sessions[1].calls, [schema.name])
+
     async def test_unreachable_home_assistant_reports_cleanly(self):
         await self.call("HassTurnOn")  # registers the handlers
         await self.client.aclose()
@@ -176,6 +260,107 @@ class TestPersistentMCP(unittest.IsolatedAsyncioTestCase):
         with patch.object(mcp_module, "_streamable_http_transport", broken):
             params = await self.call("HassTurnOn")
         self.assertIn("not reachable", params.results[0])
+
+    async def test_tool_list_for_a_device_session_is_bounded(self):
+        self.client.OPEN_TIMEOUT_S = 0.05
+        FakeSession.list_delay = 5.0
+        started = time.monotonic()
+        with self.assertRaises(asyncio.TimeoutError):
+            await self.client.cached_tools()
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    async def test_tool_list_is_reused_by_reconnecting_devices(self):
+        first = await self.client.cached_tools()
+        listings = self.sessions[0].lists
+        second = await self.client.cached_tools()
+        self.assertIs(second, first)
+        self.assertEqual(self.sessions[0].lists, listings, "no second listing while the first is fresh")
+        self.client._tools_cached_at -= self.client.TOOLS_CACHE_S + 1
+        await self.client.cached_tools()
+        self.assertEqual(self.sessions[0].lists, listings + 1, "a stale list is fetched again")
+
+    async def test_slow_tool_listing_does_not_stall_session_creation(self):
+        # main.py fetches the Home Assistant tools for every new device
+        # session; a slow Home Assistant must not hold that up for longer
+        # than the open bound.
+        self.client.OPEN_TIMEOUT_S = 0.05
+        FakeSession.list_delay = 5.0
+        app = make_app(REALTIME)
+        app.mcp_client = self.client
+        tools, schema = await asyncio.wait_for(app._assemble_tools(), 1.0)
+        self.assertIsNone(schema)
+        self.assertIn("web_search", [tool["name"] for tool in tools])
+
+
+class TestPerCallMCP(TestPersistentMCP):
+    """MCP_PERSISTENT_SESSION=false: the one session is closed whenever no
+    call is in flight — never under a call another device is still making."""
+
+    persistent = False
+
+    async def test_tool_calls_reuse_one_session(self):
+        for name in ("HassTurnOn", "HassTurnOff"):
+            params = await self.call(name)
+            self.assertEqual(params.results, [f"{name} ok"])
+        self.assertEqual(FakeSession.instances, 2, "the listing's session served the first call only")
+        self.assertTrue(all(session.closed for session in self.sessions))
+
+    async def test_failure_after_sending_is_not_retried(self):
+        await self.call("HassTurnOn")  # registers the handlers
+        FakeSession.fail_calls = True
+        params = await self.call("HassListAddItem")
+        self.assertEqual(len(params.results), 1)
+        self.assertIn("may or may not have completed", params.results[0])
+        sent = [name for session in self.sessions for name in session.calls]
+        self.assertEqual(sent, ["HassTurnOn", "HassListAddItem"], "sent exactly once")
+
+    async def test_concurrent_calls_share_the_session(self):
+        await self.call("HassTurnOn")  # registers the handlers
+        results = await asyncio.gather(*(self.call(f"HassTurnOn{i}") for i in range(4)))
+        self.assertTrue(all(p.results == [f"{p.function_name} ok"] for p in results))
+        self.assertTrue(all(session.closed for session in self.sessions))
+
+    async def test_idle_session_is_pinged_before_reuse(self):
+        self.skipTest("no session outlives its calls in per-call mode")
+
+    async def test_dead_idle_session_is_reopened_before_sending(self):
+        self.skipTest("no session outlives its calls in per-call mode")
+
+    async def test_closing_after_a_call_waits_for_the_calls_in_flight(self):
+        await self.call("HassTurnOn")  # registers the handlers
+        other = await self.start_blocked_call("HassTurnOn1")
+        session = self.sessions[-1]
+        self.assertEqual((await self.call("HassTurnOn2")).results, ["HassTurnOn2 ok"])
+        self.assertIs(self.sessions[-1], session, "the overlapping call joined the open session")
+        self.assertFalse(session.closed, "not closed under the call still in flight")
+        FakeSession.blocked["HassTurnOn1"].set()
+        self.assertEqual((await other).results, ["HassTurnOn1 ok"])
+        self.assertTrue(session.closed, "closed once the last call on it finished")
+
+    async def test_failure_after_sending_does_not_abort_other_calls(self):
+        await self.call("HassTurnOn")  # registers the handlers
+        other = await self.start_blocked_call("HassTurnOn1")
+        FakeSession.fail_names = ("HassListAddItem",)
+        failed = await self.call("HassListAddItem")
+        self.assertIn("may or may not have completed", failed.results[0])
+        self.assertFalse(self.sessions[-1].closed, "not closed under the call still in flight")
+        FakeSession.blocked["HassTurnOn1"].set()
+        self.assertEqual((await other).results, ["HassTurnOn1 ok"])
+
+
+class TestMCPStartupLog(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_log_says_what_each_mode_does(self):
+        service = HomeAssistantMCPService("http://example.invalid/mcp", "token")
+        with patch.dict(os.environ, {"MCP_PERSISTENT_SESSION": "false"}):
+            with self.assertLogs("app.mcp_service", level="INFO") as per_call:
+                await service.initialize()
+        with patch.dict(os.environ, {"MCP_PERSISTENT_SESSION": "true"}):
+            with self.assertLogs("app.mcp_service", level="INFO") as persistent:
+                await service.initialize()
+        self.assertTrue(any("closed whenever no call is in flight" in line for line in per_call.output),
+                        per_call.output)
+        self.assertFalse(any("session per call" in line for line in per_call.output), per_call.output)
+        self.assertTrue(any("kept open" in line for line in persistent.output), persistent.output)
 
 
 class FakeResponses:

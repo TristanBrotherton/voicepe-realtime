@@ -34,6 +34,25 @@ from app.progress_ack import (
 logger = logging.getLogger(__name__)
 
 
+def intercept_result_callback(params, on_result):
+    """A copy of ``params`` whose result goes through ``on_result`` first.
+
+    ``on_result(result)`` returns what the original callback receives. The
+    optional ``properties`` keyword is forwarded only when given, as pipecat's
+    result callbacks expect. Shared by the liveness wrapper below and the MCP
+    session policy (app/mcp_service.py).
+    """
+    original = params.result_callback
+
+    async def result_callback(result, *, properties=None):
+        result = on_result(result)
+        if properties is None:
+            return await original(result)
+        return await original(result, properties=properties)
+
+    return dataclasses.replace(params, result_callback=result_callback)
+
+
 class GuardedToolsMixin:
     """register_function() with the speaker/action gates and liveness ticks."""
 
@@ -138,16 +157,13 @@ class GuardedToolsMixin:
             ack = self._schedule_slow_tool_ack(function_name)
             ok = False
             result_reported = False
-            original_result_callback = params.result_callback
 
-            async def tracked_result_callback(result, *, properties=None):
+            def note_reported(result):
                 nonlocal result_reported
                 result_reported = True
-                if properties is None:
-                    return await original_result_callback(result)
-                return await original_result_callback(result, properties=properties)
+                return result
 
-            params = dataclasses.replace(params, result_callback=tracked_result_callback)
+            params = intercept_result_callback(params, note_reported)
             try:
                 result = await handler(params)
                 if not result_reported:

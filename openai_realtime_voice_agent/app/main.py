@@ -653,11 +653,12 @@ class Application:
         interrupt_response = os.environ.get("INTERRUPT_RESPONSE", "false").strip().lower() == "true"
         # Who creates the OpenAI response each user turn (semantic_vad only).
         # TRUE (default) = the server creates a response on every detected
-        # end-of-turn. This is REQUIRED for multi-turn: Pipecat 0.0.97's realtime
-        # service only auto-creates a response for the FIRST context (turn 1) and
-        # after tool results; plain 2nd/3rd user turns get NO response unless the
-        # server makes it. FALSE reproduces the old single-turn-only behaviour
-        # (turn 1 answers, turn 2 hangs in "thinking"). See create_openai_service.
+        # end-of-turn. This is REQUIRED for multi-turn: pipecat's realtime
+        # service (1.13 included) only creates a response itself for the FIRST
+        # context it sees and when tool results are awaiting one; plain
+        # 2nd/3rd user turns get NO response unless the server makes it. FALSE
+        # reproduces the old single-turn-only behaviour (turn 1 answers, turn
+        # 2 hangs in "thinking"). See create_openai_service.
         semantic_vad_create_response = os.environ.get("SEMANTIC_VAD_CREATE_RESPONSE", "true").strip().lower() == "true"
         # Expose the `disconnect_client` tool to the model. DEFAULT FALSE: on the
         # Voice PE the device owns its own session lifecycle (wake word starts a
@@ -1489,8 +1490,11 @@ class Application:
             try:
                 logger.info("🔧 Fetching MCP tool definitions...")
                 # Opens the persistent session on first use; the schemas
-                # carry pipecat's call handler, wrapped per tool below.
-                mcp_tools_schema = await self.mcp_client.tools()
+                # carry pipecat's call handler, wrapped per tool below. The
+                # listing is bounded and reused across device sessions
+                # (app/mcp_service.py): every device's tool calls wait on
+                # the lock pipecat opens the session under.
+                mcp_tools_schema = await self.mcp_client.cached_tools()
 
                 # Convert MCP tool schemas to OpenAI format, applying the
                 # optional allow-list so the realtime session isn't flooded
@@ -1557,22 +1561,22 @@ class Application:
                 eagerness=self.vad_eagerness,
                 # create_response=True (default): the SERVER creates a
                 # response on every detected end-of-turn. This is required for
-                # multi-turn conversation. Pipecat 0.0.97's
-                # OpenAIRealtimeLLMService._handle_context only auto-creates a
-                # response for the FIRST context (turn 1) and after tool
-                # results (its else-branch just updates the context); a plain
-                # 2nd/3rd user turn therefore gets NO response unless the
-                # server makes it. We previously set this False to stop a
-                # turn-1 double-response (server + Pipecat first-context both
+                # multi-turn conversation. pipecat's
+                # OpenAIRealtimeLLMService._handle_context (1.13) creates a
+                # response itself only for the FIRST context it sees, and on
+                # an updated context only when tool results are awaiting one
+                # (the assistant aggregator asking upstream); a plain 2nd/3rd
+                # user turn therefore gets NO response unless the server
+                # makes it. We previously set this False to stop a turn-1
+                # double-response (server + pipecat first-context both
                 # creating → `conversation_already_has_active_response`), but
                 # that silently broke every turn after the first (device hung
                 # in "thinking"). True is the correct trade: the server drives
-                # all user-turn responses; Pipecat still creates the post-tool
+                # all user-turn responses; pipecat still creates the post-tool
                 # response via _process_completed_function_calls. To stop the
-                # turn-1 double (server + Pipecat-first-context both creating →
-                # conversation_already_has_active_response), run() seeds
-                # self._context once at startup with a kickoff LLMRunFrame, so
-                # the user's first real turn hits the else-branch too.
+                # turn-1 double, _preseed_context() hands each new service an
+                # empty context, so the user's first real turn hits the
+                # updated-context branch too.
                 create_response=self.semantic_vad_create_response,
                 interrupt_response=self.interrupt_response,
             )
