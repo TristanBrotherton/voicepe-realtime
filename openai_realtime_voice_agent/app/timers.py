@@ -35,7 +35,7 @@ def _ring_entity(device_id: str, allow_legacy: bool = True) -> str:
     mappings = os.environ.get("TIMER_RING_ENTITIES", "")
     for mapping in mappings.split(","):
         key, separator, entity = mapping.partition("=")
-        if separator and key.strip() == device_id:
+        if separator and key.strip().lower() == (device_id or "").lower():
             return entity.strip()
     return os.environ.get("TIMER_RING_ENTITY", "").strip() if allow_legacy else ""
 

@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -240,7 +241,10 @@ class SensorPublisher:
     def _inst(self, device_id: Optional[str]) -> str:
         """The sensor prefix for a device: its own configured name, else the instance's."""
         key = (device_id or "").strip().lower()
-        return key if key in self.device_names else _INST
+        if key not in self.device_names:
+            return _INST
+        # Entity ids allow only a-z, 0-9 and "_" ("living-room" -> "living_room").
+        return re.sub(r"[^a-z0-9_]", "_", key)
 
     def _post(self, entity: str, state, attrs: dict) -> None:
         self._ensure_rollover_task()
@@ -320,7 +324,7 @@ class SensorPublisher:
         # shows the ledger it is charged to (its own, or the instance's when
         # it has no caps of its own); the instance sensor shows only the
         # instance ledger, never a device's.
-        targets = [inst] if inst != _INST else []
+        targets = [inst] if inst != _INST or not shared else []
         if shared:
             targets.append(_INST)
         for target in targets:

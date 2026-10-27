@@ -339,7 +339,9 @@ class EnrollmentConductor:
 
     async def _tts(self, text, device_id=None):
         """Synthesize one prompt to 24 kHz mono PCM16 (cached on /data)."""
-        cache = self.tts_for(device_id) if self.tts_for is not None else None
+        # Only an explicit device (a timer, an announcement) gets its own voice;
+        # the guidance script is prepared once, in the instance voice.
+        cache = self.tts_for(device_id) if self.tts_for is not None and device_id is not None else None
         pcm = await (cache or self.tts).get(text)
         if pcm is None:
             raise RuntimeError("speech synthesis unavailable")
@@ -347,7 +349,7 @@ class EnrollmentConductor:
 
     async def _say(self, text, device_id=None):
         target = self.device_id if device_id is None else device_id
-        pcm = await self._tts(text, target)
+        pcm = await self._tts(text, device_id)
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False

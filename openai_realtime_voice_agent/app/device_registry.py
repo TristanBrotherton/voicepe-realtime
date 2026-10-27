@@ -229,7 +229,8 @@ class DeviceRegistry:
             return True
 
     def get(self, device_id: str) -> Optional[DeviceConnection]:
-        """Look up one device by exact id.
+        """Look up one device by id: exact first, then in any letter case
+        (device names in the ``devices`` option match in any case).
 
         Args:
             device_id: The id to find.
@@ -237,7 +238,11 @@ class DeviceRegistry:
         Returns:
             The connection, or None if that device is not connected.
         """
-        return self._devices.get(device_id)
+        exact = self._devices.get(device_id)
+        if exact is not None or not device_id:
+            return exact
+        key = device_id.lower()
+        return next((c for d, c in self._devices.items() if d.lower() == key), None)
 
     def resolve(self, device_id: Optional[str] = None) -> Optional[DeviceConnection]:
         """Pick the device a single-device feature should act on.
@@ -252,7 +257,7 @@ class DeviceRegistry:
             silently falling back to another room.
         """
         if device_id:
-            return self._devices.get(sanitize_device_id(device_id))
+            return self.get(sanitize_device_id(device_id))
         if not self._devices:
             return None
         # A single-device instance has no ambiguity: it must be addressable

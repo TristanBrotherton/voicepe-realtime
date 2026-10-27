@@ -901,8 +901,9 @@ class Application:
             trigger_capture=_env_bool("TRIGGER_CAPTURE", False),
         )
         # Several Voice PEs on one instance (app/device_config.py).
+        self.announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
         self.device_directory = DeviceDirectory.from_env().checked(
-            self.websocket_handler.port, int(os.environ.get("ANNOUNCE_PORT", "0") or 0) or None)
+            self.websocket_handler.port, self.announce_port or None)
         self.websocket_handler.device_directory = self.device_directory
         from .ha_sensors import PUBLISHER as _SENSORS
         # A configured device publishes its own sensor.voicepe_<name>_* set,
@@ -1078,7 +1079,7 @@ class Application:
         # Announce endpoint (fork): a LAN route back to the device so the
         # household's agent can speak results of long-running work. Reuses the
         # guarded announcer above; off unless both port and token are set.
-        announce_port = int(os.environ.get("ANNOUNCE_PORT", "0") or 0)
+        announce_port = self.announce_port
         announce_token = os.environ.get("ANNOUNCE_TOKEN", "").strip()
         # Background task results (router mode) use the same guarded lane
         # when no session is open (app/live_tasks.py, ``announce`` route).
@@ -1397,6 +1398,8 @@ class Application:
                 "🎙️ no explicit Live voice is configured, so spoken prompts use the "
                 "speech endpoint voice %r", prompts.tts.voice,
             )
+            # A device with a voice of its own still hears its prompts in it.
+            self._install_device_prompt_voices(prompts, conductor, None)
             return
         from .live_voice_prompts import LiveVoiceRenderer
 
@@ -1420,7 +1423,7 @@ class Application:
             "and the line must be heard", voice, prompts.tts.voice,
         )
 
-    def _install_device_prompt_voices(self, prompts, conductor, voice: str) -> None:
+    def _install_device_prompt_voices(self, prompts, conductor, voice: Optional[str]) -> None:
         """A configured device with its own voice or its own caps hears its
         prompts (fillers, errors, the spend refusal, timers, announcements)
         in its own voice, rendered on its own ledger."""
@@ -1431,6 +1434,8 @@ class Application:
         self._device_prompt_renderers = []
         for profile in self.device_directory.profiles:
             device_voice = live_voice_for(profile.voice) if profile.voice else None
+            if not (device_voice or voice):
+                continue   # no Live voice to render in: the speech endpoint's applies
             if not profile.has_own_caps and (not device_voice or device_voice == voice):
                 continue
             renderer = LiveVoiceRenderer(
@@ -2171,7 +2176,8 @@ class Application:
 
         logger.info(
             f"✅ Listening for devices on ws://{self.websocket_handler.host}:"
-            f"{', '.join(str(p) for p in ports)}/ (multi-device)"
+            f"{', '.join(str(p) for p in ports)}/ (multi-device; a device port that "
+            "cannot be bound is reported below and skipped)"
         )
         try:
             await self._serve_ports(servers, main_port)

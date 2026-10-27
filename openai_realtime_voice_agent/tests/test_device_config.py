@@ -242,6 +242,19 @@ class TestSettingsResolvedAtAccept(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plans, [600])
 
 
+class TestCaseInsensitiveLookups(unittest.IsolatedAsyncioTestCase):
+    async def test_registry_and_timer_ring_find_a_device_in_any_case(self):
+        from app.device_registry import DeviceConnection, DeviceRegistry
+        from app.timers import _ring_entity
+        registry = DeviceRegistry()
+        connection = DeviceConnection(device_id="Hallway", websocket=None)
+        await registry.add(connection)
+        self.assertIs(registry.get("hallway"), connection)
+        self.assertIs(registry.resolve("hallway"), connection)
+        with patch.dict(os.environ, {"TIMER_RING_ENTITIES": "hallway=switch.ring"}):
+            self.assertEqual(_ring_entity("Hallway", allow_legacy=False), "switch.ring")
+
+
 async def _true():
     return True
 

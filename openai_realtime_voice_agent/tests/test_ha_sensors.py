@@ -208,3 +208,12 @@ class TestPerDeviceSensors(unittest.IsolatedAsyncioTestCase):
         await publisher.timers(Registry(), "kitchen")
         self.assertEqual(poster.posts["sensor.voicepe_kitchen_active_timers"][0], 1)
         self.assertEqual(poster.posts[f"sensor.voicepe_{inst}_active_timers"][0], 2)
+
+    def test_entity_ids_stay_valid_and_a_same_named_device_still_publishes(self):
+        import app.ha_sensors as hs
+        publisher, poster, inst = self.publisher()
+        publisher.device_names = {"living-room", inst}
+        publisher.latency({"device_id": "LIVING-ROOM", "speech_end_to_first_audio_sent_ms": 5}, {})
+        self.assertIn("sensor.voicepe_living_room_latency", poster.posts)
+        publisher.live_session_cost({"spend": {"usd": 0.3}}, device_id=inst, shared=False)
+        self.assertEqual(poster.posts[f"sensor.voicepe_{inst}_live_session_cost_today"][0], 0.3)
