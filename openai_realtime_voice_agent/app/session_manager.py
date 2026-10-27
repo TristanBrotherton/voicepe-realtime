@@ -56,8 +56,9 @@ class SessionManager:
             reuse_timeout: Time in seconds after which cached context expires
             max_restored_messages: Cap on how many of the most-recent cached
                 messages are restored into a new session (0 = unlimited). The
-                OpenAI Realtime conversation grows server-side and pipecat 0.0.97
-                has no truncation, so every response.create re-bills the whole
+                OpenAI Realtime conversation grows server-side and pipecat
+                never trims it (1.13 included: it truncates interrupted audio,
+                not the history), so every response.create re-bills the whole
                 history (audio transcripts + tool results). The device reconnects
                 often (follow-up windows, keepalive drops), and each reconnect
                 restores the cached context — so capping it here bounds the

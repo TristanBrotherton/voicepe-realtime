@@ -6,10 +6,10 @@ message it
 * stamps ``last_event_mono`` (positive liveness: the server is talking),
 * reports the event type to an observer callback (``response.created`` and
   ``error`` are not otherwise visible to our code), and
-* drops event types pipecat 0.0.97 cannot parse. Its ``parse_server_event``
-  raises on any unknown type, which kills the receive loop and forces a
-  reconnect — so a single new server event type would otherwise bounce every
-  session.
+* drops event types pipecat cannot parse. Its ``parse_server_event`` (1.13
+  included) raises on any unknown type, which kills the receive loop and
+  forces a reconnect — so a single new server event type would otherwise
+  bounce every session.
 
 Attribute access falls through to the real socket, so ``send``, ``close`` and
 ``ping`` behave exactly as before.

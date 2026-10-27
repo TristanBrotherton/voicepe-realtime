@@ -2,10 +2,11 @@
 
 Lets the Realtime assistant look things up online (weather, news, facts, opening
 hours, prices, recent events). The Realtime API has NO native web search, and
-pipecat 0.0.97 only supports custom *function* tools — so this is wired exactly
-like the disconnect tool: a `web_search` function tool whose handler runs a
-SECOND, server-side OpenAI call (the Responses API `web_search` built-in tool),
-then returns a short, spoken-friendly answer the Realtime model reads aloud.
+the tools this add-on gives the session are custom *function* tools — so this
+is wired exactly like the disconnect tool: a `web_search` function tool whose
+handler runs a SECOND, server-side OpenAI call (the Responses API `web_search`
+built-in tool), then returns a short, spoken-friendly answer the Realtime model
+reads aloud.
 
 Uses the add-on's existing OPENAI_API_KEY — no extra account/vendor. Default
 model gpt-5.5 gives the best-quality search answers; it's configurable via

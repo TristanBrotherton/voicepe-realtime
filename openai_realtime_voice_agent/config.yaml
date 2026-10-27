@@ -29,7 +29,8 @@ map:
 # REMOVED options (v0.4.29) — hardcoded to the only sane value; main.py keeps
 # env fallbacks so absent vars are fine:
 #   semantic_vad_create_response → true  (false breaks every multi-turn chat:
-#     pipecat 0.0.97 only auto-creates the FIRST response, the 2nd turn hangs)
+#     pipecat (1.13 included) only creates the FIRST response itself, the
+#     2nd turn hangs)
 #   enable_disconnect_tool → false  (model could hang up mid-conversation)
 #   interrupt_response → false  (handsfree barge-in shelved: the speaker→mic
 #     echo leak made the VAD cut replies / squeal; firmware is barge_in:false)

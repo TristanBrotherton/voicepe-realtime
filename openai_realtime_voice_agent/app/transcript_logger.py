@@ -6,9 +6,9 @@ be the OpenAI tool-call arguments. This processor surfaces the assistant's spoke
 text (and, when input transcription is enabled, the user's transcript) as plain
 INFO lines so the add-on log alone explains a turn.
 
-How the text reaches us (verified against pipecat 0.0.97's *real*
-`pipecat.services.openai.realtime.llm.OpenAIRealtimeLLMService` — NOT the older
-`openai_realtime_beta` module, which pushes different frames):
+How the text reaches us (verified against pipecat 1.13's
+`pipecat.services.openai.realtime.llm.OpenAIRealtimeLLMService`; the GPT-Live
+service in app/live_service.py pushes the same frames on purpose):
 
   - Assistant reply, AUDIO modality (what we use): the service handles
     `response.output_audio_transcript.delta` and pushes a **`TTSTextFrame`** per

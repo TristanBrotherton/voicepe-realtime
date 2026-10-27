@@ -1,10 +1,14 @@
 """GPT-Live runtime: a pipecat LLMService speaking the /v1/live/sessions protocol.
 
-Pipecat 0.0.97 (pinned; see pyproject.toml) predates OpenAI GPT-Live and has
-no ``OpenAILiveLLMService``. Upgrading to pipecat 1.x would rewrite every
-compatibility hook this add-on carries for the Realtime path, so the Live
-protocol is implemented directly here, behind the same ``LLMService``
-surface the rest of the pipeline already uses:
+This service was written against pipecat 0.0.97, which predated GPT-Live.
+pipecat 1.13 (pinned; see pyproject.toml) ships its own
+``pipecat.services.openai.live.OpenAILiveLLMService``, but the device
+behaviour this add-on depends on — on-demand sessions and the spend cutoff,
+reply admission and ordered output batches, the reconnect hooks and the
+household tool policy — is built into this one, so the Live protocol stays
+implemented here, behind the same ``LLMService`` surface the rest of the
+pipeline already uses (moving onto pipecat's service is a migration of its
+own):
 
 * ``InputAudioRawFrame`` in  → ``session.input_audio.append`` (continuous;
   silence is filled in while the device mic is closed, as the documentation
@@ -72,7 +76,6 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
-from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
 from app.live_audio import WITHHELD_REASONS, LiveOutputAudio, OutputAudioCapture, OutputChunk
@@ -1075,16 +1078,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         return True
 
     def service_metadata_frame(self) -> LLMServiceMetadataFrame:
-        """Announce a speech-to-speech service whose turns GPT-Live decides.
+        """Announce a speech-to-speech service, so the aggregators write the
+        user transcript the realtime way.
 
-        The context aggregators then adopt the UserStarted/StoppedSpeaking
-        frames this service broadcasts instead of detecting turns themselves,
-        and write the user transcript the realtime way.
+        Which turn strategies the aggregators run is decided in one place,
+        app/session_manager.py: it passes ``ExternalUserTurnStrategies``
+        explicitly for both runtimes (the aggregators then take their turn
+        boundaries from the UserStarted/StoppedSpeaking frames this service
+        broadcasts), and pipecat ignores a service's recommendation whenever
+        explicit strategies are set — so none is repeated here.
         """
         return LLMServiceMetadataFrame(
             service_name=self.name,
             is_realtime_service=True,
-            user_turn_strategies=ExternalUserTurnStrategies(),
         )
 
     async def start(self, frame: StartFrame):
