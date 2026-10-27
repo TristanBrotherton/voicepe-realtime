@@ -298,6 +298,10 @@ MAX_STARTUP_FAILURES = 3
 # 100 ms per chunk this is ~30 s of reply audio; reaching it means the device
 # link has stalled, not that the model is fast.
 MAX_PENDING_AUDIO_CHUNKS = 300
+# What the device still holds after the last byte is sent: its jitter
+# prebuffer and the speaker chain (Kitchen 2026-10-26: drained 3.2 s after the
+# reply transcript ended).
+DEVICE_PLAYOUT_TAIL_S = 1.0
 # ---------------------------------------------------------------------------
 # Router mode (client delegation; app/live_router.py)
 # ---------------------------------------------------------------------------
@@ -2368,6 +2372,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     # output-audio-done event, so counting every forwarded frame
                     # would let an idle model hold the session open indefinitely.
                     self._note(self.on_audible_output)
+                self._note_audio_pushed(len(chunk.pcm))
                 await self.push_frame(TTSAudioRawFrame(
                     audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
                 ))
@@ -2440,6 +2445,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             pending["pcm_bytes"] += len(chunk.pcm)
             if chunk.audible:
                 self._note(self.on_audible_output)
+            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -2455,6 +2461,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         pending["pcm_bytes"] += len(event.chunk.pcm)
         if event.chunk.audible:
             self._note(self.on_audible_output)
+        self._note_audio_pushed(len(event.chunk.pcm))
         await self.push_frame(TTSAudioRawFrame(
             audio=event.chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
         ))
@@ -2537,6 +2544,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 return
             if chunk.audible:
                 self._note(self.on_audible_output)
+            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -5275,6 +5283,24 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if sent:
             self._input_audio_ms_sent += ms
         return sent
+
+    def _note_audio_pushed(self, nbytes: int) -> None:
+        """Track when the audio sent so far finishes playing on the device. The
+        transport paces it at real time, so playout ends one buffer's length
+        after the later of now and the previous end."""
+        now = time.monotonic()
+        start = max(now, getattr(self, "_playout_end_mono", 0.0))
+        self._playout_end_mono = start + nbytes / (2.0 * LIVE_SAMPLE_RATE)
+
+    def playout_remaining_s(self) -> float:
+        """Seconds until the reply audio sent so far has finished playing on
+        the device, including its jitter cushion. The session gate starts the
+        follow-up window after this, and the device's own report that it
+        finished playing restarts the window exactly."""
+        end = getattr(self, "_playout_end_mono", 0.0)
+        if not end:
+            return 0.0
+        return max(0.0, end + DEVICE_PLAYOUT_TAIL_S - time.monotonic())
 
     def _note(self, callback: Optional[Callable[[], None]]) -> None:
         """Fire one lifecycle observer. Never lets a watcher break the audio path."""

@@ -1343,6 +1343,12 @@ class WebSocketHandler:
                 observer = getattr(openai_service, "note_device_drain", None)
                 if observer is not None:
                     observer(turn_id, metrics)
+                # The firmware reports a reply's metrics when it has finished
+                # playing it, which is when its follow-up mic window opens:
+                # the session's follow-up window starts there too.
+                ended = getattr(connection.session_gate, "note_playback_ended", None)
+                if ended is not None and metrics.get("reason", "reply") == "reply":
+                    ended()
             serializer.set_turn_metrics_handler(_on_turn_metrics)
 
             async def _on_trigger_audio(turn_id, pcm, rate):

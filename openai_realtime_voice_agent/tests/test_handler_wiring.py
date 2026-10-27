@@ -154,6 +154,24 @@ class TestHandlerWiring(unittest.IsolatedAsyncioTestCase):
                                        "first_audio_to_audible_ms": 205})
         self.assertEqual(self.kitchen.turn_timeline.find("k5").device["fire_to_mic_ms"], 1290)
 
+    async def test_reply_metrics_restart_the_follow_up_window(self):
+        # The firmware reports a reply's metrics when it finished playing it;
+        # the session's follow-up window starts there (Kitchen 2026-10-26).
+        class Gate:
+            ended = 0
+
+            def note_playback_ended(self):
+                Gate.ended += 1
+        real, self.kitchen.session_gate = self.kitchen.session_gate, Gate()
+        try:
+            await self.send(self.kitchen, {"type": "wake", "turn": "k8"})
+            await self.send(self.kitchen, {"type": "turn_metrics", "turn": "k8", "reason": "superseded"})
+            self.assertEqual(Gate.ended, 0, "only a played reply opens the window")
+            await self.send(self.kitchen, {"type": "turn_metrics", "turn": "k8", "reason": "reply"})
+            self.assertEqual(Gate.ended, 1)
+        finally:
+            self.kitchen.session_gate = real
+
     async def test_interrupt_before_speech_finishes_turn_as_no_speech(self):
         await self.send(self.kitchen, {"type": "wake", "turn": "k6"})
         await self.send(self.kitchen, {"type": "interrupt"})
