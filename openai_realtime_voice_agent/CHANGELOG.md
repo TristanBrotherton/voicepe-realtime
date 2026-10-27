@@ -2,6 +2,19 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.19.23 (fork)
+
+### Fixed: a follow-up question went unanswered
+
+- On GPT-Live, the follow-up window (when you can ask again without the wake
+  word) started when the reply's transcript ended, not when the device
+  finished playing it. On a slow Wi-Fi link the device was still speaking for
+  several seconds, so the window had almost run out by the time you could
+  answer, and a question asked after it went to a closed session. The window
+  now waits for the reply's audio to finish playing, and restarts when the
+  device reports that it has, so you always get the full window after hearing
+  the end. A wrong estimate holds the session at most 15 s longer.
+
 ## 0.19.22 (fork)
 
 ### Fixed: an acknowledgement was cut off mid-word

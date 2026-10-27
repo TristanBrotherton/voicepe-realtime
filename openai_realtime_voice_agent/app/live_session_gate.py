@@ -75,6 +75,12 @@ OPEN = "open"
 # After a follow-up hold is released without a transcript, the session gets
 # this long for a late transcript before it closes (app/followup_hold.py).
 HOLD_RELEASE_QUIET_S = 3.0
+# The reply's transcript ends while its audio is still playing on the device
+# (Kitchen 2026-10-26: 3.2 s later, on a link with multi-second gaps). The
+# follow-up window waits out the service's estimate of that playout, bounded
+# so a wrong estimate can never hold a billed session for long; the device's
+# own report that it finished playing then restarts the window exactly.
+PLAYOUT_WAIT_MAX_S = 15.0
 
 
 @dataclass(frozen=True)
@@ -443,11 +449,37 @@ class LiveSessionGate:
             self._idle_reason = "idle"
             return
         self._turn_in_flight = False
-        self._idle_deadline = now + self.policy.followup_s
+        estimate = getattr(self._service, "playout_remaining_s", None)
+        try:
+            playout = float(estimate()) if callable(estimate) else 0.0
+        except Exception:  # noqa: BLE001 - an estimate must never break the close
+            playout = 0.0
+        start = now + min(PLAYOUT_WAIT_MAX_S, max(0.0, playout))
+        if start - now >= 0.05:
+            logger.info(f"🎤 follow-up window starts after {start - now:.1f}s of reply still playing")
+        self._idle_deadline = start + self.policy.followup_s
         self._silent_deadline = max(
-            self._silent_deadline or 0.0, now + self.policy.followup_s
+            self._silent_deadline or 0.0, start + self.policy.followup_s
         )
         self._idle_reason = "follow-up quiet"
+
+    def note_playback_ended(self) -> None:
+        """The device reported that it finished playing the reply: the moment
+        its own follow-up mic window opens. The add-on's window restarts here,
+        so the user always gets the whole ``followup_s`` after hearing the end
+        (Kitchen 2026-10-26: the window ran from the transcript's end, the
+        device finished playing 3.2 s later, and the follow-up question was
+        asked into a session that had already closed). Only a window that is
+        already running is moved; a turn in flight keeps its ordinary bounds."""
+        if self._state == CLOSED or self._idle_reason != "follow-up quiet" or self._turn_in_flight:
+            return
+        now = self._mono()
+        end = now + self.policy.followup_s
+        before = self._idle_deadline or now
+        self._idle_deadline = max(self._idle_deadline or 0.0, end)
+        self._silent_deadline = max(self._silent_deadline or 0.0, end)
+        logger.info(f"🎤 reply played out: follow-up window runs {self._idle_deadline - now:.1f}s from now "
+                    f"({self._idle_deadline - before:+.1f}s)")
 
     def note_followup_closed(self) -> bool:
         """Optionally retain the ready session for one bounded re-wake window.
