@@ -80,12 +80,15 @@ remains. That is the canary's case (``floor: ""`` alongside a real ``name`` and
 as it is today.
 
 With that rule, sanitizing can only ever *narrow* or leave unchanged what a
-call acts on: nothing non-empty is added, changed or reordered. The speaker and
+call acts on: nothing non-empty is added or reordered, and a value is only
+reshaped to its declared type (``"light"`` -> ``["light"]``, ``"40"`` -> ``40``),
+never given another meaning. The speaker and
 action gates read the sanitized arguments, so no confirmation can be skipped by
 it. See ``app/tool_guards.py``.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # (canonical tool name, parameter) pairs whose zero is a placeholder rather
@@ -138,15 +141,83 @@ def _is_placeholder(function_name: str, key: str, value: Any) -> bool:
     return False
 
 
+def _types(spec: Any) -> set:
+    """The JSON types one property schema allows (``type``, a type list, or
+    ``anyOf``/``oneOf`` branches); empty when the schema does not say."""
+    if not isinstance(spec, Mapping):
+        return set()
+    kind = spec.get("type")
+    types = {kind} if isinstance(kind, str) else {t for t in kind if isinstance(t, str)} \
+        if isinstance(kind, (list, tuple)) else set()
+    for key in ("anyOf", "oneOf"):
+        for branch in spec.get(key) or []:
+            types |= _types(branch)
+    return types
+
+
+def _fits(value: Any, types: set) -> bool:
+    if isinstance(value, bool):
+        return "boolean" in types
+    if isinstance(value, int):
+        return bool(types & {"integer", "number"})
+    if isinstance(value, float):
+        return "number" in types or ("integer" in types and value.is_integer())
+    if isinstance(value, str):
+        return "string" in types
+    if isinstance(value, (list, tuple)):
+        return "array" in types
+    if isinstance(value, Mapping):
+        return "object" in types
+    return value is None and "null" in types
+
+
+_INTEGER = re.compile(r"([+-]?\d+)(?:\.0+)?")
+_NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)")
+
+
+def coerce_to_schema(value: Any, spec: Any) -> Any:
+    """``value`` in the type its property schema declares, when it is a plain
+    form of it: a scalar where a list is declared becomes a one-item list, a
+    numeric string where a number is declared becomes that number. Anything
+    else is returned unchanged (the server then rejects it, and that is
+    reported as a failure).
+
+    Booleans are read from "true"/"false" where a boolean is declared.
+
+    Home Assistant's MCP tools type ``domain`` and ``device_class`` as arrays;
+    the router and the voice both send ``"domain": "light"``, which Home
+    Assistant refused with "Input validation error: 'light' is not of type
+    'array'" (Kitchen 2026-10-28: the garden lights stayed on)."""
+    types = _types(spec)
+    if not types or _fits(value, types):
+        return value
+    if "array" in types and isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        items = spec.get("items") if isinstance(spec, Mapping) else None
+        return [coerce_to_schema(value, items) if items else value]
+    if isinstance(value, str):
+        text = value.strip()
+        whole = _INTEGER.fullmatch(text)
+        if "integer" in types and whole:
+            return int(whole.group(1))  # never through float: no overflow, no lost digits
+        if "number" in types and _NUMBER.fullmatch(text):
+            number = float(text)
+            if number == number and abs(number) != float("inf"):
+                return number
+        if "boolean" in types and text.lower() in ("true", "false"):
+            return text.lower() == "true"
+    return value
+
+
 def sanitize_tool_arguments(
     function_name: str,
     arguments: Optional[Mapping[str, Any]],
     schema: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
-    """Drop placeholder arguments. Returns ``(arguments, removed_keys)``.
+    """Drop placeholder arguments and fit the rest to the schema's types
+    (:func:`coerce_to_schema`). Returns ``(arguments, removed_keys)``.
 
-    ``schema`` is the tool's own OpenAI-format definition, used only to leave
-    required parameters alone. Without it every placeholder is dropped, which
+    ``schema`` is the tool's own OpenAI-format definition, used to leave
+    required parameters alone and to read each parameter's type. Without it every placeholder is dropped, which
     is the safe direction: none of the tools in this add-on has a required
     parameter for which an empty string is a legitimate value.
 
@@ -156,7 +227,7 @@ def sanitize_tool_arguments(
     args = dict(arguments or {})
     if not args:
         return args, []
-    _properties, required = _parameters(schema)
+    properties, required = _parameters(schema)
     keep_targets = not any(
         key in args and not _is_placeholder(function_name, key, args[key])
         for key in TARGET_PARAMETERS
@@ -164,18 +235,18 @@ def sanitize_tool_arguments(
     clean: Dict[str, Any] = {}
     removed: List[str] = []
     for key, value in args.items():
-        if key in required:
-            clean[key] = value
+        placeholder = _is_placeholder(function_name, key, value)
+        if key in required or (keep_targets and key in TARGET_PARAMETERS):
+            # Kept as sent: a required parameter, or a target whose removal
+            # would widen the call from "nothing" to "everything" (let it be
+            # rejected instead). A placeholder is never reshaped ("" stays "",
+            # so Home Assistant's "that value is empty" stays honest).
+            clean[key] = value if placeholder else coerce_to_schema(value, properties.get(key))
             continue
-        if keep_targets and key in TARGET_PARAMETERS:
-            # No real target survives, so removing this one would widen the
-            # call from "nothing" to "everything". Let it be rejected instead.
-            clean[key] = value
-            continue
-        if _is_placeholder(function_name, key, value):
+        if placeholder:
             removed.append(key)
             continue
-        clean[key] = value
+        clean[key] = coerce_to_schema(value, properties.get(key))
     return clean, removed
 
 

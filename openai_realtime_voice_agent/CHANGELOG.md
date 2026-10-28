@@ -2,6 +2,25 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.2 (fork)
+
+### Fixed: a command Home Assistant rejected was reported as done
+
+- Home Assistant's MCP tools now type `domain` and `device_class` as lists.
+  A call with `"domain": "light"` (from the router or from the voice) was
+  rejected with "Input validation error: 'light' is not of type 'array'",
+  and the voice still said the lights were off. Arguments are now fitted to
+  each tool's own schema before the call: a single value where a list is
+  declared becomes a one-item list, and a numeric string where a number is
+  declared (`"brightness": "40"`) becomes the number, and "true"/"false"
+  where a boolean is declared becomes the boolean. Nothing else changes.
+- A rejected call is a failure. An MCP result flagged as an error, an
+  "Input validation error", a Home Assistant `error` response, and an
+  `action_done` in which every target failed are never judged a success,
+  so the voice never says it was done. The voice is told what to do instead:
+  a wrong type is sent again as the declared type, never dropped (dropping
+  `domain` would act on every device in the area).
+
 ## 0.20.1 (fork)
 
 ### Fixed: a reply cut down to its last words after a guess was dropped

@@ -82,6 +82,48 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(outcome.kind, "speaker-gate")
 
 
+class TestHomeAssistantRejections(unittest.TestCase):
+    """Kitchen 2026-10-28: "Garden lights are off" for a call Home Assistant
+    had rejected. Its error shapes are failures, never a "done"."""
+
+    def test_an_input_validation_error_is_a_failure(self):
+        outcome = classify_result("Input validation error: 'light' is not of type 'array'")
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.kind, "wrong-type")
+        self.assertFalse(classify_result("Input validation error: 'item' is a required property").ok)
+
+    def test_an_action_where_every_target_failed_is_a_failure(self):
+        outcome = classify_result('{"speech": {}, "response_type": "action_done", "data": '
+                                  '{"success": [], "failed": [{"name": "Atrium Lamp", "type": "entity", '
+                                  '"id": "light.atrium"}]}}')
+        self.assertFalse(outcome.ok)
+
+    def test_an_action_with_one_target_done_is_a_success(self):
+        outcome = classify_result({"response_type": "action_done", "data": {
+            "success": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium"}],
+            "failed": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium_2"}]}})
+        self.assertTrue(outcome.ok)
+
+    def test_an_error_response_is_a_failure_of_its_known_kind_with_its_words(self):
+        outcome = classify_result({"response_type": "error", "data": {"code": "no_valid_targets"},
+                                   "speech": {"plain": {"speech": "No device named Atrium Lamp"}}})
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.kind, "no-matching-entity")
+        self.assertIn("Atrium Lamp", outcome.detail)
+
+    def test_the_voice_is_told_every_target_failed_not_given_action_done(self):
+        raw = ('{"speech": {}, "response_type": "action_done", "data": {"success": [], '
+               '"failed": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium"}]}}')
+        told = explain_for_model("intent__HassTurnOff", raw)
+        self.assertIsInstance(told, dict)
+        self.assertIn("do not say it was done", told["what_to_do"])
+
+    def test_a_type_error_is_never_answered_by_dropping_the_parameter(self):
+        told = explain_for_model("intent__HassTurnOff",
+                                 "Error: Input validation error: 'light' is not of type 'array'")
+        self.assertIn("never drop the parameter", told["what_to_do"])
+
+
 class TestRedaction(unittest.TestCase):
     def test_quoted_values_never_reach_a_log_line(self):
         outcome = classify_result(fx.NO_MATCH_RESULT)

@@ -149,6 +149,9 @@ class SharedSessionFake:
                 return None
 
             async def call_tool(self, name, arguments=None):
+                if self.mode == "rejected":
+                    return SimpleNamespace(isError=True, content=[SimpleNamespace(
+                        text="Input validation error: 'light' is not of type 'array'")])
                 if self.mode == "never_sent":
                     raise anyio.ClosedResourceError()
                 if self.mode == "fail_after_send" and name.lower().startswith("fail"):
@@ -169,6 +172,31 @@ def make_shared(plan):
     client._client = fake_transport
     client._session = fake.make
     return client, fake
+
+
+class TestRejectedCallsAreErrors(unittest.IsolatedAsyncioTestCase):
+    async def test_an_mcp_result_flagged_is_error_reaches_the_judge_as_an_error(self):
+        """Kitchen 2026-10-28: Home Assistant rejected the call (isError) and
+        pipecat passed on only its text, which was judged a success."""
+        from app.tool_results import classify_result
+        client, _fake = make_shared(["rejected"])
+        params = Params("HassTurnOff")
+        await client._streamable_http_tool_wrapper(params)
+        self.assertFalse(classify_result(params.results[0]).ok)
+        await client.aclose()
+
+    async def test_the_per_call_client_marks_errors_too(self):
+        """MCP_PERSISTENT_SESSION=false uses the per-call client."""
+        from app.mcp_service import ErrorMarkingMCPClient
+        from app.tool_results import classify_result
+
+        class Rejecting:
+            async def call_tool(self, name, arguments=None):
+                return SimpleNamespace(isError=True, content=[SimpleNamespace(text="Errors: target not found")])
+        client = ErrorMarkingMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
+        params = Params("HassTurnOff")
+        await client._call_tool(Rejecting(), "HassTurnOff", {}, params.result_callback)
+        self.assertFalse(classify_result(params.results[0]).ok, params.results[0])
 
 
 class TestSharedSessionSafety(unittest.IsolatedAsyncioTestCase):

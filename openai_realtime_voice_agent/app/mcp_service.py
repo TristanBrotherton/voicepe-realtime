@@ -25,6 +25,7 @@ from typing import Optional
 
 import anyio
 
+from app.tool_results import classify_result
 from pipecat.services.mcp_service import MCPClient, StreamableHttpParameters
 
 logger = logging.getLogger(__name__)
@@ -60,12 +61,50 @@ class _WatchedSession:
             raise
 
 
+def mark_error(result) -> None:
+    """pipecat passes on only the text of an MCP result, so a result flagged
+    ``isError`` ("Input validation error: ...") read as a success. Its first
+    text is prefixed "Error: " unless it is already judged a failure
+    (app/tool_results.py). Kitchen 2026-10-28: "Garden lights are off" for a
+    call Home Assistant had rejected."""
+    if not getattr(result, "isError", False):
+        return
+    for content in getattr(result, "content", None) or []:
+        text = getattr(content, "text", None)
+        if isinstance(text, str):
+            if classify_result(text).ok:
+                content.text = "Error: " + text
+            return
+
+
+class _ErrorMarkingSession:
+    """A session whose results have ``isError`` written into their text."""
+
+    def __init__(self, session):
+        self._inner = session
+
+    async def call_tool(self, *args, **kwargs):
+        result = await self._inner.call_tool(*args, **kwargs)
+        mark_error(result)
+        return result
+
+
+class ErrorMarkingMCPClient(MCPClient):
+    """pipecat's MCP client with ``isError`` kept (see :func:`mark_error`).
+    Both the persistent client and the per-call one
+    (``MCP_PERSISTENT_SESSION=false``) are built on it."""
+
+    async def _call_tool(self, session, function_name, arguments, result_callback):
+        return await super()._call_tool(_ErrorMarkingSession(session), function_name, arguments,
+                                        result_callback)
+
+
 def _never_sent(error: Optional[BaseException]) -> bool:
     """The request never entered the transport: its stream was already closed."""
     return isinstance(error, (anyio.ClosedResourceError, anyio.BrokenResourceError))
 
 
-class PersistentMCPClient(MCPClient):
+class PersistentMCPClient(ErrorMarkingMCPClient):
     CALL_TIMEOUT_S = 45.0
     OPEN_TIMEOUT_S = 15.0
     IDLE_PING_S = 60.0
@@ -236,7 +275,7 @@ class HomeAssistantMCPService:
                 headers={"Authorization": f"Bearer {self.access_token}"},
             )
             persistent = os.environ.get("MCP_PERSISTENT_SESSION", "true").strip().lower() != "false"
-            client_class = PersistentMCPClient if persistent else MCPClient
+            client_class = PersistentMCPClient if persistent else ErrorMarkingMCPClient
             self.mcp_client = client_class(server_params=server_params)
             logger.info(
                 f"✅ Home Assistant MCP Client initialized "
