@@ -11,7 +11,8 @@ All notable changes to this add-on. Newest first.
   spoken: not in the closing session, not as an announcement, and not at the
   next wake, where it used to be spoken as the answer to the next, unrelated
   request. Saying the same request again runs it again instead of waiting
-  for the stopped one. Results of sessions that closed for any other reason
+  for the stopped one. A result the voice had already promised for later is
+  still delivered, and results of sessions that closed for any other reason
   are delivered as before.
 
 ## 0.20.2 (fork)

@@ -325,14 +325,21 @@ class NeverCancelled(Patched):
             await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
 
+    async def _stopped(self, h):
+        """What the device's stop does: the handler marks the request, then the
+        session closes."""
+        h.service.note_device_stop()
+        await asyncio.wait_for(h.service.close_session("device stop"), 10)
+
     async def test_a_stopped_turns_result_is_never_spoken_later(self):
-        """A device stop ends the turn. A tool already running finishes (it may
-        have acted), but its result is spoken neither in the closing session,
-        nor as an announcement, nor at the next wake (rig 2026-10-28: a
-        stopped lookup's "Yes, it is." answered the next, unrelated request)."""
+        """A device stop ends the request it interrupted. A tool already running
+        finishes (it may have acted), but nothing about it is spoken: no
+        progress line, no result in the closing session, no announcement, and
+        nothing at the next wake (rig 2026-10-28: a stopped lookup's "Yes, it
+        is." answered the next, unrelated request)."""
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            h.service.task_policy = TaskPolicy(promote_s=30.0, order=(ANNOUNCE,))
+            h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
             announced = []
 
             async def announce(text, device_id):
@@ -341,31 +348,57 @@ class NeverCancelled(Patched):
             h.service.on_task_announce = announce
             await h.user_says("Turn on the Atrium Lamp")
             await until(lambda: h.executed)
-            await asyncio.wait_for(h.service.close_session("device stop"), 10)
+            await self._stopped(h)
+            await asyncio.sleep(0.6)  # past promote_s: a stopped request is never promoted
+            self.assertEqual(h.service.tasks_pending, 0, "never a task")
             h.release.set()
-            await until(lambda: h.service.tasks_pending == 0, timeout=5.0)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
             self.assertEqual(h.executed, [ON], "the running tool still ran, once")
             self.assertEqual(announced, [])
             await h.open_session()
             await h.start_session("sess_2")
-            await asyncio.sleep(0.3)
-            self.assertFalse(any("lamp is on" in c for c in commentaries(h)))
+            await asyncio.sleep(0.5)
+            self.assertFalse(any("lamp" in c.lower() for c in commentaries(h)), commentaries(h))
 
-    async def test_a_repeat_after_a_stop_is_routed_again_not_joined(self):
+    async def test_a_result_already_promised_for_later_is_still_delivered_after_a_stop(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Atrium Lamp")
+            await until(lambda: h.executed)
+            await until(lambda: h.service.tasks_pending == 1, timeout=3.0)  # promoted: promised
+            await self._stopped(h)
+            h.release.set()
+            await until(lambda: announced, timeout=5.0)
+            self.assertIn("lamp is on", announced[0])
+
+    async def test_a_repeat_after_a_stop_runs_again(self):
+        # The fake answers in order: the repeat gets "The lamp is on." at once,
+        # the stopped request (released later) gets "The stopped one is done."
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")),
-                              response(message("The lamp is on.")))
+                              response(message("The stopped one is done.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=30.0)
             await h.user_says("Turn on the Atrium Lamp")
             await until(lambda: h.executed)
-            await asyncio.wait_for(h.service.close_session("device stop"), 10)
+            await self._stopped(h)
             await h.open_session()
             await h.start_session("sess_2")
             await h.user_says("Turn on the Atrium Lamp", start_ms=5000)
-            await asyncio.sleep(0.3)
-            self.assertEqual(h.service.router_stats["joined"], 0, "a stopped op is never joined")
+            await until(lambda: len(backend.bodies) == 2, timeout=5.0)
+            self.assertEqual(h.service.router_stats["joined"], 0, "routed again, not joined")
+            await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
             h.release.set()
+            await until(lambda: len(backend.bodies) == 3, timeout=5.0)
+            await asyncio.sleep(0.3)
+            self.assertEqual(sum("lamp is on" in c for c in commentaries(h)), 1)
+            self.assertFalse(any("stopped one" in c for c in commentaries(h)), "the stopped answer is never spoken")
 
     async def test_an_impatient_repeat_joins_the_running_operation(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))

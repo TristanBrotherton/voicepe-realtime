@@ -1068,6 +1068,10 @@ class WebSocketHandler:
         async def _on_device_interrupt():
             if hold is not None:
                 hold.disarm("stop")  # the device closed its mic on the stop
+            # The request the stop interrupted is never spoken later.
+            note_stop = getattr(controls, "note_device_stop", None)
+            if note_stop is not None:
+                note_stop()
             turn = timeline.current if timeline is not None else None
             if turn is not None and not turn.done:
                 if "bot_started" in turn.stamps or "first_audio_sent" in turn.stamps:

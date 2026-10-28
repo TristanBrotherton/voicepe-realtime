@@ -510,8 +510,9 @@ class RouterOp:
     key: str = ""                 # normalised request text: the join key for a repeat
     background: bool = False
     abandoned: bool = False
-    # A device "stop" ended the turn this op answers: it keeps running (a tool
-    # may have acted) but its result is never spoken, now or at a later wake.
+    # A device "stop" interrupted the turn this op answers, before its result
+    # was promised for later: it keeps running (a tool may act) but it never
+    # becomes a task, and its result is never spoken (note_device_stop).
     stopped: bool = False
     promoted_mono: Optional[float] = None
     result_ready_mono: Optional[float] = None
@@ -1279,13 +1280,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._websocket is None:
             return
         logger.info(f"🧾 closing the GPT-Live session ({reason or 'no reason given'})")
-        if reason == "device stop" and self._op is not None and not self._op.stopped:
-            # Whatever the stopped turn was waiting for must not be spoken
-            # later: a late lookup result was delivered at the next wake, as
-            # the answer to an unrelated request (rig 2026-10-28: "Yes, it
-            # is." answering "Add bread to the test list").
-            self._op.stopped = True
-            logger.info(f"🛑 router: {self._op.op_id} was stopped; its result will not be spoken")
         snapshot = getattr(self, "household_snapshot", None)
         if snapshot is not None and hasattr(snapshot, "cancel"):
             snapshot.cancel()  # a context fetch never outlives its session
@@ -1487,6 +1481,22 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._send(context_append("thinking", STOP_CONTEXT, None))
             logger.info(f"🛑 live: stop context sent ({reason})")
         return True
+
+    def note_device_stop(self) -> None:
+        """The device's "stop" interrupted the current request. Its result must
+        never be spoken later: a stopped lookup used to finish in the
+        background and be delivered at the next wake, as the answer to an
+        unrelated request (rig 2026-10-28: "Yes, it is." answering "Add bread
+        to the test list"). A request already promoted to a task (the voice
+        promised its result for later) is left alone."""
+        op = self._op
+        if op is None or op.done or op.background or op.stopped:
+            return
+        op.stopped = True
+        if op.watch is not None and not op.watch.done():
+            op.watch.cancel()  # no promotion and no "still working on it" for it
+        op.watch = None
+        logger.info(f"🛑 router: {op.op_id} was stopped by the device; its result will not be spoken")
 
     async def inject_context(self, text: str) -> None:
         for chunk in chunk_text(text):
@@ -3505,7 +3515,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # confirmations withdrawn in _task_detach (longtask review B1).
             self._drop_unheard_confirmations(op, announce=reason != "disconnect")
         if op is not None and not op.done and op.task is not None:
-            if op.tools_started or op.background:
+            if op.stopped:
+                # Never cancelled (a tool may be acting), never a task: it
+                # finishes on its own and its result is dropped.
+                logger.info(f"🧭 router: {op.op_id} superseded ({reason}) after a stop; "
+                            "it finishes without being spoken")
+            elif op.tools_started or op.background:
                 # NEVER cancelled, not even on a disconnect: a tool has run,
                 # or may be running right now. Cancelling here is what dropped
                 # a 30 s result on the floor and let an impatient repeat run
@@ -3808,13 +3823,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 liveness.tool_finished()
         if op.abandoned:
             return
+        if op.stopped:
+            op.result = result
+            op.done = True
+            logger.info(f"🛑 router: {op.op_id} finished after a stop ({result.kind}); not spoken")
+            return
         op.result = result
         op.done = True
         op.result_ready_mono = time.monotonic()
         self.router_stats["local" if result.source == "ha_local" else "backend"] += 1
-        if op.background or self._op is not op or op.stopped:
+        if op.background or self._op is not op:
             if not op.background:
-                self._task_detach(op, "stopped" if op.stopped else "overtaken by newer speech")
+                self._task_detach(op, "overtaken by newer speech")
             await self._task_complete(op)
             return
         self._note(self.on_backend_activity)
@@ -4546,10 +4566,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             op.background = True
             self.router_stats["promoted"] += 1
         self._tasks[op.op_id] = op
-        if op.stopped:
-            logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
-                        "its result will not be spoken")
-            return
         logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
                     "its result will be delivered")
         if op.watch is None or op.watch.done():
@@ -4561,7 +4577,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return None
         now = time.monotonic()
         for op in reversed(list(self._tasks.values())):
-            if op.key != key or op.delivered or op.abandoned or op.confirm_withdrawn or op.stopped:
+            if op.key != key or op.delivered or op.abandoned or op.confirm_withdrawn:
                 continue
             if op.session_sent_mono is not None:
                 continue  # its result is being spoken right now: a repeat is a new request
@@ -4868,10 +4884,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if op.watch is not None and op.watch is not asyncio.current_task():
             await self._cancel(op.watch)
             op.watch = None
-        if op.stopped:
-            logger.info(f"🛑 task {op.op_id} finished after a stop: its result is not spoken")
-            self._finish_task(op, "stopped")
-            return
         self._task_flush_soon("task done")
 
     def _task_flush_soon(self, reason: str) -> None:
