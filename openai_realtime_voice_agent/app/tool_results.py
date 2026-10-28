@@ -50,7 +50,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 # Failure kinds, most specific first. Matched case-insensitively against the
 # text of whatever the tool returned.
 _KINDS: Tuple[Tuple[str, str], ...] = (
-    ("invalid-arguments", r"invalid slot info|invalid slot|not a valid value|string value is empty"),
+    ("invalid-arguments", r"invalid slot info|invalid slot|not a valid value|string value is empty"
+                          r"|input validation error|is not of type"),
     ("no-matching-entity", r"no exposed entities matched|no entities matched|matched no entities"),
     ("no-handler", r"not available in this session|could not be started"),
     ("unreachable", r"not reachable|is unavailable|connection refused"),
@@ -139,6 +140,24 @@ def _kind_of(text: str) -> str:
     return "error"
 
 
+def _ha_failure(mapping: Mapping[str, Any]) -> Optional[str]:
+    """Why a Home Assistant intent response is a failure, or None.
+
+    ``response_type: "error"`` is one. So is an ``action_done`` in which every
+    target failed: ``data.success`` empty and ``data.failed`` not (a "done"
+    for something that did not happen)."""
+    kind = mapping.get("response_type")
+    data = mapping.get("data") if isinstance(mapping.get("data"), Mapping) else {}
+    if kind == "error":
+        code = data.get("code") if isinstance(data, Mapping) else None
+        return f"Home Assistant answered with an error{f' ({code})' if code else ''}."
+    if kind == "action_done":
+        succeeded, failed = data.get("success"), data.get("failed")
+        if isinstance(failed, list) and failed and not succeeded:
+            return f"Home Assistant could not act on any of the {len(failed)} target(s)."
+    return None
+
+
 def classify_result(result: Any) -> ToolOutcome:
     """Decide whether a tool result reports success, and what kind of failure.
 
@@ -179,9 +198,12 @@ def classify_result(result: Any) -> ToolOutcome:
             kind = _kind_of(detail) if detail else "error"
             return ToolOutcome(ok=False, kind=kind, detail=detail,
                                definitive=kind != "uncertain")
+        failed = _ha_failure(mapping)
+        if failed is not None:
+            return ToolOutcome(ok=False, kind=_kind_of(failed), detail=failed, definitive=True)
         return ToolOutcome(ok=True, kind="ok")
     text = str(result).strip()
-    if re.match(r"^error(\s+calling\s+(mcp\s+)?tool)?\b|^error:", text, re.I):
+    if re.match(r"^error(\s+calling\s+(mcp\s+)?tool)?\b|^error:|^input validation error\b", text, re.I):
         kind = _kind_of(text)
         return ToolOutcome(ok=False, kind=kind, detail=text,
                            definitive=kind != "uncertain")

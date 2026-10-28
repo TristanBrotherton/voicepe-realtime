@@ -435,6 +435,22 @@ class NoFalseSuccess(unittest.IsolatedAsyncioTestCase):
             return raw, classify_result(raw)
         return await router.route("Turn on the Atrium Lamp.", execute), backend
 
+    async def test_home_assistant_rejecting_the_call_is_never_a_success(self):
+        """Kitchen 2026-10-28: the call was rejected ("Input validation
+        error") and the voice said the kitchen lights were off."""
+        from app.tool_results import classify_result
+        backend = FakeBackend(response(call("intent__HassTurnOff", {"area": "Kitchen"}, "c1")),
+                              response(message("The kitchen lights are off.")))
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post))
+
+        async def execute(name, args):
+            raw = "Error: Input validation error: 'light' is not of type 'array'"
+            return raw, classify_result(raw)
+        result = await router.route("Turn the kitchen lights off.", execute)
+        self.assertNotEqual(result.kind, ACTION)
+        self.assertFalse(any(run.ok for run in result.tools))
+        self.assertNotIn("Verified", result.commentary() or "")
+
     async def test_a_tool_less_claim_is_reported_as_not_confirmed(self):
         result, _ = await self.route(response(message("Done, the lamp is on.")))
         self.assertEqual(result.kind, FAILED)

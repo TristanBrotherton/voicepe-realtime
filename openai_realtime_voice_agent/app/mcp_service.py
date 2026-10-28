@@ -54,10 +54,28 @@ class _WatchedSession:
 
     async def call_tool(self, *args, **kwargs):
         try:
-            return await self._inner.call_tool(*args, **kwargs)
+            result = await self._inner.call_tool(*args, **kwargs)
         except BaseException as e:
             self.error = e
             raise
+        mark_error(result)
+        return result
+
+
+def mark_error(result) -> None:
+    """pipecat passes on only the text of an MCP result, so a result flagged
+    ``isError`` ("Input validation error: ...") read as a success: its first
+    text starts with "Error:" so it is judged a failure (app/tool_results.py).
+    Kitchen 2026-10-28: "Garden lights are off" for a call Home Assistant
+    had rejected."""
+    if not getattr(result, "isError", False):
+        return
+    for content in getattr(result, "content", None) or []:
+        text = getattr(content, "text", None)
+        if isinstance(text, str):
+            if not text.lstrip().lower().startswith("error"):
+                content.text = "Error: " + text
+            return
 
 
 def _never_sent(error: Optional[BaseException]) -> bool:

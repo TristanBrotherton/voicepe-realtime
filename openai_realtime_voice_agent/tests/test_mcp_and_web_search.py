@@ -149,6 +149,9 @@ class SharedSessionFake:
                 return None
 
             async def call_tool(self, name, arguments=None):
+                if self.mode == "rejected":
+                    return SimpleNamespace(isError=True, content=[SimpleNamespace(
+                        text="Input validation error: 'light' is not of type 'array'")])
                 if self.mode == "never_sent":
                     raise anyio.ClosedResourceError()
                 if self.mode == "fail_after_send" and name.lower().startswith("fail"):
@@ -169,6 +172,19 @@ def make_shared(plan):
     client._client = fake_transport
     client._session = fake.make
     return client, fake
+
+
+class TestRejectedCallsAreErrors(unittest.IsolatedAsyncioTestCase):
+    async def test_an_mcp_result_flagged_is_error_reaches_the_judge_as_an_error(self):
+        """Kitchen 2026-10-28: Home Assistant rejected the call (isError) and
+        pipecat passed on only its text, which was judged a success."""
+        from app.tool_results import classify_result
+        client, _fake = make_shared(["rejected"])
+        params = Params("HassTurnOff")
+        await client._streamable_http_tool_wrapper(params)
+        self.assertTrue(params.results[0].startswith("Error: Input validation error"))
+        self.assertFalse(classify_result(params.results[0]).ok)
+        await client.aclose()
 
 
 class TestSharedSessionSafety(unittest.IsolatedAsyncioTestCase):

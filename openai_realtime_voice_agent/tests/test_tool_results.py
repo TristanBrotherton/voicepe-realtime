@@ -82,6 +82,32 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(outcome.kind, "speaker-gate")
 
 
+class TestHomeAssistantRejections(unittest.TestCase):
+    """Kitchen 2026-10-28: "Garden lights are off" for a call Home Assistant
+    had rejected. Its error shapes are failures, never a "done"."""
+
+    def test_an_input_validation_error_is_a_failure(self):
+        outcome = classify_result("Input validation error: 'light' is not of type 'array'")
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.kind, "invalid-arguments")
+
+    def test_an_action_where_every_target_failed_is_a_failure(self):
+        outcome = classify_result('{"speech": {}, "response_type": "action_done", "data": '
+                                  '{"success": [], "failed": [{"name": "Atrium Lamp", "type": "entity", '
+                                  '"id": "light.atrium"}]}}')
+        self.assertFalse(outcome.ok)
+
+    def test_an_action_with_one_target_done_is_a_success(self):
+        outcome = classify_result({"response_type": "action_done", "data": {
+            "success": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium"}],
+            "failed": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium_2"}]}})
+        self.assertTrue(outcome.ok)
+
+    def test_an_error_response_is_a_failure(self):
+        outcome = classify_result({"response_type": "error", "data": {"code": "no_valid_targets"}})
+        self.assertFalse(outcome.ok)
+
+
 class TestRedaction(unittest.TestCase):
     def test_quoted_values_never_reach_a_log_line(self):
         outcome = classify_result(fx.NO_MATCH_RESULT)

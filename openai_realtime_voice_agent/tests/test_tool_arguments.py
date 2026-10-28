@@ -19,6 +19,51 @@ from app.tool_arguments import (
 from tests import live_fixtures as fx
 
 
+HA_TURN_OFF = {"name": "intent__HassTurnOff", "parameters": {"type": "object", "properties": {
+    "name": {"type": "string"}, "area": {"type": "string"}, "floor": {"type": "string"},
+    "domain": {"type": "array", "items": {"type": "string"}},
+    "device_class": {"type": "array", "items": {"type": "string"}}}}}
+HA_LIGHT_SET = {"name": "light__HassLightSet", "parameters": {"type": "object", "properties": {
+    "name": {"type": "string"}, "domain": {"type": "array", "items": {"type": "string"}},
+    "brightness": {"type": "integer", "minimum": 0, "maximum": 100}}}}
+HA_LIVE_CONTEXT = {"name": "homeassistant__GetLiveContext", "parameters": {"type": "object", "properties": {
+    "domain": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}}}}
+
+
+class TestArgumentsFitTheSchemaTypes(unittest.TestCase):
+    """Home Assistant's MCP tools type domain and device_class as arrays;
+    "domain": "light" was rejected and the kitchen lights stayed on (Kitchen
+    2026-10-28). Values are reshaped to the declared type, never changed."""
+
+    def test_a_scalar_domain_becomes_a_list(self):
+        clean, _ = sanitize_tool_arguments("intent__HassTurnOff", {"area": "Kitchen", "domain": "light"},
+                                           HA_TURN_OFF)
+        self.assertEqual(clean, {"area": "Kitchen", "domain": ["light"]})
+
+    def test_a_scalar_device_class_becomes_a_list(self):
+        clean, _ = sanitize_tool_arguments("intent__HassTurnOn",
+                                           {"name": "Atrium Lamp", "device_class": "shade"}, HA_TURN_OFF)
+        self.assertEqual(clean["device_class"], ["shade"])
+
+    def test_a_numeric_string_becomes_the_declared_integer(self):
+        clean, _ = sanitize_tool_arguments("light__HassLightSet",
+                                           {"name": "Atrium Lamp", "brightness": "40"}, HA_LIGHT_SET)
+        self.assertEqual(clean["brightness"], 40)
+
+    def test_a_shape_the_schema_already_allows_is_untouched(self):
+        clean, _ = sanitize_tool_arguments("homeassistant__GetLiveContext", {"domain": "light"},
+                                           HA_LIVE_CONTEXT)
+        self.assertEqual(clean, {"domain": "light"})
+        clean, _ = sanitize_tool_arguments("intent__HassTurnOff", {"area": "Kitchen", "domain": ["light"]},
+                                           HA_TURN_OFF)
+        self.assertEqual(clean["domain"], ["light"])
+
+    def test_a_value_that_is_not_a_plain_form_is_left_for_the_server_to_reject(self):
+        clean, _ = sanitize_tool_arguments("light__HassLightSet",
+                                           {"name": "Atrium Lamp", "brightness": "bright"}, HA_LIGHT_SET)
+        self.assertEqual(clean["brightness"], "bright")
+
+
 class TestTheCanaryPayloads(unittest.TestCase):
     def test_hass_light_set_as_gpt_live_sent_it(self):
         clean, removed = sanitize_tool_arguments(
