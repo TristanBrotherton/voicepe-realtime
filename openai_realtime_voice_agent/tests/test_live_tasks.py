@@ -350,15 +350,27 @@ class NeverCancelled(Patched):
             await until(lambda: h.executed)
             await self._stopped(h)
             await asyncio.sleep(0.6)  # past promote_s: a stopped request is never promoted
-            self.assertEqual(h.service.tasks_pending, 0, "never a task")
+            self.assertFalse(h.service._task_holds_session(), "a stopped request holds no session")
             h.release.set()
-            await asyncio.sleep(0.5)
+            await until(lambda: h.service.tasks_pending == 0, timeout=5.0)
+            await asyncio.sleep(0.3)
             self.assertEqual(h.executed, [ON], "the running tool still ran, once")
             self.assertEqual(announced, [])
             await h.open_session()
             await h.start_session("sess_2")
             await asyncio.sleep(0.5)
             self.assertFalse(any("lamp" in c.lower() for c in commentaries(h)), commentaries(h))
+
+    async def test_a_stop_before_any_tool_ran_cancels_the_request(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        backend.gate.clear()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("Turn on the Atrium Lamp")
+            await until(lambda: backend.bodies)
+            await self._stopped(h)
+            backend.gate.set()
+            await asyncio.sleep(0.5)
+            self.assertEqual(h.executed, [], "nothing acts on the house after the stop")
 
     async def test_a_result_already_promised_for_later_is_still_delivered_after_a_stop(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
@@ -378,11 +390,10 @@ class NeverCancelled(Patched):
             await until(lambda: announced, timeout=5.0)
             self.assertIn("lamp is on", announced[0])
 
-    async def test_a_repeat_after_a_stop_runs_again(self):
-        # The fake answers in order: the repeat gets "The lamp is on." at once,
-        # the stopped request (released later) gets "The stopped one is done."
-        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")),
-                              response(message("The stopped one is done.")))
+    async def test_a_repeat_after_a_stop_joins_it_and_is_answered_once(self):
+        """Asked again after a stop: nothing runs twice, and the answer the
+        user asked for again is spoken."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=30.0)
             await h.user_says("Turn on the Atrium Lamp")
@@ -391,14 +402,13 @@ class NeverCancelled(Patched):
             await h.open_session()
             await h.start_session("sess_2")
             await h.user_says("Turn on the Atrium Lamp", start_ms=5000)
-            await until(lambda: len(backend.bodies) == 2, timeout=5.0)
-            self.assertEqual(h.service.router_stats["joined"], 0, "routed again, not joined")
-            await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
-            h.release.set()
-            await until(lambda: len(backend.bodies) == 3, timeout=5.0)
             await asyncio.sleep(0.3)
+            self.assertEqual(h.service.router_stats["joined"], 1)
+            h.release.set()
+            await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
+            await asyncio.sleep(0.3)
+            self.assertEqual(h.executed, [ON], "the action ran once")
             self.assertEqual(sum("lamp is on" in c for c in commentaries(h)), 1)
-            self.assertFalse(any("stopped one" in c for c in commentaries(h)), "the stopped answer is never spoken")
 
     async def test_an_impatient_repeat_joins_the_running_operation(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))

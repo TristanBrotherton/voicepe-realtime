@@ -6,14 +6,15 @@ All notable changes to this add-on. Newest first.
 
 ### Fixed: a stopped turn's late answer was spoken at the next wake
 
-- A "stop" from the device ends the request it interrupted. A tool that was
-  already running still finishes (it may have acted), but its result is never
+- A "stop" from the device ends the request it interrupted, unless the voice
+  had already promised its result for later. With no tool started yet it is
+  cancelled, as before. Once a tool ran it finishes (it may have acted), but
+  it is never narrated, never keeps the session open, and its answer is not
   spoken: not in the closing session, not as an announcement, and not at the
   next wake, where it used to be spoken as the answer to the next, unrelated
-  request. Saying the same request again runs it again instead of waiting
-  for the stopped one. A result the voice had already promised for later is
-  still delivered, and results of sessions that closed for any other reason
-  are delivered as before.
+  request. A failure is still told, so a false stop never leaves a failed
+  command looking done. Asking the same thing again joins the stopped request
+  (nothing runs twice) and its answer is spoken then.
 
 ## 0.20.2 (fork)
 

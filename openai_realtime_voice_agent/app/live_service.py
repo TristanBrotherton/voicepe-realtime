@@ -510,9 +510,11 @@ class RouterOp:
     key: str = ""                 # normalised request text: the join key for a repeat
     background: bool = False
     abandoned: bool = False
-    # A device "stop" interrupted the turn this op answers, before its result
-    # was promised for later: it keeps running (a tool may act) but it never
-    # becomes a task, and its result is never spoken (note_device_stop).
+    # A device "stop" interrupted the request before its result was promised
+    # for later (note_device_stop). With no tool started it is cancelled like
+    # any superseded op; once a tool ran it finishes, stays joinable (a repeat
+    # never runs it twice, and un-stops it), but is never narrated, never holds
+    # a session and its result is not spoken unless it failed.
     stopped: bool = False
     promoted_mono: Optional[float] = None
     result_ready_mono: Optional[float] = None
@@ -1369,8 +1371,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         bound = self.task_policy.hold_session_s
         if bound <= 0:
             return False
-        return any(not t.deferred and not t.explain and not t.delivered and now - t.started_mono < bound
-                   for t in self._tasks.values())
+        return any(not t.deferred and not t.explain and not t.delivered and not t.stopped
+                   and now - t.started_mono < bound for t in self._tasks.values())
 
     @property
     def backend_work_in_flight(self) -> bool:
@@ -1483,19 +1485,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         return True
 
     def note_device_stop(self) -> None:
-        """The device's "stop" interrupted the current request. Its result must
-        never be spoken later: a stopped lookup used to finish in the
-        background and be delivered at the next wake, as the answer to an
-        unrelated request (rig 2026-10-28: "Yes, it is." answering "Add bread
-        to the test list"). A request already promoted to a task (the voice
-        promised its result for later) is left alone."""
+        """The device's "stop" interrupted the current request. A stopped
+        lookup used to finish in the background and be spoken at the next
+        wake, as the answer to an unrelated request (rig 2026-10-28: "Yes, it
+        is." answering "Add bread to the test list"). A request whose result
+        the voice already promised for later (promoted) is left alone."""
         op = self._op
-        if op is None or op.done or op.background or op.stopped:
+        if op is None or op.done or op.stopped or op.promoted_mono is not None:
             return
-        op.stopped = True
-        if op.watch is not None and not op.watch.done():
-            op.watch.cancel()  # no promotion and no "still working on it" for it
-        op.watch = None
+        for each in [op] + [t for t in self._tasks.values() if t.op_id == f"{op.op_id}-ext"]:
+            each.stopped = True
+            if each.watch is not None and not each.watch.done():
+                each.watch.cancel()  # no promotion and no "still working on it" for it
+            each.watch = None
         logger.info(f"🛑 router: {op.op_id} was stopped by the device; its result will not be spoken")
 
     async def inject_context(self, text: str) -> None:
@@ -3515,12 +3517,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # confirmations withdrawn in _task_detach (longtask review B1).
             self._drop_unheard_confirmations(op, announce=reason != "disconnect")
         if op is not None and not op.done and op.task is not None:
-            if op.stopped:
-                # Never cancelled (a tool may be acting), never a task: it
-                # finishes on its own and its result is dropped.
-                logger.info(f"🧭 router: {op.op_id} superseded ({reason}) after a stop; "
-                            "it finishes without being spoken")
-            elif op.tools_started or op.background:
+            if op.tools_started or op.background:
                 # NEVER cancelled, not even on a disconnect: a tool has run,
                 # or may be running right now. Cancelling here is what dropped
                 # a 30 s result on the floor and let an impatient repeat run
@@ -3823,18 +3820,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 liveness.tool_finished()
         if op.abandoned:
             return
-        if op.stopped:
-            op.result = result
-            op.done = True
-            logger.info(f"🛑 router: {op.op_id} finished after a stop ({result.kind}); not spoken")
-            return
         op.result = result
         op.done = True
         op.result_ready_mono = time.monotonic()
         self.router_stats["local" if result.source == "ha_local" else "backend"] += 1
-        if op.background or self._op is not op:
+        if op.background or self._op is not op or op.stopped:
             if not op.background:
-                self._task_detach(op, "overtaken by newer speech")
+                self._task_detach(op, "stopped" if op.stopped else "overtaken by newer speech")
             await self._task_complete(op)
             return
         self._note(self.on_backend_activity)
@@ -4031,6 +4023,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._task_flush_soon("unheard confirmation withdrawn")
 
     async def _router_deliver(self, op: RouterOp) -> None:
+        if op.stopped:
+            if not op.background:
+                self._task_detach(op, "stopped")
+            await self._task_complete(op)
+            return
         result = op.result
         if self._user_turn.open:
             # The user has started speaking again (a continuation within the
@@ -4567,7 +4564,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self.router_stats["promoted"] += 1
         self._tasks[op.op_id] = op
         logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
-                    "its result will be delivered")
+                    f"its result will {'not be spoken (stopped)' if op.stopped else 'be delivered'}")
+        if op.stopped:
+            return  # never promoted or narrated
         if op.watch is None or op.watch.done():
             op.watch = self._spawn(self._task_progress_watch(op), f"live-task-progress-{op.op_id}")
 
@@ -4588,6 +4587,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     async def _task_join(self, op: RouterOp, seq: int, text: str) -> None:
         """An exact repeat of a pending request joins it: nothing runs again."""
+        if op.stopped:
+            # Asked again after a stop: the answer is wanted after all.
+            op.stopped = False
+            for ext in self._tasks.values():
+                if ext.op_id == f"{op.op_id}-ext":
+                    ext.stopped = False
         op.joins += 1
         self.router_stats["joined"] += 1
         meta = self._turn_meta()
@@ -4809,9 +4814,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                        started_mono=op.started_mono, tools_started=True, background=True,
                        external_id=task_id, tool_name=name, deferred=deferred, explain=explain,
                        text_requested=explain and wants_text(op.text),
-                       speaker=op.speaker or (self._speaker_first_name() if explain else ""))
+                       speaker=op.speaker or (self._speaker_first_name() if explain else ""),
+                       stopped=op.stopped)
         self._tasks[ext.op_id] = ext
-        ext.watch = self._spawn(self._task_progress_watch(ext), f"live-task-progress-{ext.op_id}")
+        if not ext.stopped:
+            ext.watch = self._spawn(self._task_progress_watch(ext), f"live-task-progress-{ext.op_id}")
         logger.info(f"🧺 router {op.op_id}: {name} continues elsewhere as "
                     f"{'a watch' if deferred else 'an explanation' if explain else 'task'} {task_id}; "
                     f"its {'event' if deferred else 'result'} is delivered when it arrives")
@@ -4884,6 +4891,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if op.watch is not None and op.watch is not asyncio.current_task():
             await self._cancel(op.watch)
             op.watch = None
+        if op.stopped:
+            if op.result is not None and op.result.kind == ROUTE_FAILED:
+                # A failure is still told: a false stop must never leave the
+                # user believing a command worked.
+                op.stopped = False
+                logger.info(f"🛑 task {op.op_id} failed after a stop: the failure is still told")
+            else:
+                op.delivered = True
+                self._tasks.pop(op.op_id, None)
+                logger.info(f"🛑 task {op.op_id} finished after a stop: its result is not spoken")
+                return
         self._task_flush_soon("task done")
 
     def _task_flush_soon(self, reason: str) -> None:
