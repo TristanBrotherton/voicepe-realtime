@@ -3278,8 +3278,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
         Sanitizing happens here, upstream of the guards, so the speaker and
         action gates judge exactly the arguments Home Assistant will receive.
-        It can only ever remove an empty value, so no confirmation can be
-        skipped by it.
+        It only removes empty values and reshapes values to the tool's
+        declared types ("light" -> ["light"], "40" -> 40), so no confirmation
+        can be skipped by it; a guard comparing a value must allow both
+        shapes.
         """
         arguments, dropped = sanitize_tool_arguments(
             call.name, call.arguments, self._tool_schemas.get(call.name)

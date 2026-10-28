@@ -58,6 +58,21 @@ class TestArgumentsFitTheSchemaTypes(unittest.TestCase):
                                            HA_TURN_OFF)
         self.assertEqual(clean["domain"], ["light"])
 
+    def test_a_huge_numeric_string_is_exact_and_never_crashes(self):
+        clean, _ = sanitize_tool_arguments("light__HassLightSet",
+                                           {"name": "Atrium Lamp", "brightness": "9" * 400}, HA_LIGHT_SET)
+        self.assertEqual(clean["brightness"], int("9" * 400))
+        clean, _ = sanitize_tool_arguments("light__HassLightSet",
+                                           {"name": "Atrium Lamp", "brightness": "9007199254740993"},
+                                           HA_LIGHT_SET)
+        self.assertEqual(clean["brightness"], 9007199254740993)
+
+    def test_a_required_placeholder_is_not_reshaped(self):
+        schema = {"name": "x__Tool", "parameters": {"type": "object", "required": ["domain"],
+                                                    "properties": {"domain": {"type": "array"}}}}
+        clean, _ = sanitize_tool_arguments("x__Tool", {"domain": ""}, schema)
+        self.assertEqual(clean["domain"], "")
+
     def test_a_value_that_is_not_a_plain_form_is_left_for_the_server_to_reject(self):
         clean, _ = sanitize_tool_arguments("light__HassLightSet",
                                            {"name": "Atrium Lamp", "brightness": "bright"}, HA_LIGHT_SET)

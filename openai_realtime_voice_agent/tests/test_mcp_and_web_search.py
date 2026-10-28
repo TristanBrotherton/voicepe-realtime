@@ -182,9 +182,21 @@ class TestRejectedCallsAreErrors(unittest.IsolatedAsyncioTestCase):
         client, _fake = make_shared(["rejected"])
         params = Params("HassTurnOff")
         await client._streamable_http_tool_wrapper(params)
-        self.assertTrue(params.results[0].startswith("Error: Input validation error"))
         self.assertFalse(classify_result(params.results[0]).ok)
         await client.aclose()
+
+    async def test_the_per_call_client_marks_errors_too(self):
+        """MCP_PERSISTENT_SESSION=false uses the per-call client."""
+        from app.mcp_service import ErrorMarkingMCPClient
+        from app.tool_results import classify_result
+
+        class Rejecting:
+            async def call_tool(self, name, arguments=None):
+                return SimpleNamespace(isError=True, content=[SimpleNamespace(text="Errors: target not found")])
+        client = ErrorMarkingMCPClient(StreamableHttpParameters(url="http://example.invalid/mcp"))
+        params = Params("HassTurnOff")
+        await client._call_tool(Rejecting(), "HassTurnOff", {}, params.result_callback)
+        self.assertFalse(classify_result(params.results[0]).ok, params.results[0])
 
 
 class TestSharedSessionSafety(unittest.IsolatedAsyncioTestCase):

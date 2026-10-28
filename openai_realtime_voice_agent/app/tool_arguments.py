@@ -171,7 +171,7 @@ def _fits(value: Any, types: set) -> bool:
     return value is None and "null" in types
 
 
-_INTEGER = re.compile(r"[+-]?\d+(?:\.0+)?")
+_INTEGER = re.compile(r"([+-]?\d+)(?:\.0+)?")
 _NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)")
 
 
@@ -181,6 +181,8 @@ def coerce_to_schema(value: Any, spec: Any) -> Any:
     numeric string where a number is declared becomes that number. Anything
     else is returned unchanged (the server then rejects it, and that is
     reported as a failure).
+
+    Booleans are read from "true"/"false" where a boolean is declared.
 
     Home Assistant's MCP tools type ``domain`` and ``device_class`` as arrays;
     the router and the voice both send ``"domain": "light"``, which Home
@@ -194,16 +196,15 @@ def coerce_to_schema(value: Any, spec: Any) -> Any:
         return [coerce_to_schema(value, items) if items else value]
     if isinstance(value, str):
         text = value.strip()
-        if "integer" in types and _INTEGER.fullmatch(text):
-            return int(float(text))
+        whole = _INTEGER.fullmatch(text)
+        if "integer" in types and whole:
+            return int(whole.group(1))  # never through float: no overflow, no lost digits
         if "number" in types and _NUMBER.fullmatch(text):
-            return float(text)
+            number = float(text)
+            if number == number and abs(number) != float("inf"):
+                return number
         if "boolean" in types and text.lower() in ("true", "false"):
             return text.lower() == "true"
-    if isinstance(value, float) and "integer" in types and value.is_integer():
-        return int(value)
-    if isinstance(value, (list, tuple)) and isinstance(spec, Mapping) and isinstance(spec.get("items"), Mapping):
-        return [coerce_to_schema(v, spec["items"]) for v in value]
     return value
 
 
@@ -234,15 +235,15 @@ def sanitize_tool_arguments(
     clean: Dict[str, Any] = {}
     removed: List[str] = []
     for key, value in args.items():
-        if key in required:
-            clean[key] = coerce_to_schema(value, properties.get(key))
+        placeholder = _is_placeholder(function_name, key, value)
+        if key in required or (keep_targets and key in TARGET_PARAMETERS):
+            # Kept as sent: a required parameter, or a target whose removal
+            # would widen the call from "nothing" to "everything" (let it be
+            # rejected instead). A placeholder is never reshaped ("" stays "",
+            # so Home Assistant's "that value is empty" stays honest).
+            clean[key] = value if placeholder else coerce_to_schema(value, properties.get(key))
             continue
-        if keep_targets and key in TARGET_PARAMETERS:
-            # No real target survives, so removing this one would widen the
-            # call from "nothing" to "everything". Let it be rejected instead.
-            clean[key] = value
-            continue
-        if _is_placeholder(function_name, key, value):
+        if placeholder:
             removed.append(key)
             continue
         clean[key] = coerce_to_schema(value, properties.get(key))

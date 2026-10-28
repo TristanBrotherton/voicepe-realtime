@@ -50,8 +50,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 # Failure kinds, most specific first. Matched case-insensitively against the
 # text of whatever the tool returned.
 _KINDS: Tuple[Tuple[str, str], ...] = (
+    ("wrong-type", r"is not of type"),
     ("invalid-arguments", r"invalid slot info|invalid slot|not a valid value|string value is empty"
-                          r"|input validation error|is not of type"),
+                          r"|input validation error"),
     ("no-matching-entity", r"no exposed entities matched|no entities matched|matched no entities"),
     ("no-handler", r"not available in this session|could not be started"),
     ("unreachable", r"not reachable|is unavailable|connection refused"),
@@ -140,21 +141,33 @@ def _kind_of(text: str) -> str:
     return "error"
 
 
-def _ha_failure(mapping: Mapping[str, Any]) -> Optional[str]:
-    """Why a Home Assistant intent response is a failure, or None.
+# Home Assistant intent error codes that name a known failure kind.
+_HA_ERROR_KINDS = {
+    "no_valid_targets": "no-matching-entity",
+    "no_intent_match": "no-matching-entity",
+}
 
-    ``response_type: "error"`` is one. So is an ``action_done`` in which every
-    target failed: ``data.success`` empty and ``data.failed`` not (a "done"
-    for something that did not happen)."""
+
+def _ha_failure(mapping: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
+    """``(kind, detail)`` when a Home Assistant intent response is a failure.
+
+    ``response_type: "error"`` is one; its code names the kind where known and
+    Home Assistant's own words are kept. So is an ``action_done`` in which
+    every target failed: ``data.success`` empty and ``data.failed`` not (a
+    "done" for something that did not happen)."""
     kind = mapping.get("response_type")
     data = mapping.get("data") if isinstance(mapping.get("data"), Mapping) else {}
     if kind == "error":
-        code = data.get("code") if isinstance(data, Mapping) else None
-        return f"Home Assistant answered with an error{f' ({code})' if code else ''}."
+        code = str(data.get("code") or "")
+        speech = mapping.get("speech")
+        spoken = ((speech.get("plain") or {}).get("speech") if isinstance(speech, Mapping)
+                  and isinstance(speech.get("plain"), Mapping) else "") or ""
+        detail = spoken or f"Home Assistant answered with an error{f' ({code})' if code else ''}."
+        return _HA_ERROR_KINDS.get(code) or _kind_of(detail), detail
     if kind == "action_done":
         succeeded, failed = data.get("success"), data.get("failed")
         if isinstance(failed, list) and failed and not succeeded:
-            return f"Home Assistant could not act on any of the {len(failed)} target(s)."
+            return "all-targets-failed", f"Home Assistant could not act on any of the {len(failed)} target(s)."
     return None
 
 
@@ -200,7 +213,7 @@ def classify_result(result: Any) -> ToolOutcome:
                                definitive=kind != "uncertain")
         failed = _ha_failure(mapping)
         if failed is not None:
-            return ToolOutcome(ok=False, kind=_kind_of(failed), detail=failed, definitive=True)
+            return ToolOutcome(ok=False, kind=failed[0], detail=failed[1], definitive=True)
         return ToolOutcome(ok=True, kind="ok")
     text = str(result).strip()
     if re.match(r"^error(\s+calling\s+(mcp\s+)?tool)?\b|^error:|^input validation error\b", text, re.I):
@@ -217,6 +230,16 @@ _ADVICE = {
         "you have no value for — leave those parameters out entirely. Try once "
         "more with only the parameters you actually know (usually just name, or "
         "name plus area)."
+    ),
+    "wrong-type": (
+        "Home Assistant rejected an argument's type, so nothing changed. Send the "
+        "same value in the type the error names (a list, for example [\"light\"] "
+        "for \"light\"); never drop the parameter instead, which would widen the "
+        "request."
+    ),
+    "all-targets-failed": (
+        "Home Assistant found the targets but could not act on any of them, so "
+        "nothing changed. Tell the user it did not work; do not say it was done."
     ),
     "no-matching-entity": (
         "Home Assistant has no exposed entity with that name, so nothing "
