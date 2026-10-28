@@ -510,6 +510,9 @@ class RouterOp:
     key: str = ""                 # normalised request text: the join key for a repeat
     background: bool = False
     abandoned: bool = False
+    # A device "stop" ended the turn this op answers: it keeps running (a tool
+    # may have acted) but its result is never spoken, now or at a later wake.
+    stopped: bool = False
     promoted_mono: Optional[float] = None
     result_ready_mono: Optional[float] = None
     delivered: bool = False
@@ -1276,6 +1279,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._websocket is None:
             return
         logger.info(f"🧾 closing the GPT-Live session ({reason or 'no reason given'})")
+        if reason == "device stop" and self._op is not None and not self._op.stopped:
+            # Whatever the stopped turn was waiting for must not be spoken
+            # later: a late lookup result was delivered at the next wake, as
+            # the answer to an unrelated request (rig 2026-10-28: "Yes, it
+            # is." answering "Add bread to the test list").
+            self._op.stopped = True
+            logger.info(f"🛑 router: {self._op.op_id} was stopped; its result will not be spoken")
         snapshot = getattr(self, "household_snapshot", None)
         if snapshot is not None and hasattr(snapshot, "cancel"):
             snapshot.cancel()  # a context fetch never outlives its session
@@ -1791,14 +1801,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # event after session.start of the following wake.
             logger.debug(f"live: dropping {payload.get('type')} for delegation "
                          f"{payload.get('delegation_id')} of a session that has ended")
-            return
-        if self._websocket is None and not self._session_opening:
-            # No session is open or opening: this belongs to the one that
-            # closed (a router result that landed after a device stop). Queued,
-            # it was spoken as the answer to the next wake's unrelated request
-            # (Garage 2026-10-28: "Yes, it is." answering "Add bread to the
-            # test list").
-            logger.info(f"🧹 live: dropping {payload.get('type')} that arrived after its session closed")
             return
         self._pending_context.append(payload)
 
@@ -3810,9 +3812,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op.done = True
         op.result_ready_mono = time.monotonic()
         self.router_stats["local" if result.source == "ha_local" else "backend"] += 1
-        if op.background or self._op is not op:
+        if op.background or self._op is not op or op.stopped:
             if not op.background:
-                self._task_detach(op, "overtaken by newer speech")
+                self._task_detach(op, "stopped" if op.stopped else "overtaken by newer speech")
             await self._task_complete(op)
             return
         self._note(self.on_backend_activity)
@@ -4544,6 +4546,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             op.background = True
             self.router_stats["promoted"] += 1
         self._tasks[op.op_id] = op
+        if op.stopped:
+            logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
+                        "its result will not be spoken")
+            return
         logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
                     "its result will be delivered")
         if op.watch is None or op.watch.done():
@@ -4555,7 +4561,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return None
         now = time.monotonic()
         for op in reversed(list(self._tasks.values())):
-            if op.key != key or op.delivered or op.abandoned or op.confirm_withdrawn:
+            if op.key != key or op.delivered or op.abandoned or op.confirm_withdrawn or op.stopped:
                 continue
             if op.session_sent_mono is not None:
                 continue  # its result is being spoken right now: a repeat is a new request
@@ -4862,6 +4868,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if op.watch is not None and op.watch is not asyncio.current_task():
             await self._cancel(op.watch)
             op.watch = None
+        if op.stopped:
+            logger.info(f"🛑 task {op.op_id} finished after a stop: its result is not spoken")
+            self._finish_task(op, "stopped")
+            return
         self._task_flush_soon("task done")
 
     def _task_flush_soon(self, reason: str) -> None:

@@ -6,10 +6,13 @@ All notable changes to this add-on. Newest first.
 
 ### Fixed: a stopped turn's late answer was spoken at the next wake
 
-- A result that arrives after the session closed (a lookup still running when
-  a "stop" ended the turn) is dropped. It used to wait for the next session
-  and be spoken there, as the answer to the next, unrelated request. Context
-  sent while the next session is opening still reaches it.
+- A "stop" from the device ends the request it interrupted. A tool that was
+  already running still finishes (it may have acted), but its result is never
+  spoken: not in the closing session, not as an announcement, and not at the
+  next wake, where it used to be spoken as the answer to the next, unrelated
+  request. Saying the same request again runs it again instead of waiting
+  for the stopped one. Results of sessions that closed for any other reason
+  are delivered as before.
 
 ## 0.20.2 (fork)
 
