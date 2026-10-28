@@ -289,6 +289,66 @@ class VerifiedOnlySpeech(Patched):
             await h.sink.wait_for(TTSAudioRawFrame)
             self.assertIn(fx.tone(300)[:4800], h.heard())
 
+    async def test_a_guess_still_streaming_at_the_result_is_never_heard(self):
+        """Kitchen 2026-10-28: the voice was mid-guess ("I've added sliced
+        meats, <name>.") when the verified result went in. The commentary was
+        acknowledged while the guess still streamed, and its tail played on
+        its own: "sliced meats, <name>." The result now waits for the guess
+        to end, so nothing of the guess is heard and the reply is fresh."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        guess = fx.tone(1200, freq=330.0)
+        reply = fx.tone(300)
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "I've turned"})
+
+                async def stream_guess():
+                    # The real endpoint streams at about real time, 100 ms a delta.
+                    for i in range(0, len(guess), 4800):
+                        h.socket.push({"type": "session.output_audio.delta", "delta": b64(guess[i:i + 4800])})
+                        if i == 9600:
+                            h.socket.push({"type": "session.output_transcript.delta",
+                                           "delta": " on the lamp for you, Alex."})
+                        await asyncio.sleep(0.1)
+
+                streaming = asyncio.ensure_future(stream_guess())
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                await asyncio.sleep(0.3)
+                self.assertEqual(h.heard(), b"", "no part of the guess is heard, not even its tail")
+                commentary = " ".join(m["content"] for m in h.socket.of("session.commentary.append"))
+                self.assertIn("in full", commentary, "the voice is told to say it again")
+                h.voice_says("The Atrium Lamp is on now.", ms=300)
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.2)
+                self.assertEqual(h.heard(), reply, "the fresh reply, whole")
+
+    async def test_a_finished_guess_does_not_delay_the_result(self):
+        """A short guess ("Done.") that has already ended is no reason to
+        wait: the result goes in at once, asking for the reply in full."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("Done.", ms=200)
+                await asyncio.sleep(0.4)
+                backend.gate.set()
+                start = time.monotonic()
+                await h.wait_commentary()
+                self.assertLess(time.monotonic() - start, 0.2)
+                commentary = " ".join(m["content"] for m in h.socket.of("session.commentary.append"))
+                self.assertIn("in full", commentary)
+
     async def test_an_acknowledgement_plays_while_the_work_runs(self):
         backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Milk.")))
         backend.gate.clear()
