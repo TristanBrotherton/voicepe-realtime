@@ -2,6 +2,22 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.1 (fork)
+
+### Fixed: a reply cut down to its last words after a guess was dropped
+
+- When the voice guessed at an outcome before the verified result ("I've
+  added..."), the guess was dropped, but the result went in while the guess
+  was still streaming. The voice took the result as part of what it was
+  already saying, and the guess's tail then played on its own ("...sliced
+  meats, Alex."). The result now goes in once the guess has stopped
+  streaming (0.6 s of quiet, at most 4 s), so the reply is a fresh one.
+- The voice is told to speak about the result as if for the first time.
+  Told only not to refer to the dropped guess, it could treat a short guess
+  it had already spoken ("Done.") as the answer and say nothing new.
+- If the user starts speaking again during that wait, the result waits for
+  the new words' verdict, as it already did when they spoke before it.
+
 ## 0.20.0 (fork)
 
 ### New: several Voice PEs on one add-on, each with its own settings
