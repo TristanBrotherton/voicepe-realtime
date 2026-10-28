@@ -12,9 +12,11 @@ All notable changes to this add-on. Newest first.
   already saying, and the guess's tail then played on its own ("...sliced
   meats, Alex."). The result now goes in once the guess has stopped
   streaming (0.6 s of quiet, at most 4 s), so the reply is a fresh one.
-- The voice is told to say the result in full, as if for the first time.
+- The voice is told to speak about the result as if for the first time.
   Told only not to refer to the dropped guess, it could treat a short guess
   it had already spoken ("Done.") as the answer and say nothing new.
+- If the user starts speaking again during that wait, the result waits for
+  the new words' verdict, as it already did when they spoke before it.
 
 ## 0.20.0 (fork)
 

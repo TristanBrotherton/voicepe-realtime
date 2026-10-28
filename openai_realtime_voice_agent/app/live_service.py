@@ -320,10 +320,10 @@ ACK_LAG_S = 0.3
 # timestamps the lag rule alone applies, as in v33.
 GATE_TIMELINE = True
 # Prefixed to the result commentary when held speech was dropped unheard. The
-# voice must say the result again in full: told only "do not refer to it", it
-# took a guess it had already spoken as the answer and said nothing new.
-DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Say the result below "
-                       "to them now, in full, as if for the first time; do not mention saying it before.")
+# voice must speak afresh: told only "do not refer to it", it could take a
+# guess it had already spoken as the answer and say nothing new.
+DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Speak to them about what "
+                       "follows now, as if for the first time; do not mention saying anything before.")
 # A guess dropped at the verified result may still be streaming: the voice is
 # mid-sentence. The result goes in once the voice has been quiet this long (or
 # after GUESS_WAIT_MAX_S), so it starts a fresh reply. Sent mid-sentence, it
@@ -966,9 +966,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_text = ""
         self._gate_blocked = False
         self._gate_drop_until_ack = False
-        # When audible voice audio last arrived (router mode): a guess dropped
-        # at the result is still streaming until this goes quiet.
+        # When audible voice audio or a voice transcript delta last arrived
+        # (router mode): a guess dropped at the result is still streaming
+        # until both go quiet. The transcript runs ahead of the audio, so a
+        # guess whose words are in but whose audio is not yet counts too.
         self._voice_audible_mono: Optional[float] = None
+        self._voice_words_mono: Optional[float] = None
         self._gate_release_task: Optional[asyncio.Task] = None
         self._gate_dropped = 0
         self._fallback_task: Optional[asyncio.Task] = None
@@ -2668,6 +2671,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._note_output_progress()
             return
         if role == "assistant" and self.router is not None:
+            self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
         if role == "user":
             self._last_user_delta_mono = time.monotonic()
@@ -4080,31 +4084,42 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._turn_heard_mono is None:
                 self._arm_router_silent_close()
         else:
-            dropped = self._gate_post()
+            # A guess is in flight when its words were held, even if none of
+            # its audio has arrived yet (it is then still to stream).
+            guess = self._gate_blocked and bool(self._gate_text.strip())
+            dropped = self._gate_post() or guess
             if dropped:
                 op.result_holding = True
                 try:
                     await self._wait_guess_quiet(op)
                 finally:
                     op.result_holding = False
+                if self._user_turn.open or self._op is not op:
+                    # The user spoke again during the wait: as at the top of
+                    # this method, the result waits for the new words' verdict
+                    # (tenth review B8), as a task delivered when the session
+                    # is free for it.
+                    self._task_detach(op, "the user is speaking again")
+                    logger.info(f"🧭 router: {op.op_id} result held until the user's new words are routed")
+                    await self._task_complete(op)
+                    return
             # After the wait: a delegation that arrived during it is answered
             # by this same append.
             did = next((d for d in reversed(op.delegations) if d not in op.answered_delegations), None)
             if did is not None:
                 op.answered_delegations.update(op.delegations)
-            if dropped:
-                if DROPPED_SPEECH_NOTE:
-                    # The voice believes it said what was dropped; tell it the
-                    # user did not hear it, in the same append (improvement 5).
-                    text = DROPPED_SPEECH_NOTE + " " + text
+            if dropped and DROPPED_SPEECH_NOTE:
+                # The voice believes it said what was dropped; tell it the
+                # user did not hear it, in the same append (improvement 5).
+                text = DROPPED_SPEECH_NOTE + " " + text
             await self._send_commentary(text, did)
             op.result_sent_mono = time.monotonic()
         self._log_route(op, now)
         self._task_flush_soon("result delivered")
 
     async def _wait_guess_quiet(self, op: RouterOp) -> None:
-        """Until the dropped guess has finished streaming (GUESS_QUIET_S of no
-        audible voice audio), at most GUESS_WAIT_MAX_S. Its audio stays
+        """Until the dropped guess has finished streaming (GUESS_QUIET_S with
+        no audible voice audio and no voice words), at most GUESS_WAIT_MAX_S. Its audio stays
         dropped meanwhile: the gate is "post" and drops until the result is
         acknowledged."""
         start = time.monotonic()
@@ -4112,8 +4127,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         while time.monotonic() - start < GUESS_WAIT_MAX_S:
             if self._user_turn.open or self._background_closing or self._closing:
                 break
-            last = self._voice_audible_mono
-            if last is None or time.monotonic() - last >= GUESS_QUIET_S:
+            last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
+            if time.monotonic() - last >= GUESS_QUIET_S:
                 break
             waited = True
             await asyncio.sleep(0.05)
@@ -4225,6 +4240,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if sent is not None:
                 logger.info(f"🗣️ commentary acknowledged {int((time.monotonic() - sent) * 1000)} ms after sending")
             self._commentary_acked_mono = time.monotonic()
+            if self._op is not None and self._op.result_holding:
+                return  # a late ack of an earlier append: the result is not in yet
             # Whatever non-acknowledgement speech was still streaming when the
             # result went in has ended its claim on the speaker.
             self._gate_drop_until_ack = False
@@ -4857,6 +4874,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         fg = self._op
         if fg is not None and not fg.done and not fg.background:
             return False
+        if fg is not None and fg.result_holding:
+            return False  # the foreground result waits for a dropped guess to end
         if fg is None and self._gate == "pre":
             # The user's new words are not routed yet: an earlier result must
             # not open the gate over the voice's guess at them (tenth review B8).

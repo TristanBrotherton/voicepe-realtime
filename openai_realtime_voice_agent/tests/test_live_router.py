@@ -324,7 +324,7 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.3)
                 self.assertEqual(h.heard(), b"", "no part of the guess is heard, not even its tail")
                 commentary = " ".join(m["content"] for m in h.socket.of("session.commentary.append"))
-                self.assertIn("in full", commentary, "the voice is told to say it again")
+                self.assertIn("as if for the first time", commentary, "the voice is told to speak afresh")
                 h.voice_says("The Atrium Lamp is on now.", ms=300)
                 await h.sink.wait_for(TTSAudioRawFrame)
                 await asyncio.sleep(0.2)
@@ -332,7 +332,7 @@ class VerifiedOnlySpeech(Patched):
 
     async def test_a_finished_guess_does_not_delay_the_result(self):
         """A short guess ("Done.") that has already ended is no reason to
-        wait: the result goes in at once, asking for the reply in full."""
+        wait: the result goes in at once, asking for a fresh reply."""
         backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
                               response(message("The Atrium Lamp is on.")))
         backend.gate.clear()
@@ -347,7 +347,52 @@ class VerifiedOnlySpeech(Patched):
                 await h.wait_commentary()
                 self.assertLess(time.monotonic() - start, 0.2)
                 commentary = " ".join(m["content"] for m in h.socket.of("session.commentary.append"))
-                self.assertIn("in full", commentary)
+                self.assertIn("as if for the first time", commentary)
+
+    async def test_a_guess_whose_audio_has_not_started_still_waits(self):
+        """The guess's words were held but none of its audio had arrived
+        when the result came in: it is still to stream, so the result waits."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.4):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "I've turned it on."})
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await asyncio.sleep(0.15)
+                self.assertEqual(h.socket.of("session.commentary.append"), [], "the result waits")
+                h.socket.push({"type": "session.output_audio.delta", "delta": b64(fx.tone(300))})
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.2)
+                self.assertEqual(h.heard(), b"", "the guess is never heard")
+
+    async def test_the_user_speaking_during_the_wait_holds_the_result(self):
+        """The user starts new words while the dropped guess still streams:
+        the old result does not go in over them (tenth review B8)."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.4):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("I've turned", ms=200)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await asyncio.sleep(0.05)
+                h.voice_says(" it on.", ms=200)
+                # New words, still coming in when the guess goes quiet.
+                for i, word in enumerate(["and", " the", " hall", " too", " please", " now"] * 3):
+                    h.socket.push({"type": "session.input_transcript.delta", "delta": word,
+                                   "start_ms": 1900 + 40 * i, "end_ms": 1940 + 40 * i})
+                    await asyncio.sleep(0.04)
+                self.assertTrue(h.service._user_turn.open)
+                self.assertEqual(h.socket.of("session.commentary.append"), [],
+                                 "no result over the user's new words")
 
     async def test_an_acknowledgement_plays_while_the_work_runs(self):
         backend = FakeBackend(response(call("todo__get_items", {}, "c1")), response(message("Milk.")))
