@@ -1792,6 +1792,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             logger.debug(f"live: dropping {payload.get('type')} for delegation "
                          f"{payload.get('delegation_id')} of a session that has ended")
             return
+        if self._websocket is None and not self._session_opening:
+            # No session is open or opening: this belongs to the one that
+            # closed (a router result that landed after a device stop). Queued,
+            # it was spoken as the answer to the next wake's unrelated request
+            # (Garage 2026-10-28: "Yes, it is." answering "Add bread to the
+            # test list").
+            logger.info(f"🧹 live: dropping {payload.get('type')} that arrived after its session closed")
+            return
         self._pending_context.append(payload)
 
     # ------------------------------------------------------------------

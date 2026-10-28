@@ -2,6 +2,15 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.3 (fork)
+
+### Fixed: a stopped turn's late answer was spoken at the next wake
+
+- A result that arrives after the session closed (a lookup still running when
+  a "stop" ended the turn) is dropped. It used to wait for the next session
+  and be spoken there, as the answer to the next, unrelated request. Context
+  sent while the next session is opening still reaches it.
+
 ## 0.20.2 (fork)
 
 ### Fixed: a command Home Assistant rejected was reported as done

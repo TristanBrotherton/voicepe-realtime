@@ -306,6 +306,42 @@ class TestClosingOnDemand(OnDemandCase):
                              "no turn is left dangling across a close")
 
 
+class TestNothingCarriesOverAStop(OnDemandCase):
+    """A result that lands after a device stop closed the session belongs to
+    that session: it is never spoken in the next one (Garage 2026-10-28: a
+    false stop cut "Yes, it is." and the late lookup result was then spoken
+    as the answer to the next, unrelated request)."""
+
+    async def _closed_after_a_turn(self, h):
+        await h.open_session()
+        await h.start_session()
+        socket = h.socket
+        closer = asyncio.create_task(h.service.close_session("device stop"))
+        await socket.wait_for_sent("session.close")
+        socket.push({"type": "session.closed", "reason": "close_requested", "usage": {"seconds": 5}})
+        await asyncio.wait_for(closer, 3)
+
+    async def test_a_late_router_result_is_not_spoken_in_the_next_session(self):
+        async with self.harness() as h:
+            await self._closed_after_a_turn(h)
+            await h.service._send_commentary("Verified result: the test switch is on.", None)
+            await h.service.inject_context("[voice check] matches Alex")
+            await h.open_session()
+            await h.start_session()
+            await asyncio.sleep(0.05)
+            self.assertEqual(h.socket.of("session.commentary.append"), [])
+            self.assertEqual(h.socket.of("session.thinking.append"), [])
+
+    async def test_context_sent_while_the_next_session_opens_still_reaches_it(self):
+        async with self.harness() as h:
+            await self._closed_after_a_turn(h)
+            await h.open_session()
+            await h.service.inject_context("[voice check] matches Alex")
+            await h.start_session()
+            await h.socket.wait_for_sent("session.thinking.append")
+            self.assertEqual(h.socket.of("session.thinking.append")[0]["content"], "[voice check] matches Alex")
+
+
 class TestLifecycleObservers(OnDemandCase):
     """What the gate's deadlines are actually driven by."""
 
