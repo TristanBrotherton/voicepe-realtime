@@ -2,6 +2,40 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.6 (fork)
+
+### Fixed: speaker owner (`speaker_owner: true`), from its first real-audio test
+
+- An answer that comes after a pause is no longer lost. After a verified
+  result the voice sometimes says only "One moment, <name>.", pauses for
+  seconds and then answers. The pause used to end the reply: the device
+  went idle, its follow-up window ran out under the answer, and the answer
+  was never played. GPT-Live sends no "response done" for its voice, so the
+  add-on now uses its own view of the reply: its transcript turn is open,
+  or an acknowledged result has so far only been acknowledged (at most
+  10 s). While the reply is under way a quiet gap keeps its utterance open
+  and the device in its reply. Only a model source that stops sending
+  anything at all ends it early (flagged `truncated_at_source`), and a pause
+  is bounded (12 s).
+- An utterance the device never reported finished is no longer logged
+  `done`. Without the device's `done` it ends as `unknown` (with the bytes
+  the device last reported), never `done`; a later report from the device
+  corrects the record (`"corrected":true` on the `utt` line). The wait for
+  that report now follows the device's own progress, so a reply that
+  started late or stalled mid-way on a slow link gets its time, and never
+  ends before the utterance's end went out.
+- A dropped guess is no longer heard after its result. When the voice was
+  still telling its own guess at the answer when the verified result was
+  acknowledged, the rest of the guess played as the answer and the real
+  answer followed it as a second reply. The voice finishes its guess before
+  it answers, so the guess's tail now stays dropped until its turn ends (or
+  a quiet gap), at most 30 s. This applies with the switch off too.
+- Each new model response opens its own utterance (split where its first
+  word starts on the session timeline), never appended to the previous one.
+- The device fixes for the other faults found in that test (a missing
+  `done` after a stalled link, `fed` a few bytes short of `bytes`) are in the
+  firmware: frames split across TCP reads are put back together.
+
 ## 0.20.5 (fork)
 
 ### New: one speaker owner per device (opt-in, `speaker_owner`, default off)

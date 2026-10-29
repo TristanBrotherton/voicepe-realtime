@@ -370,6 +370,101 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.2)
                 self.assertEqual(h.heard(), b"", "the guess is never heard")
 
+    async def test_a_guess_longer_than_the_wait_is_not_heard_after_the_result(self):
+        """On a test device the voice was telling its own story (a guess)
+        when the result went in. The guess outlasted the wait, the commentary
+        was acknowledged mid-guess and the rest of the guess played as the
+        answer; the real answer followed as a second story. The voice
+        finishes its guess before it answers, so the guess's tail stays
+        dropped until its turn ends, and only the answer is heard."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        guess = fx.tone(2000, freq=330.0)
+        reply = fx.tone(300)
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.25), \
+                patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.3), \
+                patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                acked = asyncio.Event()
+
+                async def stream_guess():
+                    for i in range(0, len(guess), 4800):
+                        # Words stream with the audio (about real time).
+                        h.socket.push({"type": "session.output_transcript.delta",
+                                       "delta": " and on"})
+                        h.socket.push({"type": "session.output_audio.delta",
+                                       "delta": b64(guess[i:i + 4800])})
+                        await asyncio.sleep(0.1)
+
+                streaming = asyncio.ensure_future(stream_guess())
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                acked.set()
+                await streaming
+                self.assertEqual(h.heard(), b"", "the guess's tail after the result is not heard")
+                await asyncio.sleep(0.5)          # the guess's turn ends
+                h.voice_says("The Atrium Lamp is on now.", ms=300)
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.2)
+                self.assertEqual(h.heard(), reply, "only the answer, whole")
+
+    async def test_an_acknowledgement_after_the_result_keeps_the_reply_open(self):
+        """On a test device, after the result went in the voice
+        said "One moment, <name>.", paused 3.4 s, then answered. The pause
+        ended the reply's utterance and the device went idle; the answer was
+        never played. The answer is owed until it is spoken: the utterance
+        stays open across the pause, and the answer opens its own."""
+        from unittest.mock import AsyncMock
+        from app import speaker_owner as so
+        from app.live_router import KNOWN_NAMES, set_known_names
+        from app.speaker_owner_pipeline import SpeakerUtteranceEndFrame
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        names = set(KNOWN_NAMES)
+        set_known_names(["Alex"])
+        try:
+            with patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
+                async with RouterHarness(self, backend) as h:
+                    h.service.attach_speaker_owner(so.SpeakerOwner(AsyncMock(), AsyncMock()))
+                    await h.user_says("Turn on the Atrium Lamp.")
+                    await h.wait_commentary()
+                    h.socket.push({"type": "session.commentary.appended"})
+                    await asyncio.sleep(0.05)
+                    h.voice_says("One moment, Alex.", ms=300)
+                    for _ in range(25):           # 2.5 s of the model's silence
+                        h.socket.push({"type": "session.output_audio.delta",
+                                       "delta": b64(fx.silence(100))})
+                        await asyncio.sleep(0.1)
+                    self.assertTrue(h.service.answer_owed)
+                    self.assertTrue(h.service.reply_active)
+                    self.assertTrue(h.service.backend_work_active, "the session waits for it")
+                    self.assertEqual(h.sink.of(SpeakerUtteranceEndFrame), [],
+                                     "the pause does not end the reply")
+                    answer = fx.tone(400, freq=440.0)
+                    h.socket.push({"type": "session.output_transcript.delta",
+                                   "delta": " The Atrium Lamp is on."})
+                    h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
+                    await asyncio.sleep(0.2)
+                    self.assertFalse(h.service.answer_owed)
+                    for _ in range(12):
+                        h.socket.push({"type": "session.output_audio.delta",
+                                       "delta": b64(fx.silence(100))})
+                        await asyncio.sleep(0.1)
+                    self.assertEqual(len(h.sink.of(SpeakerUtteranceEndFrame)), 1,
+                                     "the reply ends once, after the answer")
+                    frames = h.sink.of(TTSAudioRawFrame)
+                    answer_start = next(i for i, f in enumerate(frames)
+                                        if f.audio and f.audio == answer[:len(f.audio)])
+                    self.assertTrue(frames[answer_start].speaker_new,
+                                    "the answer opens its own utterance")
+        finally:
+            set_known_names(names)
+
     async def test_the_user_speaking_during_the_wait_holds_the_result(self):
         """The user starts new words while the dropped guess still streams:
         the old result does not go in over them (tenth review B8)."""

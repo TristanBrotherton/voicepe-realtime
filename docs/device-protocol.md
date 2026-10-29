@@ -84,6 +84,23 @@ All add-on frames for one device go through one sender, in order. Phase
 messages keep their own path; neither side may depend on the order of a phase
 relative to `utt_*` messages.
 
+A frame can reach the device in several pieces (one per TCP read). The device
+parses a text frame only once it is whole, and keeps a 16-bit sample that is
+split between two pieces of PCM whole, so `done` reports `fed` equal to the
+utterance's `bytes`.
+
+## Outcomes (add-on)
+
+Each utterance ends `done`, `cut`, `dropped` or `lost` (the link dropped).
+With utterance framing only the device's `done` makes an utterance `done`. One
+the device never reported finished, within the time its rest takes from the
+device's last progress plus 3 s, ends `unknown`: never counted as heard. A
+later report from the device corrects the record.
+
+A reply that pauses (the voice says "One moment", stops, then answers) keeps
+its utterance open while the reply is still under way, so the device stays in
+its reply; a new model response always opens its own utterance.
+
 ## Order and pacing (add-on)
 
 - A clip or acknowledgement is dropped if it cannot start soon after it was

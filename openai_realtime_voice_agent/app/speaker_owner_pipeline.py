@@ -8,9 +8,18 @@ they exist, in order with clips and announcements, instead of through the
 transport's real-time pacer.
 
 The service labels each frame (``speaker_kind``: ack, reply, result or
-prompt; ``speaker_new``: a new speech segment starts) and ends an utterance
-with ``SpeakerUtteranceEndFrame`` when the model's reply ends. A change of
-kind, a new segment, an ordered batch marker and a quiet source also end it.
+prompt; ``speaker_new``: a new speech segment or a new model response
+starts) and ends an utterance with ``SpeakerUtteranceEndFrame`` when the
+model's reply ends. A change of kind, a new segment or response and an
+ordered batch marker also end it.
+
+A quiet gap alone does not, while the service says the reply is still under
+way (``reply_active``: GPT-Live has no response-done event for its voice, so
+the service's own view is used: its transcript turn is open, or a routed
+result's answer is still owed after an acknowledgement). Then the utterance
+stays open across the pause and the device stays in its reply. Only a source
+that has stopped sending anything at all (not even the silence GPT-Live
+streams between words) ends it early, as truncated, and a pause is bounded.
 
 The transport used to make the Bot speaking frames the phase emitter turns
 into device phases. With the audio no longer going through it, this
@@ -40,10 +49,17 @@ from app import speaker_owner as so
 
 logger = logging.getLogger(__name__)
 
-# A streamed utterance whose source has been quiet this long is ended, so the
-# queue never waits behind a reply whose end marker was lost. Longer than the
-# model's in-reply pauses (forwarded as audio) and its 0.8 s idle threshold.
+# A streamed utterance whose source has been quiet this long, with the reply
+# no longer under way, is ended, so the queue never waits behind a reply whose
+# end marker was lost. Longer than the model's in-reply pauses (forwarded as
+# audio) and its 0.8 s idle threshold.
 SOURCE_QUIET_S = 1.5
+# No model output at all (GPT-Live streams silence between words, so a live
+# source never goes this long without a delta): the source died.
+SOURCE_DEAD_S = 4.0
+# The longest pause kept open inside a reply that is still under way.
+REPLY_PAUSE_MAX_S = 12.0
+QUIET_POLL_S = 0.25
 BATCH_MARKER_WAIT_S = 30.0
 
 
@@ -68,10 +84,20 @@ class SpeakerOwnerProcessor(FrameProcessor):
     """Model audio frames -> owner utterances; owner lifecycle -> Bot frames."""
 
     def __init__(self, owner: so.SpeakerOwner,
-                 on_speech_sent: Optional[Callable[[], None]] = None, **kwargs):
+                 on_speech_sent: Optional[Callable[[], None]] = None,
+                 reply_active: Optional[Callable[[], bool]] = None,
+                 source_activity: Optional[Callable[[], Optional[float]]] = None,
+                 clock: Callable[[], float] = time.monotonic, **kwargs):
+        """``reply_active``: is the model's reply still under way?
+        ``source_activity``: monotonic time of the model's last output delta
+        of any kind (silence included), or None. Without them a quiet gap of
+        SOURCE_QUIET_S ends the utterance."""
         super().__init__(**kwargs)
         self.owner = owner
         self._on_speech_sent = on_speech_sent
+        self._reply_active = reply_active
+        self._source_activity = source_activity
+        self._mono_fn = clock
         self._open: Optional[so.Utterance] = None
         self._last_audio = 0.0
         self._quiet_task: Optional[asyncio.Task] = None
@@ -121,7 +147,7 @@ class SpeakerOwnerProcessor(FrameProcessor):
         if self._open is None:
             self._open = self.owner.open(kind, turn, keep=kind == so.RESULT)
         self.owner.feed(self._open, frame.audio)
-        self._last_audio = time.monotonic()
+        self._last_audio = self._mono_fn()
         self._arm_quiet_watch()
 
     def end_stream(self, truncated: bool = False) -> None:
@@ -135,15 +161,53 @@ class SpeakerOwnerProcessor(FrameProcessor):
             return
         self._quiet_task = asyncio.get_running_loop().create_task(self._quiet_watch())
 
+    def _still_active(self) -> bool:
+        if self._reply_active is None:
+            return False
+        try:
+            return bool(self._reply_active())
+        except Exception:  # pragma: no cover - a lookup never keeps audio open
+            return False
+
+    def _source_dead(self, now: float) -> bool:
+        if self._source_activity is None:
+            return False
+        try:
+            last = self._source_activity()
+        except Exception:  # pragma: no cover
+            return False
+        return last is None or now - last >= SOURCE_DEAD_S
+
     async def _quiet_watch(self) -> None:
+        paused_logged = None
         try:
             while self._open is not None:
-                wait = self._last_audio + SOURCE_QUIET_S - time.monotonic()
-                if wait <= 0:
-                    logger.info("🔈 speaker owner: model audio went quiet; ending its utterance")
+                now = self._mono_fn()
+                wait = self._last_audio + SOURCE_QUIET_S - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    continue
+                current = self._open
+                if not self._still_active():
+                    logger.info("🔈 speaker owner: model audio went quiet and the reply is over; "
+                                "ending its utterance")
                     self.end_stream()
                     return
-                await asyncio.sleep(wait)
+                if self._source_dead(now):
+                    logger.warning("🔈 speaker owner: the model's audio source stopped mid-reply; "
+                                   "ending its utterance as truncated")
+                    self.end_stream(truncated=True)
+                    return
+                if now - self._last_audio >= REPLY_PAUSE_MAX_S:
+                    logger.warning(f"🔈 speaker owner: the reply paused for {REPLY_PAUSE_MAX_S:.0f} s; "
+                                   "ending its utterance")
+                    self.end_stream()
+                    return
+                if paused_logged is not current:
+                    paused_logged = current
+                    logger.info("🔈 speaker owner: the model paused mid-reply; its utterance "
+                                "stays open")
+                await asyncio.sleep(QUIET_POLL_S)
         except asyncio.CancelledError:
             raise
 

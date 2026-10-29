@@ -991,7 +991,12 @@ class WebSocketHandler:
                     serializer._reply_audio_since_wake = True
                     if serializer._on_output_audio is not None:
                         serializer._on_output_audio()
-            owner_processor = SpeakerOwnerProcessor(owner, on_speech_sent=_speech_sent)
+            owner_processor = SpeakerOwnerProcessor(
+                owner, on_speech_sent=_speech_sent,
+                # A quiet gap ends an utterance only once the model's reply is
+                # over, or its audio source has stopped altogether.
+                reply_active=lambda: getattr(openai_service, "reply_active", False) is True,
+                source_activity=lambda: getattr(openai_service, "last_output_delta_mono", None))
             pipeline_components.append(owner_processor)
             attach = getattr(openai_service, "attach_speaker_owner", None)
             if attach is not None:

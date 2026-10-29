@@ -164,6 +164,10 @@ class FakeDevice:
         self._to_owner_at = 0.0
         self._ticker = None
         self.received_text: List[dict] = []
+        # A text frame lost on its way in (older firmware parsed each piece of
+        # a text frame split across TCP reads on its own, so a split
+        # `utt_end` never ended its utterance): callable(msg) -> True to lose.
+        self.drop_text = None
 
     # -- wiring --------------------------------------------------------------
 
@@ -187,6 +191,8 @@ class FakeDevice:
         """Owner -> device (a control frame)."""
         if not self._link_up:
             raise ConnectionError("link down")
+        if self.drop_text is not None and self.drop_text(json.loads(text)):
+            return
         self.loop.call_at(self._arrival("_to_device_at"), self._receive, text)
 
     async def send_bytes(self, data: bytes) -> None:
@@ -224,6 +230,10 @@ class FakeDevice:
                     self._discard_until_ack = None
                 return
             if kind == "utt_start":
+                if self._rx is not None and self._rx.end is None:
+                    # As the firmware: a start before the previous end closes
+                    # the previous one with what it received.
+                    self._rx.end = len(self._rx.rx)
                 rec = DeviceUtt(id=msg["id"], kind=msg.get("kind", ""))
                 self.records[rec.id] = rec
                 self.order.append(rec)
@@ -373,6 +383,15 @@ class FakeDevice:
         self._rx = None
         self._discard_until_ack = self._seq
         del now
+
+    def stall(self, seconds: float, uplink: bool = False) -> None:
+        """A Wi-Fi stall: nothing sent to the device from now on arrives for
+        ``seconds`` (and, with ``uplink``, nothing it sends back either).
+        The order is kept; what was held arrives in a burst."""
+        until = self.loop.time() + seconds
+        self._to_device_at = max(self._to_device_at, until)
+        if uplink:
+            self._to_owner_at = max(self._to_owner_at, until)
 
     def resume(self) -> None:
         """Legacy: the next turn's `listening` ends the post-stop suppression."""

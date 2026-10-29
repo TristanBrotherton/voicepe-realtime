@@ -80,6 +80,7 @@ from app.live_evidence import TurnEvidence
 from app.live_router import (
     ACK,
     ACK_PREFIX,
+    NOT_ACK,
     ACTION as ROUTE_ACTION,
     CHAT_KIND,
     COMMAND_MAX_WORDS,
@@ -334,6 +335,14 @@ DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Sp
 # without "I've added").
 GUESS_QUIET_S = 0.6
 GUESS_WAIT_MAX_S = 4.0
+# A guess still streaming when its result is acknowledged keeps being dropped
+# until the voice finishes it (its transcript turn ends), at most this long.
+GUESS_TAIL_MAX_S = 30.0
+# After a verified result is acknowledged, speech that is only an
+# acknowledgement ("One moment, <name>.") does not answer it: the reply stays
+# under way (no utterance end, no idle) until the answer is spoken, at most
+# this long after the acknowledgement.
+ANSWER_OWED_MAX_S = 10.0
 # Spoken when the router finds no request after the user already heard an
 # acknowledgement (they did ask something; it was not caught).
 # Tools that take long by nature (an agent, a web search); only these make a
@@ -579,6 +588,7 @@ class _OwnedChunk:
     chunk: OutputChunk
     kind: str
     turn: Optional[str] = None
+    new: bool = False   # a new model response starts here
 
 
 # Queued behind a reply's last audio: its utterance is complete.
@@ -987,6 +997,31 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # guess whose words are in but whose audio is not yet counts too.
         self._voice_audible_mono: Optional[float] = None
         self._voice_words_mono: Optional[float] = None
+        # A dropped guess still streaming when its result was acknowledged:
+        # the voice finishes the guess before it speaks the result, so the
+        # guess's tail stays dropped until its transcript turn ends (and its
+        # audio has passed the turn's last word). Without this the tail played
+        # as the result and the real result followed it as a second reply
+        # (seen on a test device: two stories, the first from mid-way).
+        self._guess_tail_since: Optional[float] = None
+        self._guess_tail_in_turn = False
+        self._guess_outlasted_wait = False
+        # Session-timeline end of the last word the voice said while its
+        # speech was being dropped (the guess's last word, when timestamped).
+        self._guess_words_end_ms: Optional[float] = None
+        # What the voice has said (heard, not dropped) since the verified
+        # result went in. While it is only an acknowledgement ("One moment,
+        # <name>."), the answer is still owed (answer_owed).
+        self._post_text = ""
+        self._result_acked_mono: Optional[float] = None
+        # Speaker owner: the model's last output delta of any kind (silence
+        # included), a pending split at a new model response (its first
+        # word's session-timeline position; -1: at the next live audio), and
+        # whether the voice's audio went idle since the last owned chunk while
+        # the reply was still under way.
+        self.last_output_delta_mono: Optional[float] = None
+        self._owner_split_at_ms: Optional[float] = None
+        self._owner_idle_seen = False
         self._gate_release_task: Optional[asyncio.Task] = None
         self._gate_dropped = 0
         self._fallback_task: Optional[asyncio.Task] = None
@@ -1340,9 +1375,35 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     @property
     def backend_work_active(self) -> bool:
-        """A tool/delegation continuation still owes the user an answer."""
+        """A tool/delegation continuation still owes the user an answer (with
+        a speaker owner, also a verified result the voice has so far only
+        acknowledged: see answer_owed)."""
         return (self.ledger.busy or bool(self._delegations) or self._unresolved_continuation
-                or self.router_pending)
+                or self.router_pending
+                or (self.speaker_owner is not None and self.answer_owed))
+
+    @property
+    def answer_owed(self) -> bool:
+        """A verified result went in and was acknowledged, and since then the
+        voice has said nothing, or only an acknowledgement ("One moment,
+        <name>."): the answer is still to come. Bounded by ANSWER_OWED_MAX_S
+        (seen on a test device: the answer came 3.4 s after "One moment",
+        after the reply had been ended and the device had gone idle)."""
+        if self.router is None or self._gate != "post" or not self._result_acked:
+            return False
+        acked = self._result_acked_mono
+        if acked is None or time.monotonic() - acked >= ANSWER_OWED_MAX_S:
+            return False
+        return acknowledgement_state(self._post_text) != NOT_ACK
+
+    @property
+    def reply_active(self) -> bool:
+        """Is the model's reply still under way? GPT-Live sends no
+        response-done event for its voice, so this is the service's own view:
+        the voice's transcript turn is open, or a verified result's answer is
+        still owed. The speaker owner keeps a reply's utterance open (and the
+        device in its reply) across a pause while this holds."""
+        return self._assistant_turn.open or self.answer_owed
 
     @property
     def router_pending(self) -> bool:
@@ -2105,6 +2166,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # user utterance. Suppressed audio is not fed to the assembler at all:
         # doing so would manufacture a fresh response-start callback and mark
         # unheard audio as delivered even though no bytes reach the device.
+        # Any delta, silence included, shows the model's audio source is
+        # alive (the speaker owner keeps a paused reply open while it is).
+        self.last_output_delta_mono = time.monotonic()
         if self._suppress_output or not self._audio_format_ok:
             self._suppressed_deltas += 1
             return
@@ -2151,15 +2215,20 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         if not chunk.pcm:
             if chunk.reason == "idle run exceeded max_silence_ms":
-                # The reply is over: its utterance is complete (owner only).
-                self._end_owner_stream()
+                # The voice's audio went idle. Its utterance is complete only
+                # if the reply is over too (owner only); a reply still under
+                # way keeps it open, and the end follows when it is over.
+                if self.reply_active:
+                    self._owner_idle_seen = True
+                else:
+                    self._end_owner_stream()
             return
         if chunk.audible:
             self._voice_audible_mono = time.monotonic()
         if self.router is not None:
             self._gate_push(chunk, audio_end_ms)
             return
-        self._enqueue_audio(chunk)
+        self._enqueue_audio(chunk, audio_end_ms)
 
     # -- the speaker owner (app/speaker_owner.py) ---------------------------
 
@@ -2210,7 +2279,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         else:
             self._audio_queue.put_nowait(_OWNER_END)
 
-    def _enqueue_audio(self, chunk) -> None:
+    def _enqueue_audio(self, chunk, end_ms: Optional[float] = None) -> None:
+        """``end_ms``: the chunk's session-timeline end when it is the live
+        audio just received (not held or lagged audio released later)."""
         if getattr(self, "_need_segment_start", False) and chunk.pcm:
             # Audio before this chunk was dropped, possibly the start of its
             # segment: this chunk opens the response the device will hear.
@@ -2234,9 +2305,26 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # Labelled where the classifier decided it: the gate's state now
             # says what this audio is.
             self._owner_stream_open = True
+            self._owner_idle_seen = False
             turn = getattr(getattr(self.turn_timeline, "current", None), "turn_id", None)
-            chunk = _OwnedChunk(chunk, self._utt_kind(), turn if isinstance(turn, str) else None)
+            chunk = _OwnedChunk(chunk, self._utt_kind(), turn if isinstance(turn, str) else None,
+                                new=self._owner_new_response(chunk, end_ms))
         self._audio_queue.put_nowait(chunk)
+
+    def _owner_new_response(self, chunk, end_ms: Optional[float]) -> bool:
+        """Does a new model response start with this chunk (a pending split
+        whose position the live audio has reached)?"""
+        split = self._owner_split_at_ms
+        if split is None:
+            return False
+        if split >= 0:
+            if not isinstance(end_ms, (int, float)):
+                return False  # released older audio: not past the split yet
+            start_ms = float(end_ms) - 1000.0 * len(chunk.pcm) / (LIVE_SAMPLE_RATE * 2)
+            if start_ms + 50.0 < split:
+                return False  # still the previous response's audio
+        self._owner_split_at_ms = None
+        return True
 
     async def _alignment_watch(self):
         try:
@@ -2495,7 +2583,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
                 )
                 if owned is not None:
-                    label_for_owner(frame, owned.kind, chunk.started_segment, owned.turn)
+                    label_for_owner(frame, owned.kind, chunk.started_segment or owned.new,
+                                    owned.turn)
                 await self.push_frame(frame)
             except asyncio.CancelledError:
                 raise
@@ -2773,6 +2862,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if role == "assistant" and self.router is not None:
             self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
+            if self._gate in ("post", "open") and self._gate_drop_until_ack:
+                end_ms = evt.get("end_ms")
+                if isinstance(end_ms, (int, float)):
+                    self._guess_words_end_ms = max(self._guess_words_end_ms or 0.0, float(end_ms))
+            elif self._gate == "post":
+                self._post_text = (self._post_text + delta)[-2000:]
+        if role == "assistant" and self.speaker_owner is not None and not self._assistant_turn.open:
+            # A new model response: its audio opens its own utterance, never
+            # appended to the previous one. The transcript runs ahead of the
+            # audio, so the split is where this response's first word starts
+            # on the session timeline (or, untimed, at the next audio).
+            start_ms = evt.get("start_ms")
+            self._owner_split_at_ms = float(start_ms) if isinstance(start_ms, (int, float)) else -1.0
         if role == "user":
             self._last_user_delta_mono = time.monotonic()
         turn = self._user_turn if role == "user" else self._assistant_turn
@@ -2961,6 +3063,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             else:
                 self._silent_task = self._spawn(self._silent_response_watch(), "live-silent")
         else:
+            if self._guess_tail_in_turn:
+                # The dropped guess's turn ended: from its last word on, the
+                # voice's audio is the result (_guess_tail_dropping).
+                self._guess_tail_in_turn = False
+            if self._owner_idle_seen and not self.reply_active:
+                # The voice went idle while its reply was still under way;
+                # now the reply is over too.
+                self._end_owner_stream()
             if self.router is not None and self._gate == "open" and text.strip():
                 self.router.note_assistant(text)
             await self.push_frame(LLMFullResponseEndFrame())
@@ -3645,6 +3755,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     def _gate_reset(self, mode: str) -> None:
         self._gate = mode
         self._result_acked = False
+        self._result_acked_mono = None
+        self._post_text = ""
+        self._guess_tail_since = None
+        self._guess_tail_in_turn = False
+        self._guess_outlasted_wait = False
+        self._guess_words_end_ms = None
         self._result_heard = False
         self._gate_lag.clear()
         self._gate_held.clear()
@@ -4226,7 +4342,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         acknowledged."""
         start = time.monotonic()
         waited = False
-        while time.monotonic() - start < GUESS_WAIT_MAX_S:
+        self._guess_outlasted_wait = False
+        while True:
+            if time.monotonic() - start >= GUESS_WAIT_MAX_S:
+                # Still streaming: the result goes in mid-guess, and the
+                # guess's tail stays dropped past the acknowledgement
+                # (_on_appended, _guess_tail_dropping).
+                self._guess_outlasted_wait = True
+                break
             if self._user_turn.open or self._background_closing or self._closing:
                 break
             last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
@@ -4345,11 +4468,26 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._commentary_acked_mono = time.monotonic()
             if self._op is not None and self._op.result_holding:
                 return  # a late ack of an earlier append: the result is not in yet
-            # Whatever non-acknowledgement speech was still streaming when the
-            # result went in has ended its claim on the speaker.
-            self._gate_drop_until_ack = False
             if self._gate == "post":
                 self._result_acked = True
+                self._result_acked_mono = time.monotonic()
+            outlasted, self._guess_outlasted_wait = self._guess_outlasted_wait, False
+            if self._gate_drop_until_ack and self._guess_tail_since is None and outlasted \
+                    and self._guess_still_streaming():
+                # The result went in while a dropped guess was still
+                # streaming, and the voice is still in it. It finishes that
+                # before it speaks the result, so what follows now is the
+                # guess's tail, not the result: keep dropping it until the
+                # guess ends (_guess_tail_dropping).
+                self._guess_tail_since = time.monotonic()
+                self._guess_tail_in_turn = self._assistant_turn.open
+                logger.info("⏸️ result acknowledged while the dropped guess is still streaming; "
+                            "its tail stays dropped until the voice finishes it")
+                return
+            if self._guess_tail_since is None:
+                # Whatever non-acknowledgement speech was still streaming when
+                # the result went in has ended its claim on the speaker.
+                self._gate_drop_until_ack = False
         else:
             logger.debug(f"live: ack {kind}")
 
@@ -4388,10 +4526,56 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._gate_release_task = self._spawn(self._gate_release(), "live-gate-release")
             return
         if self._gate in ("post", "open") and self._gate_drop_until_ack:
+            if not self._guess_tail_dropping(chunk, end_ms):
+                self._enqueue_audio(chunk, end_ms)
+                return
             self._gate_dropped += 1
             self._need_segment_start = True
             return
-        self._enqueue_audio(chunk)
+        self._enqueue_audio(chunk, end_ms)
+
+    def _guess_tail_dropping(self, chunk, end_ms: Optional[float]) -> bool:
+        """Is audio still the dropped guess's tail? Until the result is
+        acknowledged, always; from then on only while the guess's transcript
+        turn is open (and no quiet gap followed it), then until its audio has
+        passed the turn's last word, and never longer than GUESS_TAIL_MAX_S."""
+        since = self._guess_tail_since
+        if since is None:
+            return True
+        if time.monotonic() - since > GUESS_TAIL_MAX_S:
+            logger.warning(f"⚠️ dropped guess still streaming {GUESS_TAIL_MAX_S:.0f}s after the "
+                           "result went in; its audio is no longer dropped")
+            self._end_guess_tail()
+            return False
+        if not chunk.audible and not self._guess_still_streaming():
+            # A quiet gap (no audible audio, no words) after the guess: it
+            # has ended, whatever the transcript turn says.
+            self._end_guess_tail()
+            return False
+        if self._guess_tail_in_turn:
+            return True
+        until = self._guess_words_end_ms
+        if until is not None and isinstance(end_ms, (int, float)):
+            start_ms = float(end_ms) - 1000.0 * len(chunk.pcm or b"") / (LIVE_SAMPLE_RATE * 2)
+            if start_ms < until:
+                return True  # audio of the guess's own last words
+        self._end_guess_tail()
+        return False
+
+    def _guess_still_streaming(self) -> bool:
+        """Audible voice audio or voice words within GUESS_QUIET_S."""
+        last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
+        return bool(last) and time.monotonic() - last < GUESS_QUIET_S
+
+    def _end_guess_tail(self) -> None:
+        if self._guess_tail_since is None:
+            return
+        logger.info(f"▶️ the dropped guess ended {time.monotonic() - self._guess_tail_since:.1f}s "
+                    "after the result went in; the result plays from the voice's next words")
+        self._guess_tail_since = None
+        self._guess_tail_in_turn = False
+        self._gate_drop_until_ack = False
+        self._need_segment_start = True
 
     async def _gate_release(self) -> None:
         """Forward acknowledgement audio ACK_LAG_S behind its arrival."""
@@ -5108,6 +5292,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         elif self._gate == "pre":
             self._gate_open()
         self._gate_drop_until_ack = False
+        self._guess_tail_since = None
+        self._guess_tail_in_turn = False
         await self._send_commentary(text, None)
         op.result_sent_mono = time.monotonic()
         if result.kind in (ROUTE_LOOKUP, ROUTE_ACTION, ROUTE_REPLY, ROUTE_FAILED):
