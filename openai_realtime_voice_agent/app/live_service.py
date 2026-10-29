@@ -1006,6 +1006,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_since: Optional[float] = None
         self._guess_tail_in_turn = False
         self._guess_outlasted_wait = False
+        # A guess was dropped when this result went in (its words, still
+        # streaming, are not the answer).
+        self._post_guess_dropped = False
         # Session-timeline end of the last word the voice said while its
         # speech was being dropped (the guess's last word, when timestamped).
         self._guess_words_end_ms: Optional[float] = None
@@ -2862,19 +2865,23 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if role == "assistant" and self.router is not None:
             self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
-            if self._gate in ("post", "open") and self._gate_drop_until_ack:
+            if self._gate_drop_until_ack and (self._gate == "open" or self._post_guess_dropped):
+                # The words of a dropped guess (they never count as the answer).
                 end_ms = evt.get("end_ms")
                 if isinstance(end_ms, (int, float)):
                     self._guess_words_end_ms = max(self._guess_words_end_ms or 0.0, float(end_ms))
             elif self._gate == "post":
+                # The answer's words: often in before the commentary's
+                # acknowledgement, its audio after it.
                 self._post_text = (self._post_text + delta)[-2000:]
-        if role == "assistant" and self.speaker_owner is not None and not self._assistant_turn.open:
-            # A new model response: its audio opens its own utterance, never
-            # appended to the previous one. The transcript runs ahead of the
-            # audio, so the split is where this response's first word starts
-            # on the session timeline (or, untimed, at the next audio).
-            start_ms = evt.get("start_ms")
-            self._owner_split_at_ms = float(start_ms) if isinstance(start_ms, (int, float)) else -1.0
+        if role == "assistant" and self.speaker_owner is not None and not self._assistant_turn.open \
+                and self._owner_stream_open:
+            # A new model response while the previous one's utterance is still
+            # open: the next audio opens its own utterance, never appended to
+            # it. (The transcript's timestamps and the audio's position drift
+            # apart by up to a second, so the split is not placed by them; a
+            # back-to-back split is gapless either way.)
+            self._owner_split_at_ms = -1.0
         if role == "user":
             self._last_user_delta_mono = time.monotonic()
         turn = self._user_turn if role == "user" else self._assistant_turn
@@ -3760,6 +3767,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_since = None
         self._guess_tail_in_turn = False
         self._guess_outlasted_wait = False
+        self._post_guess_dropped = False
         self._guess_words_end_ms = None
         self._result_heard = False
         self._gate_lag.clear()
@@ -4306,12 +4314,16 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # its audio has arrived yet (it is then still to stream).
             guess = self._gate_blocked and bool(self._gate_text.strip())
             dropped = self._gate_post() or guess
+            self._post_guess_dropped = bool(dropped)
             if dropped:
                 op.result_holding = True
                 try:
                     await self._wait_guess_quiet(op)
                 finally:
                     op.result_holding = False
+                # Words from here on are the answer, unless the guess is
+                # still streaming (it outlasted the wait).
+                self._post_guess_dropped = self._guess_outlasted_wait
                 if self._user_turn.open or self._op is not op:
                     # The user spoke again during the wait: as at the top of
                     # this method, the result waits for the new words' verdict
@@ -4574,6 +4586,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     "after the result went in; the result plays from the voice's next words")
         self._guess_tail_since = None
         self._guess_tail_in_turn = False
+        self._post_guess_dropped = False
         self._gate_drop_until_ack = False
         self._need_segment_start = True
 

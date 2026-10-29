@@ -2,6 +2,23 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.8 (fork)
+
+### Fixed: speaker owner, from the 0.20.6 retest
+
+- A short answer no longer holds its reply open for 10 s. The answer's
+  words ("Done.") often arrive before the result's commentary is
+  acknowledged, while the speech after a result is still being dropped.
+  0.20.6 counted only words after the acknowledgement, so it saw no answer
+  and kept the reply open until the 10 s bound: the device stayed in its
+  reply and the follow-up window came late. Words after the result count as
+  the answer unless a dropped guess is known to be still streaming.
+- One response is one utterance again. 0.20.6 placed the split for a new
+  response by the transcript's timestamps, which drift up to a second from
+  the audio's position, and cut single replies in two. A new response now
+  splits only when the previous response's utterance is still open, at its
+  next audio.
+
 ## 0.20.7 (fork)
 
 ### New: project status and messages by voice (with `discussions_enabled`)
