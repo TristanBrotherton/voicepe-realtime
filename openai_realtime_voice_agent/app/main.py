@@ -1047,6 +1047,15 @@ class Application:
             # whichever was named, else the one most recently spoken to.
             # Suppress that device's inbound mic while the announcement plays
             # (+ tail) so the assistant can't hear itself and reply.
+            if self._speaker_owner_for(device_id) is not None:
+                # One queue for the device: the line plays at the next
+                # boundary, never inside a reply, and the mic echo guard
+                # follows its lifecycle (websocket_handler._observe_owner).
+                pcm = await self.enrollment_conductor._tts(text, device_id)
+                played = await self._play_owned(pcm, device_id, "announce",
+                                                wait="finished", keep=True)
+                if played is not None:
+                    return played
             ser = self.websocket_handler.serializer_for(device_id)
             import time as _t
             if ser is not None:
@@ -1057,6 +1066,12 @@ class Application:
                 if ser is not None:
                     ser.suppress_inbound_until = _t.monotonic() + 1.2
         self.timer_registry.announcer = _guarded_say
+
+        async def _coach_line(pcm, device_id):
+            if self._speaker_owner_for(device_id) is None:
+                return None
+            return await self._play_owned(pcm, device_id, "coach", wait="finished")
+        self.enrollment_conductor.play_owned = _coach_line
         self.timer_registry.get_owner = lambda device_id: self._speaker_name(
             self.websocket_handler.resolve_device(device_id)
         )
@@ -1269,8 +1284,36 @@ class Application:
                 logger.warning(f"⚠️ voice training guidance: {ready} of {total} lines ready; retrying")
                 await asyncio.sleep(60)
 
+    def _speaker_owner_for(self, device_id):
+        """The device's speaker owner, or None (option off, or no device)."""
+        from app.speaker_owner import SpeakerOwner
+        resolve = getattr(getattr(self, "websocket_handler", None), "resolve_device", None)
+        if resolve is None:
+            return None
+        try:
+            connection = resolve(device_id)
+        except Exception:
+            return None
+        owner = getattr(connection, "speaker_owner", None)
+        return owner if isinstance(owner, SpeakerOwner) else None
+
+    async def _play_owned(self, pcm: bytes, device_id, kind: str, **kwargs):
+        """Through the speaker owner: a bool, or None to use the old path."""
+        play = getattr(self.websocket_handler, "play_owned", None)
+        if play is None:
+            return None
+        result = await play(pcm, device_id, kind, **kwargs)
+        return result if isinstance(result, bool) else None
+
     async def _play_prompt(self, pcm: bytes, device_id: str) -> bool:
         """Play a cached prompt on one device with the inbound mic suppressed."""
+        if self._speaker_owner_for(device_id) is not None:
+            # A clip in the device's queue: dropped if it cannot start within
+            # 0.5 s or its turn already had an acknowledgement; the reply
+            # behind it flows on without a filler wait.
+            played = await self._play_owned(pcm, device_id, "clip")
+            if played is not None:
+                return played
         import time as _t
         from app.output_lead_buffer import PROMPT_LEAD_IN_SILENCE_MS, prompt_send_plan
         ser = self.websocket_handler.serializer_for(device_id)

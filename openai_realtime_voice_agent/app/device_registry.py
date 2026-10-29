@@ -126,6 +126,9 @@ class DeviceConnection:
     followup_hold: Any = None
     # Per-device settings (app/device_config.py), resolved once at accept.
     profile: Any = None
+    # The single writer of this device's audio (app/speaker_owner.py) when
+    # the device's `speaker_owner` option is on; None means the old paths.
+    speaker_owner: Any = None
 
     def touch(self) -> None:
         """Mark this device as the most recently used one."""

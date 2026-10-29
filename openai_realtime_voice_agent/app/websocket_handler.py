@@ -41,6 +41,8 @@ from app.wake_events import WakeAudioCapture, WakeEventStore
 from app.device_auth import DeviceAuth
 from app.ha_sensors import PUBLISHER
 from app.session_controls import controls_for
+from app import speaker_owner as so
+from app.speaker_owner_pipeline import SpeakerOwnerProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,9 @@ logger = logging.getLogger(__name__)
 # 16 kHz frames would be read 1.5x too fast / pitched up, garbling the whole
 # transcript. The InputResampler below upsamples 16k->24k in the pipeline.
 PIPELINE_SAMPLE_RATE = 24000
+# After a lost link, what must not be lost is delivered again only this soon
+# after it was lost (docs/device-protocol.md).
+REDELIVER_WITHIN_S = 30.0
 
 
 class SessionActivityTracker(FrameProcessor):
@@ -627,7 +632,11 @@ class WebSocketHandler:
         # the connection that starts it.
         self.enrollment_recorder = None
         self.enrollment_conductor = None
-    
+        # Speaker owners of connections that ended, by device id, with the
+        # time the link was lost: what they could not deliver may be
+        # delivered again on reconnect (_redeliver).
+        self._lost_owners: Dict[str, tuple] = {}
+
     def create_transport(
         self, websocket, serializer: RawAudioSerializer
     ) -> MixedFastAPIWebsocketTransport:
@@ -972,6 +981,23 @@ class WebSocketHandler:
                     add(name, ms)
             return _add
 
+        owner = getattr(connection, "speaker_owner", None)
+        if owner is not None:
+            # The device's speaker owner takes model audio here, ahead of the
+            # lead buffer and the transport's pacer (both pass-through then),
+            # and makes the Bot speaking frames the transport used to.
+            def _speech_sent():
+                if serializer is not None:
+                    serializer._reply_audio_since_wake = True
+                    if serializer._on_output_audio is not None:
+                        serializer._on_output_audio()
+            owner_processor = SpeakerOwnerProcessor(owner, on_speech_sent=_speech_sent)
+            pipeline_components.append(owner_processor)
+            attach = getattr(openai_service, "attach_speaker_owner", None)
+            if attach is not None:
+                attach(owner)
+                openai_service.on_speaker_source_closed = (
+                    lambda: owner_processor.end_stream(truncated=True))
         pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id),
                                                     on_hold=_wait_hook("lead_hold")))
         if serializer is not None:
@@ -1075,7 +1101,28 @@ class WebSocketHandler:
         # the user to actually speak — so it can never cancel a real turn.
         _kill_next_response = {"v": False}
 
-        async def _on_device_interrupt():
+        async def _on_device_interrupt(info=None):
+            try:
+                await _handle_device_interrupt()
+            finally:
+                # The speaker owner flushed when the interrupt arrived
+                # (_on_speaker_interrupt); the model has now been told too, so
+                # the device may accept audio again (utt1: interrupt_ack).
+                owner = getattr(connection, "speaker_owner", None)
+                if owner is not None:
+                    await owner.acknowledge_interrupt((info or {}).get("seq"))
+
+        async def _on_speaker_interrupt(info):
+            owner = getattr(connection, "speaker_owner", None)
+            if owner is None:
+                return
+            owner.interrupt(info.get("seq"), info.get("reason"), info.get("utt"), info.get("fed"))
+            if info.get("ignored"):
+                # Enrollment ignores the interrupt itself; the device still
+                # flushed and waits for the ack before it plays anything.
+                await owner.acknowledge_interrupt(info.get("seq"))
+
+        async def _handle_device_interrupt():
             if hold is not None:
                 hold.disarm("stop")  # the device closed its mic on the stop
             turn = timeline.current if timeline is not None else None
@@ -1111,6 +1158,11 @@ class WebSocketHandler:
             # session; the stop/barge-in semantics above are untouched — the
             # cancel still runs first, so the model is told to be quiet before
             # the socket goes away.
+            owner = getattr(connection, "speaker_owner", None)
+            if owner is not None:
+                # Flushed and the model told: the device may play again
+                # (utt1: interrupt_ack) without waiting for the session close.
+                await owner.acknowledge_interrupt()
             if gate is not None:
                 await gate.close("device stop")
 
@@ -1137,7 +1189,17 @@ class WebSocketHandler:
 
         controls.on_assistant_response_started(_kill_racing_response)
 
-        async def _on_device_session_start():
+        async def _on_device_session_start(info=None):
+            owner = getattr(connection, "speaker_owner", None)
+            if owner is not None:
+                caps = (info or {}).get("caps") or []
+                framing = owner.set_framing(caps)
+                if framing == so.UTT:
+                    logger.info(f"🔈 speaker owner for {connection.device_id}: utt1 framing")
+                else:
+                    logger.info(f"🔈 speaker owner for {connection.device_id}: device lacks utt1; "
+                                "legacy framing (same queue, estimated playout)")
+                self._redeliver(connection, (info or {}).get("prev_utt"))
             # va_client sends {"type":"start"} once per WebSocket CONNECTION
             # (on connect) — NOT per wake. A reconnect mid-utterance (wifi
             # blip, backend restart with session reuse) can leave half an
@@ -1298,6 +1360,15 @@ class WebSocketHandler:
         if serializer is not None:
             serializer.set_interrupt_handler(_on_device_interrupt)
             serializer.set_session_start_handler(_on_device_session_start)
+            if getattr(connection, "speaker_owner", None) is not None:
+                serializer.set_speaker_interrupt_handler(_on_speaker_interrupt)
+
+                async def _on_utt_ack(ack):
+                    owner = getattr(connection, "speaker_owner", None)
+                    if owner is not None:
+                        owner.on_ack(ack)
+                serializer.set_utt_ack_handler(_on_utt_ack)
+                self._observe_owner(connection, gate)
             serializer.set_mic_flush_handler(_on_device_mic_flush)
             serializer.set_wake_handler(_on_device_wake)
 
@@ -1571,6 +1642,132 @@ class WebSocketHandler:
             logger.warning(f"⚠️ send_bytes_to {connection.device_id} failed: {e!r}")
             return False
 
+    # ------------------------------------------------------------------
+    # The speaker owner (app/speaker_owner.py), per device, when its
+    # `speaker_owner` option is on. Off: every method here is a no-op and
+    # callers keep their old paths.
+    # ------------------------------------------------------------------
+
+    def speaker_owner_on(self, device_id: Optional[str]) -> bool:
+        profile = self.profile_for(device_id)
+        return bool(profile is not None and getattr(profile, "speaker_owner", None))
+
+    def _build_speaker_owner(self, connection: DeviceConnection):
+        client = getattr(connection.transport, "client", None)
+        if client is None or not self.speaker_owner_on(connection.device_id):
+            return None
+
+        def _turn() -> str:
+            current = getattr(connection.turn_timeline, "current", None)
+            return getattr(current, "turn_id", "") or ""
+
+        owner = so.SpeakerOwner(
+            client.send, client.send, framing=so.LEGACY, device_id=connection.device_id,
+            prime_ms=self._device_value(connection.device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS),
+            turn=_turn,
+        )
+        logger.info(f"🔈 speaker owner on for {connection.device_id} "
+                    "(legacy framing until the device offers utt1)")
+        return owner
+
+    async def play_owned(self, pcm: bytes, device_id: Optional[str], kind: str, *,
+                         wait: str = "settled", keep: bool = False) -> Optional[bool]:
+        """Play complete audio through the device's speaker owner.
+
+        Returns None when the device has no owner (the caller uses its old
+        path), else whether it was delivered: ``settled`` waits until it is
+        sent (True unless dropped or lost); ``finished`` waits for its
+        outcome (True if played to its end or stopped by the user)."""
+        connection = self.resolve_device(device_id)
+        owner = getattr(connection, "speaker_owner", None) if connection is not None else None
+        if owner is None:
+            return None
+        utt = owner.submit(kind, pcm or b"", keep=keep)
+        seconds = len(pcm or b"") / so.BYTES_PER_S
+        if wait == "finished":
+            state = await utt.wait_finished(seconds + 60.0)
+            return state == so.DONE or (state == so.CUT and utt.reason in so.USER_REASONS)
+        state = await utt.wait_settled(seconds + 30.0)
+        return state not in (so.DROPPED, so.LOST, so.QUEUED)
+
+    def _observe_owner(self, connection: DeviceConnection, gate) -> None:
+        """Owner lifecycle -> the mic echo guard, turn telemetry, the
+        follow-up window and timer acknowledgement."""
+        owner = getattr(connection, "speaker_owner", None)
+        serializer = connection.serializer
+        timeline = connection.turn_timeline
+        seen_turns: Dict[str, set] = {}
+
+        def _event(utt, event):
+            now = time.monotonic()
+            if utt.kind in (so.CLIP, so.ANNOUNCE) and serializer is not None:
+                # The assistant must not hear its own clip or announcement:
+                # the mic is dropped from its first byte to its end + 1.2 s.
+                if event == so.SENDING:
+                    serializer.suppress_inbound_until = max(serializer.suppress_inbound_until,
+                                                            now + 3600.0)
+                elif event in so.TERMINAL:
+                    serializer.suppress_inbound_until = now + 1.2
+            if event == so.SENDING and timeline is not None and utt.turn:
+                marks = seen_turns.setdefault(utt.turn, set())
+                if "queue" not in marks and utt.head_mono is not None:
+                    marks.add("queue")
+                    timeline.add_wait("owner_queue", (utt.head_mono - utt.submitted) * 1000,
+                                      first_only=True)
+            if event == so.PLAYING and not utt.estimated and timeline is not None and utt.turn:
+                marks = seen_turns.setdefault(utt.turn, set())
+                if "audible" not in marks:
+                    marks.add("audible")
+                    if utt.device_wait_ms is not None:
+                        timeline.add_wait("device_prime", utt.device_wait_ms, first_only=True)
+                    turn = timeline.current
+                    stopped = turn.stamps.get("speech_stopped") if turn is not None else None
+                    if turn is not None and stopped is not None and turn.turn_id == utt.turn:
+                        turn.meta.setdefault("speech_end_to_first_audible_ms",
+                                             int(round((utt.playing_mono - stopped) * 1000)))
+                while len(seen_turns) > 8:
+                    seen_turns.pop(next(iter(seen_turns)))
+            if utt.kind == so.ANNOUNCE and event == so.CUT and utt.reason in so.USER_REASONS:
+                logger.info(f"⏰ announcement {utt.id} stopped by the user ({utt.reason}): "
+                            "it was heard")
+
+        def _idle():
+            # utt1: the device's own `done` says the reply finished playing,
+            # which is when its follow-up mic window opens.
+            if owner.framing == so.UTT and gate is not None:
+                ended = getattr(gate, "note_playback_ended", None)
+                if ended is not None:
+                    ended()
+
+        owner.observers.append(_event)
+        owner.idle_observers.append(_idle)
+
+    def _redeliver(self, connection: DeviceConnection, prev_utt: Optional[dict]) -> None:
+        """After a lost link: deliver again, once and within 30 s, what must
+        not be lost (an announcement, a verified result) and was not heard."""
+        lost = self._lost_owners.pop(connection.device_id, None)
+        owner = getattr(connection, "speaker_owner", None)
+        if lost is None or owner is None:
+            return
+        previous, lost_at = lost
+        if time.monotonic() - lost_at > REDELIVER_WITHIN_S:
+            return
+        for utt in previous.history():
+            if utt.kind not in (so.ANNOUNCE, so.RESULT) or utt.state != so.LOST:
+                continue
+            pcm = utt.keep
+            if not pcm or utt.truncated or len(pcm) != utt.total:
+                continue
+            if isinstance(prev_utt, dict) and prev_utt.get("id") == utt.id:
+                if prev_utt.get("st") == "done":
+                    continue  # the device played it to the end after all
+            elif utt.started and utt.sent >= utt.total and not isinstance(prev_utt, dict):
+                # Older firmware cannot say; it had all of it and kept playing.
+                continue
+            logger.info(f"🔁 redelivering {utt.kind} {utt.id} lost with the link "
+                        f"({utt.sent}/{utt.total} bytes sent)")
+            owner.submit(so.ANNOUNCE if utt.kind == so.ANNOUNCE else so.RESULT, pcm, turn="")
+
     async def broadcast_json(self, obj: dict) -> int:
         """Send a JSON object to every connected device.
 
@@ -1695,7 +1892,7 @@ class WebSocketHandler:
         Returns:
             The `hello` object.
         """
-        return {
+        hello = {
             "type": "hello",
             "proto": 2,
             "audio_out": "pcm",
@@ -1709,6 +1906,14 @@ class WebSocketHandler:
             # for false-wake review; firmware also requires its own switch.
             "trigger_capture": 1 if (self.trigger_capture and self.wake_events.storing_audio()) else 0,
         }
+        if self.speaker_owner_on(device_id):
+            # Only with the speaker owner on: the device's cold-start prime
+            # and its per-utterance start cushion (utt1 firmware; older
+            # firmware ignores unknown keys).
+            hello["chain_prime_ms"] = min(600, self._device_value(
+                device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS))
+            hello["utt_cushion_ms"] = min(1000, self._device_value(device_id, "utt_cushion_ms", 0))
+        return hello
 
     async def serve_connection(
         self,
@@ -1753,6 +1958,7 @@ class WebSocketHandler:
         )
         connection.transport = self.create_transport(websocket, serializer)
         connection.turn_timeline = TurnTimeline(device_id, publish=PUBLISHER.latency)
+        connection.speaker_owner = self._build_speaker_owner(connection)
 
         def _record_wake_outcome(turn):
             # Every way a wake's own turn ends (answered, declined as not
@@ -1865,6 +2071,14 @@ class WebSocketHandler:
         # CancelFrame cannot reach its end; meanwhile a live recovery or phase
         # emitter would still act on the dead connection (refresh its OpenAI
         # session, send phases to its closed socket).
+        # The link is gone: everything the speaker owner had not finished is
+        # lost (the device may still play what it holds; its next `start`
+        # says). Kept briefly so a reconnect can deliver again what must not
+        # be lost (_redeliver).
+        owner = getattr(connection, "speaker_owner", None)
+        if owner is not None and owner.state != so.CLOSED:
+            owner.link_lost()
+            self._lost_owners[connection.device_id] = (owner, time.monotonic())
         # The session gate goes FIRST and for good: it must stop billing before
         # anything else is unwound, and a late wake or liveness probe from a
         # dying connection must not be able to open a new one. shutdown() also
@@ -1915,6 +2129,8 @@ class WebSocketHandler:
         connection.recovery = None
         connection.phase_emitter = None
         connection.session_gate = None
+        if owner is not None:
+            await owner.shutdown()
 
     async def cleanup(self):
         """Tear down every connection at shutdown."""

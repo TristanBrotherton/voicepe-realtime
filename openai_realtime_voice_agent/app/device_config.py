@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Overrides a device may set; None means "use the instance value".
 _INT_FIELDS = ("port", "announce_port", "follow_up_listen_seconds", "follow_up_open_delay_ms",
-               "wake_open_delay_ms", "playback_prebuffer_ms", "output_lead_buffer_ms")
+               "wake_open_delay_ms", "playback_prebuffer_ms", "output_lead_buffer_ms",
+               "chain_prime_ms", "utt_cushion_ms")
+_BOOL_FIELDS = ("speaker_owner",)
 _FLOAT_FIELDS = ("live_max_usd_per_day", "live_max_session_minutes_per_day")
 _STR_FIELDS = ("timer_ring_entity", "room", "voice")
 
@@ -49,6 +51,11 @@ class DeviceProfile:
     wake_open_delay_ms: Optional[int] = None
     playback_prebuffer_ms: Optional[int] = None
     output_lead_buffer_ms: Optional[int] = None
+    # The speaker owner (app/speaker_owner.py): off unless set. With it on,
+    # the hello also carries the device's cold-start prime and start cushion.
+    speaker_owner: Optional[bool] = None
+    chain_prime_ms: Optional[int] = None
+    utt_cushion_ms: Optional[int] = None
     live_max_usd_per_day: Optional[float] = None
     live_max_session_minutes_per_day: Optional[float] = None
     timer_ring_entity: Optional[str] = None
@@ -76,6 +83,14 @@ def _profile(raw: Any) -> Optional[DeviceProfile]:
                 values[key] = int(value)
             except (TypeError, ValueError):
                 logger.warning(f"⚠️ device {name}: ignoring {key}={value!r} (not a whole number)")
+    for key in _BOOL_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            values[key] = value
+        elif isinstance(value, str) and value.strip().lower() in ("true", "false", "on", "off", "1", "0"):
+            values[key] = value.strip().lower() in ("true", "on", "1")
+        elif value not in (None, ""):
+            logger.warning(f"⚠️ device {name}: ignoring {key}={value!r} (not true or false)")
     for key in _FLOAT_FIELDS:
         value = raw.get(key)
         if value not in (None, ""):
@@ -90,6 +105,10 @@ def _profile(raw: Any) -> Optional[DeviceProfile]:
     for key in ("port", "announce_port"):
         if key in values and not 1024 <= values[key] <= 65535:
             logger.warning(f"⚠️ device {name}: ignoring {key}={values[key]} (outside 1024-65535)")
+            values.pop(key)
+    for key, high in (("chain_prime_ms", 600), ("utt_cushion_ms", 1000)):
+        if key in values and not 0 <= values[key] <= high:
+            logger.warning(f"⚠️ device {name}: ignoring {key}={values[key]} (outside 0-{high})")
             values.pop(key)
     return DeviceProfile(**values)
 

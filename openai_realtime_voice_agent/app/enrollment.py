@@ -332,6 +332,9 @@ class EnrollmentConductor:
         self._lines: Dict[str, bytes] = {}   # rendered script lines, by text
         self.device_id: Optional[str] = None
         self.on_finished = None   # async callback(info: dict) after stop
+        # async callback(pcm, device_id) -> Optional[bool]: play one line
+        # through the device's speaker owner; None = no owner, old path.
+        self.play_owned = None
 
     @property
     def running(self):
@@ -347,9 +350,18 @@ class EnrollmentConductor:
             raise RuntimeError("speech synthesis unavailable")
         return pcm
 
+    async def _play_owned(self, pcm, device_id):
+        if self.play_owned is None:
+            return None
+        result = await self.play_owned(pcm, device_id)
+        return result if isinstance(result, bool) else None
+
     async def _say(self, text, device_id=None):
         target = self.device_id if device_id is None else device_id
         pcm = await self._tts(text, device_id)
+        owned = await self._play_owned(pcm, target)
+        if owned is not None:
+            return owned
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False
@@ -444,6 +456,9 @@ class EnrollmentConductor:
         pcm = self._lines.get(text)
         if pcm is None:
             return await self._say(text)
+        owned = await self._play_owned(pcm, self.device_id)
+        if owned is not None:
+            return owned
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], self.device_id):
                 return False
