@@ -26,7 +26,9 @@ be resolved but reads like one of these targets ("front door", "garage") is
 treated as consequential. Exposed scripts whose name/description mention
 unlocking, disarming, garages or gates are gated, and ``confirm_tools`` adds
 explicit tool names. Requests to the external agent (``ask_openclaw``) that
-ask for such an action are gated by the same wording check.
+ask for such an action are gated by the same wording check. A message passed
+to a project as the owner (``message_project``) is always gated, and its
+confirmation question reads the message back.
 """
 from __future__ import annotations
 
@@ -372,6 +374,13 @@ class ActionGate:
         canonical_name = _canonical_tool_name(function_name)
         if canonical_name == "confirm_action" or not self.enabled:
             return GateDecision(False)
+        if canonical_name == "message_project":
+            # Sent as the owner: always read back and confirmed first.
+            project = " ".join(str(args.get("project") or "").split())[:60] or "the project"
+            message = " ".join(str(args.get("message") or "").split())
+            if len(message) > 240:
+                message = message[:239].rsplit(" ", 1)[0] + "…"
+            return GateDecision(True, f'pass this message to {project}: "{message}"', "project_message")
         if function_name in self.extra_tools or canonical_name in self.extra_tools:
             return GateDecision(True, f"run {function_name}", "confirm_tools")
         if canonical_name == "ask_openclaw":

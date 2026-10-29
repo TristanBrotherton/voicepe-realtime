@@ -252,6 +252,20 @@ A 10-minute discussion costs about $0.50 of voice time plus backend calls. The
 bridge contract is `{"discuss": {"action": "list" | "brief" | "stage", ...}}`
 on the agent URL.
 
+Two more tools come with discussions. `project_status` answers "what's the
+status of X?": the bridge resolves the spoken project name (or returns the
+candidates when it is ambiguous) and returns what the project is doing now,
+what is next, what waits on the owner, its open items and whether its session
+runs (`{"action": "status", "project": …}`). `message_project` passes the
+owner's spoken message to a project (`{"action": "message", "project": …,
+"text": …, "speaker": …, "confirmed": true}`). It is always held by the
+confirmation gate, which reads the message back and needs a spoken yes, and it
+is sent only when the speaker check names a person this wake; the bridge
+accepts it only from the owner. Otherwise the voice says it was not sent and
+offers a text instead. A question about one project never opens another
+project's item: `open_discussion` with a project's name matches only that
+project's items.
+
 ## 10. False-wake flagging & HA sensors
 
 Flag a false trigger by **double-pressing the center button**, pressing it

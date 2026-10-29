@@ -14,10 +14,23 @@ from unittest.mock import patch
 from app import openclaw_tool
 
 
+class FakeProbe:
+    def __init__(self, label="male", names=("Sam", "Alex")):
+        self.label, self.names = label, names
+
+    def gate_speaker(self):
+        return self.label
+
+    def name_for(self, label):
+        return {"male": self.names[0], "female": self.names[1]}.get(label)
+
+
 class FakeLLM:
     def __init__(self):
         self.handlers = {}
         self.started = 0
+        self.action_gate = SimpleNamespace(enabled=True)
+        self.speaker_probe = FakeProbe()
 
     def register_function(self, name, handler):
         self.handlers[name] = handler
@@ -58,7 +71,7 @@ class Calls:
         return SimpleNamespace(arguments=arguments, result_callback=cb, tool_call_id="t1")
 
 
-class DiscussionTools(unittest.IsolatedAsyncioTestCase):
+class BridgeCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         Bridge.posts, Bridge.status = [], 200
         Bridge.replies = {
@@ -66,6 +79,8 @@ class DiscussionTools(unittest.IsolatedAsyncioTestCase):
             "brief": {"found": True, "id": "p-1", "topic": "T", "question": "Q?",
                       "details": {"recommendation": "R", "context": "C"}},
             "stage": {"staged": True, "proposal": "voicepe-x"},
+            "status": {"found": True, "project": "P", "now": "N", "nothing_to_share": False},
+            "message": {"sent": True, "project": "P", "slug": "p"},
         }
         self.llm, self.calls = FakeLLM(), Calls()
         self.env = patch.dict(os.environ, {"OPENCLAW_URL": "http://bridge/secret"})
@@ -76,6 +91,8 @@ class DiscussionTools(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.client.stop)
         openclaw_tool.register_discussion_tools(self.llm)
 
+
+class DiscussionTools(BridgeCase):
     async def test_list_posts_a_discuss_list_and_marks_the_discussion(self):
         await self.llm.handlers["list_open_discussions"](self.calls.params())
         self.assertEqual(Bridge.posts, [{"discuss": {"action": "list"}}])
@@ -116,7 +133,8 @@ class TheToolsAreGenericAndOffByDefault(unittest.TestCase):
     def test_definitions_carry_no_paths_or_urls(self):
         text = json.dumps(openclaw_tool.get_discussion_tool_definitions())
         self.assertEqual([t["name"] for t in openclaw_tool.get_discussion_tool_definitions()],
-                         ["list_open_discussions", "open_discussion", "propose_decision"])
+                         ["list_open_discussions", "open_discussion", "propose_decision",
+                          "project_status", "message_project"])
         for word in ("/", "http", "~"):
             self.assertNotIn(word, text)
 
@@ -125,6 +143,78 @@ class TheToolsAreGenericAndOffByDefault(unittest.TestCase):
         self.assertIn("read the decision back", propose)
         self.assertIn("clearly said yes", propose)
         self.assertIn("thumbs-up", propose)
+
+
+class ProjectStatusAndMessages(BridgeCase):
+    """project_status reads one project's status; message_project passes the
+    owner's words to a project, only for the owner's voice and only through
+    the confirmation gate (the handler runs after the spoken yes)."""
+
+    async def test_status_posts_the_project(self):
+        await self.llm.handlers["project_status"](self.calls.params(project="the project"))
+        self.assertEqual(Bridge.posts[0]["discuss"], {"action": "status", "project": "the project"})
+        self.assertEqual(self.calls.results[0]["now"], "N")
+        self.assertEqual(self.llm.started, 0, "a status does not open a discussion")
+
+    async def test_status_needs_a_project(self):
+        await self.llm.handlers["project_status"](self.calls.params(project=" "))
+        self.assertEqual(Bridge.posts, [])
+        self.assertFalse(self.calls.results[0]["found"])
+
+    async def test_message_carries_the_speaker_and_the_confirmation(self):
+        await self.llm.handlers["message_project"](self.calls.params(project="P", message="  look at  it "))
+        self.assertEqual(Bridge.posts[0]["discuss"], {"action": "message", "project": "P", "text": "look at it",
+                                                      "speaker": "Sam", "confirmed": True})
+        self.assertTrue(self.calls.results[0]["sent"])
+
+    async def test_message_without_a_speaker_verdict_is_not_sent(self):
+        for probe in (None, FakeProbe(label="uncertain"), FakeProbe(label="unknown")):
+            self.llm.speaker_probe = probe
+            await self.llm.handlers["message_project"](self.calls.params(project="P", message="hi"))
+        self.assertEqual(Bridge.posts, [])
+        for result in self.calls.results:
+            self.assertFalse(result["sent"])
+            self.assertIn("offer to send the owner a text", result["error"])
+
+    async def test_message_without_the_confirmation_gate_is_not_sent(self):
+        for gate in (None, SimpleNamespace(enabled=False)):
+            self.llm.action_gate = gate
+            await self.llm.handlers["message_project"](self.calls.params(project="P", message="hi"))
+        self.assertEqual(Bridge.posts, [])
+        self.assertFalse(any(r["sent"] for r in self.calls.results))
+
+    async def test_a_bridge_refusal_for_another_voice_is_said_politely(self):
+        Bridge.replies["message"] = {"sent": False, "not_owner": True, "error": "only the owner"}
+        await self.llm.handlers["message_project"](self.calls.params(project="P", message="hi"))
+        self.assertIn("only the owner can", self.calls.results[0]["error"])
+        Bridge.replies["message"] = {"sent": False, "error": "busy"}
+        await self.llm.handlers["message_project"](self.calls.params(project="P", message="hi"))
+        self.assertIn("text", self.calls.results[1]["offer"])
+
+    async def test_message_needs_both_fields(self):
+        await self.llm.handlers["message_project"](self.calls.params(project="P", message=" "))
+        self.assertEqual(Bridge.posts, [])
+        self.assertFalse(self.calls.results[0]["sent"])
+
+
+class TheGateHoldsEveryProjectMessage(unittest.IsolatedAsyncioTestCase):
+    async def test_message_project_always_needs_a_spoken_yes(self):
+        from app.action_gate import ActionGate
+        gate = ActionGate(rules=("lock",))
+        decision = await gate.check("message_project", {"project": "P", "message": "please look at the bug"})
+        self.assertTrue(decision.requires_confirmation)
+        self.assertEqual(decision.summary, 'pass this message to P: "please look at the bug"')
+        long = await gate.check("message_project", {"project": "P", "message": "word " * 200})
+        self.assertLess(len(long.summary), 300)
+
+    def test_descriptions_route_status_and_messages(self):
+        defs = {t["name"]: t["description"] for t in openclaw_tool.get_discussion_tool_definitions()}
+        self.assertIn("what's the status of X?", defs["project_status"])
+        self.assertIn("message_project", defs["project_status"])
+        self.assertIn("project_status", defs["list_open_discussions"])
+        self.assertIn("never open another project's item", defs["open_discussion"])
+        self.assertIn("confirm_action", defs["message_project"])
+        self.assertIn("text instead", defs["message_project"])
 
 
 class TheServiceDuringADiscussion(unittest.TestCase):
