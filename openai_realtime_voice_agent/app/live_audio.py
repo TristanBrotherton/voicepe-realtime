@@ -267,6 +267,13 @@ class OutputAudioMetrics:
     # delta. GPT-Live is a real-time model: a ratio near 1.0 means the device
     # can never build a playout lead on its own and the relay must provide one.
     realtime_ratio: Optional[float] = None
+    # The same ratio for ONE reply: from its first forwarded delta to the idle
+    # run that ended it. The lifetime ratio above has idle hours between
+    # sessions in its denominator (it read 0.009x); this one says whether the
+    # model kept up while it was actually speaking. The current reply's value
+    # while it streams, the last finished reply's after.
+    reply_realtime_ratio: Optional[float] = None
+    replies_measured: int = 0
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -320,6 +327,12 @@ class LiveOutputAudio:
         # pause must not make the next word look like a new reply.
         self._last_voice_mono: Optional[float] = None
         self._t0: Optional[float] = None
+        # Per-reply pace (metrics.reply_realtime_ratio): arrival of the
+        # reply's first forwarded delta, of its latest one, and the PCM
+        # forwarded since.
+        self._reply_first: Optional[float] = None
+        self._reply_last: Optional[float] = None
+        self._reply_bytes = 0
 
     # -- state the service exposes as response_active -----------------------
 
@@ -351,6 +364,8 @@ class LiveOutputAudio:
         self._in_speech = False
         self._last_forward_mono = None
         self._last_voice_mono = None
+        self._reply_first = self._reply_last = None
+        self._reply_bytes = 0
 
     # -- the one entry point -------------------------------------------------
 
@@ -403,6 +418,7 @@ class LiveOutputAudio:
                 # Idle, not a pause: the reply is over. Discard the head of this
                 # same run along with it — that head is the audio that used to
                 # arrive at the device as a silent false start.
+                self._end_reply_pace()
                 self._in_speech = False
                 self._suppress(stats.duration_ms)
                 self._discard_pending(idle=True)
@@ -429,6 +445,7 @@ class LiveOutputAudio:
                 pcm = b"".join(held) + pcm
 
         started = self._segment_boundary(now, gap_ms, silent=inaudible)
+        self._note_reply_pace(now, len(pcm))
         self._last_forward_mono = now
         self.metrics.forwarded_deltas += 1
         self.metrics.bytes_out += len(pcm)
@@ -517,6 +534,33 @@ class LiveOutputAudio:
             return True
         return False
 
+    def _note_reply_pace(self, now: float, nbytes: int) -> None:
+        if self._reply_first is None:
+            self._reply_first = now
+            self._reply_bytes = 0
+        self._reply_last = now
+        self._reply_bytes += nbytes
+        ratio = self._reply_ratio()
+        if ratio is not None:
+            self.metrics.reply_realtime_ratio = ratio
+
+    def _reply_ratio(self) -> Optional[float]:
+        first, last = self._reply_first, self._reply_last
+        if first is None or last is None or last - first < 0.5:
+            return None
+        produced = self._reply_bytes / (self.sample_rate * BYTES_PER_SAMPLE)
+        return round(produced / (last - first), 3)
+
+    def _end_reply_pace(self) -> None:
+        if self._reply_first is None:
+            return
+        ratio = self._reply_ratio()
+        if ratio is not None:
+            self.metrics.reply_realtime_ratio = ratio
+            self.metrics.replies_measured += 1
+        self._reply_first = self._reply_last = None
+        self._reply_bytes = 0
+
     def _update_ratio(self) -> None:
         first, last = self.metrics.first_delta_s, self.metrics.last_delta_s
         if first is None or last is None or last - first < 0.5:
@@ -544,6 +588,7 @@ class LiveOutputAudio:
         report["peak"] = self.metrics.peak
         report["silence_held_deltas"] = self.metrics.silence_held_deltas
         report["realtime_ratio"] = self.metrics.realtime_ratio
+        report["reply_realtime_ratio"] = self.metrics.reply_realtime_ratio
         report["first_delta_s"] = self.metrics.first_delta_s
         report["last_delta_s"] = self.metrics.last_delta_s
         self._turn_mark = current

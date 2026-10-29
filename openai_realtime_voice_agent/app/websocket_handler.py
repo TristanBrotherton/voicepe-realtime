@@ -965,7 +965,17 @@ class WebSocketHandler:
         # transport.output(), so it acts on the final audio stream the device
         # receives.
         # Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
-        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id)))
+        def _wait_hook(name):
+            def _add(ms):
+                add = getattr(connection.turn_timeline, "add_wait", None)
+                if add is not None:
+                    add(name, ms)
+            return _add
+
+        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id),
+                                                    on_hold=_wait_hook("lead_hold")))
+        if serializer is not None:
+            serializer.on_clip_wait = _wait_hook("clip")
 
         pipeline_components.append(transport.output())
         

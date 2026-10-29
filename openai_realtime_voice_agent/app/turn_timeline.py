@@ -101,7 +101,15 @@ LIVE_META_KEYS = (
     "stopped_to_heard_ms", "stopped_to_result_audio_ms",
     "commentary_to_ack_ms", "ack_to_audio_ms", "commentary_to_audio_ms",
     "backend_calls", "backend_cached_tokens",
-)
+) + tuple(f"wait_{name}_ms" for name in (
+    # Where a turn's time to first audio went (TurnTimeline.add_wait):
+    # the acknowledgement held in the gate's lag, a dropped guess finishing,
+    # reply audio waiting behind a clip, the relay's lead hold, the speaker
+    # owner's queue, and the device's start (prime plus cushion).
+    "ack_lag", "guess_quiet", "clip", "lead_hold", "owner_queue", "device_prime",
+))
+WAIT_NAMES = frozenset(key[len("wait_"):-len("_ms")] for key in LIVE_META_KEYS
+                       if key.startswith("wait_"))
 
 _TURN_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -230,6 +238,22 @@ class TurnTimeline:
             return
         if overwrite or stage not in turn.stamps:
             turn.stamps[stage] = self._clock() if at is None else at
+
+    def add_wait(self, name: str, ms: float, first_only: bool = False) -> None:
+        """Account one wait in this turn's breakdown (``wait_<name>_ms``).
+
+        Waits add up over the turn; ``first_only`` keeps the first value (a
+        wait that matters once per turn, such as the acknowledgement lag).
+        """
+        turn = self.current
+        if turn is None or turn.done or name not in WAIT_NAMES:
+            return
+        key = f"wait_{name}_ms"
+        value = max(0, int(round(ms)))
+        if first_only:
+            turn.meta.setdefault(key, value)
+        else:
+            turn.meta[key] = int(turn.meta.get(key, 0)) + value
 
     def note_speech_stopped(self, audio_end_ms: Optional[int], audio_start_ms: Optional[int],
                             appended_audio_ms: Optional[float]) -> None:
