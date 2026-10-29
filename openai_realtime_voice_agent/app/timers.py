@@ -95,8 +95,10 @@ class TimerRegistry:
             return
         owner = t.get("owner") or ""
         label = t["label"]
-        # "timer 3" default labels make clumsy sentences ("your timer 3 timer")
-        nice = "" if re.fullmatch(r"timer \d+", label) else f"{label} "
+        # The sentence supplies "timer": a default "timer 3", a bare "timer"
+        # and a "pasta timer" label would say it twice ("your timer timer").
+        name = re.sub(r"(?:^|\s+)timer(?:\s+\d+)?$", "", label.strip(), flags=re.I).strip()
+        nice = f"{name} " if name else ""
         logger.info(f"⏰ timer {tid} ('{label}', owner={owner or '-'}) expired")
         # 1. One personal spoken announcement (no nagging nudges). A wake,
         # button or "stop" from here on, during the line too, acknowledges it.

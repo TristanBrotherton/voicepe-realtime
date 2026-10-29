@@ -2,6 +2,14 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.4 (fork)
+
+### Fixed: "your timer timer is done"
+
+- The announcement adds the word "timer" itself, so a label of "timer" or
+  "pasta timer" (what the voice usually sends) said it twice. A trailing
+  "timer" (and a default "timer 3") is dropped from the label first.
+
 ## 0.20.3 (fork)
 
 ### Fixed: a timer said the name twice, then rang anyway

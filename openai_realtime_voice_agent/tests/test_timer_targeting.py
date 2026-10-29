@@ -83,6 +83,21 @@ class TestTimerTargeting(unittest.IsolatedAsyncioTestCase):
             await self.registry._fire(2)
         self.assertEqual(self.registry._timers, {})
 
+    async def test_the_word_timer_is_said_once(self):
+        said = []
+
+        async def announce(text, device_id):
+            said.append(text)
+            return True
+
+        self.registry.announcer = announce
+        self.registry.last_wake = lambda device_id: time.monotonic()
+        for tid, label in enumerate(["timer", "pasta timer", "timer 7", "tea"], start=10):
+            self.registry._timers[tid] = _timer("kitchen", label)
+            await self.registry._fire(tid)
+        self.assertEqual(said, ["Your timer is done.", "Your pasta timer is done.",
+                                "Your timer is done.", "Your tea timer is done."])
+
     async def test_tools_cannot_see_or_cancel_other_rooms(self):
         first = self.registry.set_timer(60, "tea", device_id="kitchen")
         second = self.registry.set_timer(60, "coffee", device_id="office")
