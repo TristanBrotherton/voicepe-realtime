@@ -2,6 +2,30 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.7 (fork)
+
+### New: project status and messages by voice (with `discussions_enabled`)
+
+- `project_status` answers "what's the status of X?" and "what's happening
+  with X?" for one of the owner's projects. It says what the project is doing
+  now, what is next, what waits on the owner, its open items, and whether its
+  session runs. When a spoken name fits several projects, the voice asks
+  which one.
+- `message_project` passes the owner's spoken message to a project. The
+  confirmation gate always holds it and reads the message back, so it goes
+  only after a spoken yes. The add-on sends it only when this wake's speaker
+  check names a person, and the bridge accepts it only from the owner. If the
+  message is not sent, the voice says so and offers a text instead. Without
+  `confirm_actions`, nothing is sent.
+
+### Fixed
+
+- A question about one project no longer opens another project's item. The
+  tool descriptions and the GPT-Live backend rule now send "status of X" to
+  `project_status` and "what's waiting on me" to `list_open_discussions`. An
+  `open_discussion` that names a project with nothing open points to
+  `project_status`, and the bridge matches only that project's items.
+
 ## 0.20.6 (fork)
 
 ### Fixed: speaker owner (`speaker_owner: true`), from its first real-audio test

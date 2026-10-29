@@ -561,10 +561,13 @@ def register_openclaw_tool(llm, device_id: str = "", room: str = "") -> None:
 # Discussions by voice (option `discussions_enabled`, off by default)
 # ---------------------------------------------------------------------------
 # Open items an owner's project sessions are waiting on (questions, decisions,
-# blockers) are kept by the agent bridge. These three tools only carry generic
+# blockers) are kept by the agent bridge. These tools only carry generic
 # words: every item's text comes from the bridge at runtime. The device is a
 # room speaker, so a decision is never final from voice: it is read back, then
-# staged, and the owner confirms it by text.
+# staged, and the owner confirms it by text. project_status reads one
+# project's status from the bridge; message_project passes the owner's spoken
+# message to a project, only for the owner's voice and only after the
+# confirmation gate read it back and heard a yes.
 DISCUSS_TIMEOUT_S = 20
 
 
@@ -579,8 +582,9 @@ def get_discussion_tool_definitions() -> list:
             "name": "list_open_discussions",
             "description": (
                 "The open items the owner's projects are waiting on: questions, decisions "
-                "and blockers, newest first. Use for 'what needs me?', 'what did my "
-                "projects send me?'. Say only each item's spoken name, topic and "
+                "and blockers, newest first. Use for 'what's waiting on me?', 'what needs "
+                "me?', 'what did my projects send me?'. Not for how one project is going: "
+                "that is project_status. Say only each item's spoken name, topic and "
                 "question, briefly; never read anything else aloud from the list."
             ),
             "parameters": {"type": "object", "properties": {}},
@@ -593,7 +597,10 @@ def get_discussion_tool_definitions() -> list:
                 "'Project 4') or a few words of its topic. Say the topic and the question, "
                 "then discuss it with the owner. The options are fine to say. Read the "
                 "'details' (recommendation and context) aloud ONLY when the owner asks for "
-                "the details or the recommendation; call this again to get them back."
+                "the details or the recommendation; call this again to get them back. "
+                "A query that names a project only matches that project's items: when "
+                "the result says nothing is open for it, call project_status for that "
+                "project instead, and never open another project's item."
             ),
             "parameters": {
                 "type": "object",
@@ -621,7 +628,71 @@ def get_discussion_tool_definitions() -> list:
                 "required": ["item_id", "decision"],
             },
         },
+        {
+            "type": "function",
+            "name": "project_status",
+            "description": (
+                "How one of the owner's projects is going: what it is doing now, what is "
+                "next, what waits on the owner, its open items, and whether its session "
+                "is running. Use for 'what's the status of X?', 'what's happening with "
+                "X?', 'how is X going?'. Pass the project name as spoken. If the result "
+                "is ambiguous, ask which of the candidates the owner means; if no project "
+                "has that name, say so. Answer in two or three spoken sentences: no ids, "
+                "links or lists. When there is nothing to share, say so and offer to pass "
+                "a message to the project (message_project)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"project": {"type": "string", "description": "The project's name as spoken"}},
+                "required": ["project"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "message_project",
+            "description": (
+                "Pass the owner's spoken message to one project's working session, sent "
+                "as the owner. Only the owner may do this, and only when they ask for a "
+                "message to be passed on. Call it with the project and the message in "
+                "the owner's words; the call is held for confirmation and returns a "
+                "question that reads the message back: ask it, and call confirm_action "
+                "only after the owner's clear yes. If the result says it was not sent "
+                "(the voice was not recognized as the owner's, or the project could not "
+                "take it), say so politely and offer to send the owner a text instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "The project's name as spoken"},
+                    "message": {"type": "string", "description": "The message, in the owner's words"},
+                },
+                "required": ["project", "message"],
+            },
+        },
     ]
+
+
+PROJECT_MESSAGE_CHARS = 600
+NOT_OWNER_ERROR = (
+    "Not sent: the voice was not recognized as the owner's, and only the owner can "
+    "pass a message to a project. Say so politely and offer to send the owner a text instead."
+)
+NO_CONFIRMATION_ERROR = (
+    "Not sent: passing a message needs spoken confirmations, which are switched off "
+    "on this assistant. Offer to send the owner a text instead."
+)
+
+
+def owner_speaker_name(llm) -> str:
+    """The name the speaker verdict gives this wake (fresh, fails closed on an
+    uncertain or stale verdict: the same verdict the timers use), else ""."""
+    probe = getattr(llm, "speaker_probe", None)
+    if probe is None:
+        return ""
+    try:
+        return str(probe.name_for(probe.gate_speaker()) or "").strip()
+    except Exception:
+        return ""
 
 
 def register_discussion_tools(llm) -> None:
@@ -648,11 +719,17 @@ def register_discussion_tools(llm) -> None:
             logger.warning(f"⚠️ discussion {action} failed: {e!r}")
             await params.result_callback({"error": "The project list could not be reached right now."})
             return
-        # Counts and outcomes only; never the items' words.
+        # Counts and outcomes only; never the items' or the message's words.
         logger.info(f"🗂️ discussion {action}: " + ", ".join(
-            f"{k}={out[k]}" for k in ("count", "found", "staged") if k in out))
+            f"{k}={out[k]}" for k in ("count", "found", "staged", "sent", "slug") if k in out))
         if action in ("list", "brief") and not out.get("error"):
             _started()
+        if action == "message" and out.get("sent") is not True:
+            out = {**out, "sent": False}
+            if out.get("not_owner"):
+                out["error"] = NOT_OWNER_ERROR
+            elif not out.get("ambiguous"):
+                out["offer"] = "Offer to send the owner a text instead."
         await params.result_callback(out)
 
     async def _list(params) -> None:
@@ -673,6 +750,37 @@ def register_discussion_tools(llm) -> None:
             return
         await _run(params, "stage", item=item[:80], decision=decision[:600])
 
+    async def _status(params) -> None:
+        project = str((params.arguments or {}).get("project") or "").strip()
+        if not project:
+            await params.result_callback({"found": False, "error": "say which project"})
+            return
+        await _run(params, "status", project=project[:120])
+
+    async def _message(params) -> None:
+        # Reached only after the confirmation gate held the call and the owner
+        # said yes (app/action_gate.py); without that gate nothing is sent.
+        args = params.arguments or {}
+        project = str(args.get("project") or "").strip()
+        text = " ".join(str(args.get("message") or "").split())
+        if not project or not text:
+            await params.result_callback({"sent": False, "error": "project and message required"})
+            return
+        gate = getattr(llm, "action_gate", None)
+        if gate is None or not getattr(gate, "enabled", False):
+            logger.info("🗂️ project message refused: confirmations are off")
+            await params.result_callback({"sent": False, "error": NO_CONFIRMATION_ERROR})
+            return
+        speaker = owner_speaker_name(llm)
+        if not speaker:
+            logger.info("🗂️ project message refused: no speaker verdict")
+            await params.result_callback({"sent": False, "error": NOT_OWNER_ERROR})
+            return
+        await _run(params, "message", project=project[:120], text=text[:PROJECT_MESSAGE_CHARS],
+                   speaker=speaker, confirmed=True)
+
     llm.register_function("list_open_discussions", _list)
     llm.register_function("open_discussion", _brief)
     llm.register_function("propose_decision", _propose)
+    llm.register_function("project_status", _status)
+    llm.register_function("message_project", _message)
