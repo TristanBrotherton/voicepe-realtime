@@ -2,6 +2,21 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.9 (fork)
+
+### Fixed: an answer lost behind a long guess
+
+- 0.20.6 kept dropping a guess that was still streaming when its result was
+  acknowledged, until the guess's transcript turn ended. When the voice ran
+  straight from its guess into the answer in the same turn, the answer was
+  dropped with it (seen on a test device: a story request with a timer, only
+  a fragment of the answer played). That rule is gone. Instead the result
+  now waits for the whole guess to end (up to 20 s, was 4 s): the voice
+  finishes what it is saying before it takes in the result anyway, so the
+  answer then starts fresh and nothing of the guess is heard. While it
+  waits the device shows `thinking` (no idle, no follow-up window) and the
+  session stays open. This is router behaviour, with the switch on or off.
+
 ## 0.20.8 (fork)
 
 ### Fixed: speaker owner, from the 0.20.6 retest

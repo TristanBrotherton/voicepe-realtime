@@ -333,11 +333,13 @@ DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Sp
 # was taken as part of the guess, whose tail then played on its own after the
 # commentary was acknowledged (Kitchen 2026-10-28: "...sliced meats, <name>."
 # without "I've added").
+# The voice finishes what it is saying before it takes in the result, so a
+# result sent into a long guess (a story) let the guess's rest play as the
+# answer, and the real answer followed as a second reply (seen on a test
+# device). The wait therefore covers a whole spoken guess, not just its tail:
+# while it lasts the device shows `thinking` and the session stays open.
 GUESS_QUIET_S = 0.6
-GUESS_WAIT_MAX_S = 4.0
-# A guess still streaming when its result is acknowledged keeps being dropped
-# until the voice finishes it (its transcript turn ends), at most this long.
-GUESS_TAIL_MAX_S = 30.0
+GUESS_WAIT_MAX_S = 20.0
 # After a verified result is acknowledged, speech that is only an
 # acknowledgement ("One moment, <name>.") does not answer it: the reply stays
 # under way (no utterance end, no idle) until the answer is spoken, at most
@@ -997,21 +999,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # guess whose words are in but whose audio is not yet counts too.
         self._voice_audible_mono: Optional[float] = None
         self._voice_words_mono: Optional[float] = None
-        # A dropped guess still streaming when its result was acknowledged:
-        # the voice finishes the guess before it speaks the result, so the
-        # guess's tail stays dropped until its transcript turn ends (and its
-        # audio has passed the turn's last word). Without this the tail played
-        # as the result and the real result followed it as a second reply
-        # (seen on a test device: two stories, the first from mid-way).
-        self._guess_tail_since: Optional[float] = None
-        self._guess_tail_in_turn = False
+        # The dropped guess outlasted GUESS_WAIT_MAX_S (still streaming when
+        # its result went in), and whether the words now streaming are that
+        # guess's rather than the answer.
         self._guess_outlasted_wait = False
-        # A guess was dropped when this result went in (its words, still
-        # streaming, are not the answer).
         self._post_guess_dropped = False
-        # Session-timeline end of the last word the voice said while its
-        # speech was being dropped (the guess's last word, when timestamped).
-        self._guess_words_end_ms: Optional[float] = None
         # What the voice has said (heard, not dropped) since the verified
         # result went in. While it is only an acknowledgement ("One moment,
         # <name>."), the answer is still owed (answer_owed).
@@ -1424,6 +1416,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op = self._op
         if op is not None and not op.done and not op.background:
             return True
+        if op is not None and op.result_holding:
+            return True  # its result waits for a dropped guess to end
         if self._task_holds_session():
             return True
         now = time.monotonic()
@@ -2866,10 +2860,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
             if self._gate_drop_until_ack and (self._gate == "open" or self._post_guess_dropped):
-                # The words of a dropped guess (they never count as the answer).
-                end_ms = evt.get("end_ms")
-                if isinstance(end_ms, (int, float)):
-                    self._guess_words_end_ms = max(self._guess_words_end_ms or 0.0, float(end_ms))
+                pass  # the words of a dropped guess never count as the answer
             elif self._gate == "post":
                 # The answer's words: often in before the commentary's
                 # acknowledgement, its audio after it.
@@ -3070,10 +3061,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             else:
                 self._silent_task = self._spawn(self._silent_response_watch(), "live-silent")
         else:
-            if self._guess_tail_in_turn:
-                # The dropped guess's turn ended: from its last word on, the
-                # voice's audio is the result (_guess_tail_dropping).
-                self._guess_tail_in_turn = False
             if self._owner_idle_seen and not self.reply_active:
                 # The voice went idle while its reply was still under way;
                 # now the reply is over too.
@@ -3764,11 +3751,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._result_acked = False
         self._result_acked_mono = None
         self._post_text = ""
-        self._guess_tail_since = None
-        self._guess_tail_in_turn = False
         self._guess_outlasted_wait = False
         self._post_guess_dropped = False
-        self._guess_words_end_ms = None
         self._result_heard = False
         self._gate_lag.clear()
         self._gate_held.clear()
@@ -4355,20 +4339,27 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         start = time.monotonic()
         waited = False
         self._guess_outlasted_wait = False
-        while True:
-            if time.monotonic() - start >= GUESS_WAIT_MAX_S:
-                # Still streaming: the result goes in mid-guess, and the
-                # guess's tail stays dropped past the acknowledgement
-                # (_on_appended, _guess_tail_dropping).
-                self._guess_outlasted_wait = True
-                break
-            if self._user_turn.open or self._background_closing or self._closing:
-                break
-            last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
-            if time.monotonic() - last >= GUESS_QUIET_S:
-                break
-            waited = True
-            await asyncio.sleep(0.05)
+        liveness = self.turn_liveness
+        try:
+            while True:
+                if time.monotonic() - start >= GUESS_WAIT_MAX_S:
+                    # Still streaming: the result goes in mid-guess (bounded).
+                    self._guess_outlasted_wait = True
+                    break
+                if self._user_turn.open or self._background_closing or self._closing:
+                    break
+                last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
+                if time.monotonic() - last >= GUESS_QUIET_S:
+                    break
+                if not waited and liveness is not None:
+                    # The turn is still being worked on: the device shows
+                    # `thinking`, not `idle` (no follow-up window under it).
+                    liveness.tool_started()
+                waited = True
+                await asyncio.sleep(0.05)
+        finally:
+            if waited and liveness is not None:
+                liveness.tool_finished()
         if waited:
             self._add_wait("guess_quiet", (time.monotonic() - start) * 1000)
             logger.info(f"⏳ result for {op.op_id} held {int((time.monotonic() - start) * 1000)} ms "
@@ -4483,23 +4474,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._gate == "post":
                 self._result_acked = True
                 self._result_acked_mono = time.monotonic()
-            outlasted, self._guess_outlasted_wait = self._guess_outlasted_wait, False
-            if self._gate_drop_until_ack and self._guess_tail_since is None and outlasted \
-                    and self._guess_still_streaming():
-                # The result went in while a dropped guess was still
-                # streaming, and the voice is still in it. It finishes that
-                # before it speaks the result, so what follows now is the
-                # guess's tail, not the result: keep dropping it until the
-                # guess ends (_guess_tail_dropping).
-                self._guess_tail_since = time.monotonic()
-                self._guess_tail_in_turn = self._assistant_turn.open
-                logger.info("⏸️ result acknowledged while the dropped guess is still streaming; "
-                            "its tail stays dropped until the voice finishes it")
-                return
-            if self._guess_tail_since is None:
-                # Whatever non-acknowledgement speech was still streaming when
-                # the result went in has ended its claim on the speaker.
-                self._gate_drop_until_ack = False
+            # Whatever non-acknowledgement speech was still streaming when the
+            # result went in has ended its claim on the speaker.
+            self._gate_drop_until_ack = False
         else:
             logger.debug(f"live: ack {kind}")
 
@@ -4538,57 +4515,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._gate_release_task = self._spawn(self._gate_release(), "live-gate-release")
             return
         if self._gate in ("post", "open") and self._gate_drop_until_ack:
-            if not self._guess_tail_dropping(chunk, end_ms):
-                self._enqueue_audio(chunk, end_ms)
-                return
             self._gate_dropped += 1
             self._need_segment_start = True
             return
         self._enqueue_audio(chunk, end_ms)
-
-    def _guess_tail_dropping(self, chunk, end_ms: Optional[float]) -> bool:
-        """Is audio still the dropped guess's tail? Until the result is
-        acknowledged, always; from then on only while the guess's transcript
-        turn is open (and no quiet gap followed it), then until its audio has
-        passed the turn's last word, and never longer than GUESS_TAIL_MAX_S."""
-        since = self._guess_tail_since
-        if since is None:
-            return True
-        if time.monotonic() - since > GUESS_TAIL_MAX_S:
-            logger.warning(f"⚠️ dropped guess still streaming {GUESS_TAIL_MAX_S:.0f}s after the "
-                           "result went in; its audio is no longer dropped")
-            self._end_guess_tail()
-            return False
-        if not chunk.audible and not self._guess_still_streaming():
-            # A quiet gap (no audible audio, no words) after the guess: it
-            # has ended, whatever the transcript turn says.
-            self._end_guess_tail()
-            return False
-        if self._guess_tail_in_turn:
-            return True
-        until = self._guess_words_end_ms
-        if until is not None and isinstance(end_ms, (int, float)):
-            start_ms = float(end_ms) - 1000.0 * len(chunk.pcm or b"") / (LIVE_SAMPLE_RATE * 2)
-            if start_ms < until:
-                return True  # audio of the guess's own last words
-        self._end_guess_tail()
-        return False
-
-    def _guess_still_streaming(self) -> bool:
-        """Audible voice audio or voice words within GUESS_QUIET_S."""
-        last = max(self._voice_audible_mono or 0.0, self._voice_words_mono or 0.0)
-        return bool(last) and time.monotonic() - last < GUESS_QUIET_S
-
-    def _end_guess_tail(self) -> None:
-        if self._guess_tail_since is None:
-            return
-        logger.info(f"▶️ the dropped guess ended {time.monotonic() - self._guess_tail_since:.1f}s "
-                    "after the result went in; the result plays from the voice's next words")
-        self._guess_tail_since = None
-        self._guess_tail_in_turn = False
-        self._post_guess_dropped = False
-        self._gate_drop_until_ack = False
-        self._need_segment_start = True
 
     async def _gate_release(self) -> None:
         """Forward acknowledgement audio ACK_LAG_S behind its arrival."""
@@ -5305,8 +5235,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         elif self._gate == "pre":
             self._gate_open()
         self._gate_drop_until_ack = False
-        self._guess_tail_since = None
-        self._guess_tail_in_turn = False
         await self._send_commentary(text, None)
         op.result_sent_mono = time.monotonic()
         if result.kind in (ROUTE_LOOKUP, ROUTE_ACTION, ROUTE_REPLY, ROUTE_FAILED):
