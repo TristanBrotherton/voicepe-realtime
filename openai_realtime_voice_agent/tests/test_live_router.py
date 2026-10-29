@@ -465,6 +465,44 @@ class VerifiedOnlySpeech(Patched):
         finally:
             set_known_names(names)
 
+    async def test_an_answer_whose_words_came_before_the_acknowledgement_is_not_owed(self):
+        """On the test device the answer's transcript ("Done.") often arrives
+        before the commentary's acknowledgement, its audio after it. Those
+        words are the answer: nothing is owed, the reply ends at its quiet
+        gap, and one response is one utterance (0.20.6 kept it open for the
+        full 10 s bound and split it in two at a drifting timestamp)."""
+        from unittest.mock import AsyncMock
+        from app import speaker_owner as so
+        from app.speaker_owner_pipeline import SpeakerUtteranceEndFrame
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        with patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                h.service.attach_speaker_owner(so.SpeakerOwner(AsyncMock(), AsyncMock()))
+                await h.user_says("Turn on the Atrium Lamp.")
+                await h.wait_commentary()
+                # Timestamped words that do not line up with the audio's
+                # position (the first word "starts" 300 ms into the audio).
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "Done.",
+                               "start_ms": 300, "end_ms": 700})
+                await asyncio.sleep(0.05)
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                self.assertFalse(h.service.answer_owed, "the answer's words are in")
+                answer = fx.tone(600, freq=440.0)
+                for i in range(0, len(answer), 4800):
+                    h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer[i:i + 4800])})
+                    await asyncio.sleep(0.02)
+                for _ in range(12):
+                    h.socket.push({"type": "session.output_audio.delta", "delta": b64(fx.silence(100))})
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(0.4)
+                frames = [f for f in h.sink.of(TTSAudioRawFrame) if f.audio]
+                self.assertTrue(frames)
+                self.assertEqual([f.speaker_new for f in frames[1:]], [False] * (len(frames) - 1),
+                                 "one response, one utterance")
+                self.assertEqual(len(h.sink.of(SpeakerUtteranceEndFrame)), 1, "ended once")
+
     async def test_the_user_speaking_during_the_wait_holds_the_result(self):
         """The user starts new words while the dropped guess still streams:
         the old result does not go in over them (tenth review B8)."""
