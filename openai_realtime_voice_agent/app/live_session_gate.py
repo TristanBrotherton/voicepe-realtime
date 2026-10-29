@@ -541,6 +541,24 @@ class LiveSessionGate:
             logger.warning(f"⚠️ GPT-Live session supervisor failed: {e!r}")
             await self.close("supervisor error", generation=generation)
 
+    def _speaker_holds(self, now: float) -> bool:
+        """With a speaker owner (app/speaker_owner.py): an idle, follow-up or
+        silent close waits while model speech is still open, queued or unsent,
+        because closing the model session would cut it at its source. Hard
+        closes (stop, disconnect, spend, lifetime, expiry) are checked before
+        this and never wait. Bounded by PLAYOUT_WAIT_MAX_S per hold."""
+        if getattr(self._service, "speaker_busy", False) is not True:
+            self._speaker_hold_since = None
+            return False
+        due = [d for d in (self._idle_deadline, self._silent_deadline) if d is not None]
+        if not due or now < min(due):
+            return False
+        since = getattr(self, "_speaker_hold_since", None)
+        if since is None:
+            self._speaker_hold_since = since = now
+            logger.info("🔈 session close waits: the speaker owner is still delivering speech")
+        return now - since < PLAYOUT_WAIT_MAX_S
+
     def _expired(self, generation: int) -> Optional[str]:
         """The close reason that applies right now, in priority order."""
         policy, now = self.policy, self._mono()
@@ -570,6 +588,8 @@ class LiveSessionGate:
                 return "handshake timeout"
             # Still handshaking: the idle/silent deadlines below are measured
             # from the open, so do not let them fire before the session exists.
+            return None
+        if self._speaker_holds(now):
             return None
         if (self._idle_reason == "re-wake grace"
                 and self._idle_deadline is not None and now >= self._idle_deadline):

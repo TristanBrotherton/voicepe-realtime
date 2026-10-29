@@ -101,6 +101,8 @@ LIVE_META_KEYS = (
     "stopped_to_heard_ms", "stopped_to_result_audio_ms",
     "commentary_to_ack_ms", "ack_to_audio_ms", "commentary_to_audio_ms",
     "backend_calls", "backend_cached_tokens",
+    # From the device's own `playing` report (speaker owner, utt1 firmware).
+    "speech_end_to_first_audible_ms",
 ) + tuple(f"wait_{name}_ms" for name in (
     # Where a turn's time to first audio went (TurnTimeline.add_wait):
     # the acknowledgement held in the gate's lag, a dropped guess finishing,

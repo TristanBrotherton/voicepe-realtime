@@ -296,3 +296,12 @@ and its spoken prompts use its own voice and ledger. A device `port` or
 logged and skipped without taking the other devices down; a device port may
 not be the instance's own `websocket_port`. One add-on restart (an update or
 an option change) reconnects every device on it.
+
+`speaker_owner: true` (per device, off by default) hands everything that
+device plays to one queue: replies, acknowledgement clips, timer and
+announcement lines and voice-training lines play whole and one after another,
+and reply audio goes to the device as soon as it exists instead of being held
+and paced. Firmware that offers utterance framing then reports what it
+actually played; older firmware gets the same queue with plain audio. With it
+on, `chain_prime_ms` (default 200) and `utt_cushion_ms` (default 0) tune the
+device's start on newer firmware. See [the device protocol](device-protocol.md).

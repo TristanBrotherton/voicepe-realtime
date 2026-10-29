@@ -73,6 +73,8 @@ from pipecat.services.llm_service import LLMService
 from pipecat.utils.time import time_now_iso8601
 
 from app.live_audio import WITHHELD_REASONS, LiveOutputAudio, OutputAudioCapture, OutputChunk
+from app import speaker_owner as so
+from app.speaker_owner_pipeline import SpeakerUtteranceEndFrame, label as label_for_owner
 from pipecat.frames.frames import StartInterruptionFrame
 from app.live_evidence import TurnEvidence
 from app.live_router import (
@@ -570,6 +572,19 @@ STOP_CONTEXT = (
 )
 
 
+@dataclass
+class _OwnedChunk:
+    """Model audio on its way to the speaker owner, with what it is."""
+
+    chunk: OutputChunk
+    kind: str
+    turn: Optional[str] = None
+
+
+# Queued behind a reply's last audio: its utterance is complete.
+_OWNER_END = object()
+
+
 class _Turn:
     __slots__ = ("open", "text", "timer")
 
@@ -1055,6 +1070,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.spoken_prompts = None
         self.turn_liveness = None
         self.turn_timeline = None
+        # The device's speaker owner (app/speaker_owner.py) when its
+        # `speaker_owner` option is on: model audio is then labelled with
+        # what it is (ack, reply, result, prompt) and the owner delivers it.
+        # None keeps every old path exactly as it was.
+        self.speaker_owner = None
+        self._owner_stream_open = False
+        self._owner_results: List[so.Utterance] = []
+        # Told when the model's audio source dies under an open utterance.
+        self.on_speaker_source_closed: Optional[Callable[[], None]] = None
         self.device_id = ""
         self.on_silent_response: Optional[Callable[[], None]] = None
         self.on_response_audio: Optional[Callable[[], None]] = None
@@ -1626,6 +1650,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             audio, self._audio_task = self._audio_task, None
             await self._cancel(audio)
             dropped = self._drain_output_audio()
+            # The model's audio source is gone: an utterance it was still
+            # streaming ends with what it has (the owner plays that much).
+            self._end_owner_stream(truncated=True)
             for turn in (self._user_turn, self._assistant_turn):
                 await self._cancel(turn.timer)
                 turn.timer = None
@@ -2123,6 +2150,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._note_output_progress()
             return
         if not chunk.pcm:
+            if chunk.reason == "idle run exceeded max_silence_ms":
+                # The reply is over: its utterance is complete (owner only).
+                self._end_owner_stream()
             return
         if chunk.audible:
             self._voice_audible_mono = time.monotonic()
@@ -2130,6 +2160,55 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._gate_push(chunk, audio_end_ms)
             return
         self._enqueue_audio(chunk)
+
+    # -- the speaker owner (app/speaker_owner.py) ---------------------------
+
+    def attach_speaker_owner(self, owner) -> None:
+        """Deliver model audio through the device's speaker owner."""
+        self.speaker_owner = owner
+        owner.observers.append(self._on_owner_event)
+
+    @property
+    def speaker_busy(self) -> bool:
+        """The owner still has model speech open, queued or unsent: closing
+        the model session now would cut it at its source."""
+        owner = self.speaker_owner
+        return bool(owner is not None and owner.must_finish_pending)
+
+    def _owner_facts(self) -> bool:
+        owner = self.speaker_owner
+        return owner is not None and owner.framing == so.UTT
+
+    def _utt_kind(self) -> str:
+        """What the audio enqueued now is, from the classifier's own state."""
+        if self.router is None:
+            return so.REPLY
+        if self._gate == "pre":
+            return so.ACK
+        if self._gate == "post":
+            if self._result_acked and self._confirmation_prompts_pending:
+                return so.PROMPT
+            return so.RESULT
+        return so.REPLY
+
+    def _on_owner_event(self, utt, event: str) -> None:
+        if utt.kind == so.RESULT and event in so.TERMINAL:
+            self._owner_results.append(utt)
+            del self._owner_results[:-16]
+        if (utt.kind == so.PROMPT and event == so.DONE and not utt.estimated
+                and self._owner_facts()):
+            # utt1: a confirmation is armed when the device has played the
+            # whole question, not when its first byte was queued.
+            self._arm_confirmation_prompts()
+
+    def _end_owner_stream(self, truncated: bool = False) -> None:
+        if self.speaker_owner is None or not self._owner_stream_open:
+            return
+        self._owner_stream_open = False
+        if truncated:
+            self._note(self.on_speaker_source_closed)
+        else:
+            self._audio_queue.put_nowait(_OWNER_END)
 
     def _enqueue_audio(self, chunk) -> None:
         if getattr(self, "_need_segment_start", False) and chunk.pcm:
@@ -2151,6 +2230,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     f"{MAX_PENDING_AUDIO_CHUNKS} chunks; the device link cannot "
                     "keep up and reply audio is being dropped"
                 )
+        if self.speaker_owner is not None and chunk.pcm:
+            # Labelled where the classifier decided it: the gate's state now
+            # says what this audio is.
+            self._owner_stream_open = True
+            turn = getattr(getattr(self.turn_timeline, "current", None), "turn_id", None)
+            chunk = _OwnedChunk(chunk, self._utt_kind(), turn if isinstance(turn, str) else None)
         self._audio_queue.put_nowait(chunk)
 
     async def _alignment_watch(self):
@@ -2363,7 +2448,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 if isinstance(chunk, ReplyStreamEnd):
                     await self._finish_streamed_reply(chunk)
                     continue
-                if self._filler_playing:
+                if chunk is _OWNER_END:
+                    await self.push_frame(SpeakerUtteranceEndFrame())
+                    continue
+                owned = None
+                if isinstance(chunk, _OwnedChunk):
+                    owned, chunk = chunk, chunk.chunk
+                # With a speaker owner, queue order replaces this wait.
+                if self._filler_playing and owned is None:
                     # Never on top of the fallback clip: the voice waits for it.
                     waited_from = time.monotonic()
                     try:
@@ -2382,10 +2474,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 if self._suppress_output:
                     continue
                 if chunk.audible:
-                    if self.router is None or (self._gate == "post" and self._result_acked):
+                    if (self.router is None or (self._gate == "post" and self._result_acked)) \
+                            and not (owned is not None and self._owner_facts()):
                         # Router mode: only speech the voice produced after
                         # the result went in (the question itself) may arm a
                         # held action; a trailing acknowledgement never does.
+                        # (A utt1 device: armed at the prompt's `done`.)
                         self._arm_confirmation_prompts()
                     if self.router is not None:
                         self._note_heard()
@@ -2397,9 +2491,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     # would let an idle model hold the session open indefinitely.
                     self._note(self.on_audible_output)
                 self._note_audio_pushed(len(chunk.pcm))
-                await self.push_frame(TTSAudioRawFrame(
+                frame = TTSAudioRawFrame(
                     audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
-                ))
+                )
+                if owned is not None:
+                    label_for_owner(frame, owned.kind, chunk.started_segment, owned.turn)
+                await self.push_frame(frame)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # pragma: no cover - defensive
@@ -5039,6 +5136,21 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if op.delivered or op.abandoned or op.op_id not in self._tasks:
                 return
             now = time.monotonic()
+            verdict = self._owner_result_verdict(sent)
+            if verdict == "heard":
+                op.spoken_to_end = True
+                self._finish_task(op, SESSION)
+                return
+            if verdict == "stopped":
+                # The user stopped it: never delivered again (#35).
+                self._finish_task(op, SESSION)
+                return
+            if verdict == "lost":
+                why = "the link dropped while the result was playing"
+                break
+            if verdict == "playing" and now - sent <= TASK_SPOKEN_HOLD_S:
+                # The owner plays it to the end whatever the session does.
+                continue
             audible = self._last_audible_mono or 0.0
             spoken_s = audible - sent
             closed = not self.session_ready or self._closing or self._disconnecting
@@ -5064,6 +5176,25 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op.delivery.note(SESSION, False, why)
         logger.warning(f"⚠️ task {op.op_id}: {why}; delivering it again")
         self._task_flush_soon("result not heard")
+
+    def _owner_result_verdict(self, since: float) -> Optional[str]:
+        """What the speaker owner knows about the result spoken since ``since``:
+        heard (played to its end), stopped (by the user), lost (the link
+        dropped under it), playing, or None (no owner, or nothing yet)."""
+        owner = self.speaker_owner
+        if owner is None:
+            return None
+        results = [u for u in self._owner_results if u.submitted >= since - 0.05]
+        if any(u.state == so.CUT and u.reason in so.USER_REASONS for u in results):
+            return "stopped"
+        if any(u.started and u.state in (so.LOST, so.CUT) for u in results):
+            return "lost"
+        if any(u.kind == so.RESULT and u.started and not u.terminal and u.submitted >= since - 0.05
+               for u in owner.history()):
+            return "playing"
+        if any(u.state == so.DONE for u in results):
+            return "heard"
+        return None
 
     def _device_idle_s(self) -> float:
         last = max(self._last_user_delta_mono or 0.0, self._last_audible_mono or 0.0)
@@ -5226,6 +5357,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         are never heard, so they never count (v33 hand-back: held speech kept
         ``audio.speaking`` true and silenced the fallback clip)."""
         if self._audio_queue.qsize():
+            return True
+        if self.speaker_owner is not None and self.speaker_owner.speaking:
             return True
         last = self._last_audible_mono
         return last is not None and time.monotonic() - last < self.audio.speech_hangover_s

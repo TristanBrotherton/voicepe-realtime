@@ -67,6 +67,8 @@ COLD_GAP_S = 0.6
 LEGACY_LEAD_IN_MS = 200
 # utt1: a `done` this overdue is assumed (and logged as an estimate).
 ACK_OVERDUE_S = 3.0
+# utt1 firmware tracks at most this many utterances at once.
+DEVICE_MAX_UTTS = 16
 # Utterances remembered by id, for late acks and redelivery.
 HISTORY = 64
 
@@ -111,7 +113,7 @@ class Utterance:
         self.fed: Optional[int] = None           # bytes the device's chain accepted
         self.estimated = False                   # outcome is an estimate, not a fact
         self.truncated = False                   # source died before it closed
-        self.keep: Optional[bytes] = None        # complete PCM kept for redelivery
+        self._keep: Optional[bytearray] = None   # its PCM, kept for redelivery
         self._pending = bytearray()
         self.submitted = now
         self.head_mono: Optional[float] = None
@@ -126,6 +128,11 @@ class Utterance:
         self.underruns: Optional[int] = None
         self._settled = asyncio.Event()
         self._finished = asyncio.Event()
+
+    @property
+    def keep(self) -> Optional[bytes]:
+        """The kept audio (``keep=True``), or None."""
+        return bytes(self._keep) if self._keep is not None else None
 
     @property
     def droppable(self) -> bool:
@@ -292,9 +299,13 @@ class SpeakerOwner:
     # producers
     # ------------------------------------------------------------------
 
-    def open(self, kind: str, turn: Optional[str] = None) -> Utterance:
-        """Start a streamed utterance (model speech). Feed it, then end it."""
-        return self._add(kind, turn, streamed=True)
+    def open(self, kind: str, turn: Optional[str] = None, keep: bool = False) -> Utterance:
+        """Start a streamed utterance (model speech). Feed it, then end it.
+        ``keep``: hold a copy of its audio for redelivery after a lost link."""
+        utt = self._add(kind, turn, streamed=True)
+        if keep:
+            utt._keep = bytearray()
+        return utt
 
     def feed(self, utt: Utterance, pcm: bytes) -> bool:
         """Append PCM to an open utterance. False once it has an outcome."""
@@ -304,6 +315,8 @@ class SpeakerOwner:
             pcm = pcm[:-1]
         utt._pending.extend(pcm)
         utt.total += len(pcm)
+        if utt._keep is not None:
+            utt._keep.extend(pcm)
         if utt is not self._head and len(utt._pending) > UTT_MAX_BUFFER_BYTES:
             # The link has stalled for 30 s of audio. Never cut inside the
             # utterance: it is lost as a whole and connection recovery acts.
@@ -334,7 +347,7 @@ class SpeakerOwner:
         if kind == CLIP:
             utt.deadline = utt.submitted + CLIP_START_DEADLINE_S
         if keep:
-            utt.keep = bytes(pcm or b"")
+            utt._keep = bytearray()
         self.feed(utt, pcm or b"")
         utt.streamed = False
         self.end(utt)
@@ -533,6 +546,11 @@ class SpeakerOwner:
         now = self._now()
         due = self._update_estimates(now)
         if self._interrupt_seq is not None:
+            return due
+        if (self._head is None and self.framing == UTT
+                and sum(1 for u in self._inflight if not u.terminal) >= DEVICE_MAX_UTTS - 1):
+            # The device tracks a bounded number of utterances: the next one
+            # waits until an earlier one has finished playing.
             return due
         if self._head is None:
             self._head = self._next(now)

@@ -2,6 +2,52 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.5 (fork)
+
+### New: one speaker owner per device (opt-in, `speaker_owner`, default off)
+
+- With `speaker_owner: true` on a device in the `devices` list, everything
+  that device plays goes through one queue: replies, acknowledgement clips,
+  spoken errors, timer and announcement lines, background results and
+  voice-training lines. Each plays whole and one after another. A timer
+  line waits for the end of the reply that is playing instead of being
+  mixed into it. A clip that cannot start within 0.5 s, or comes after its
+  turn already had an acknowledgement, is skipped instead of played on top.
+- Reply audio goes to the device as soon as it exists. There is no 600 ms
+  hold and no real-time pacer, and nothing runs more than 2 s ahead. This
+  removes the hold from the start of every reply, and the filler wait on
+  clip turns.
+- Firmware that offers utterance framing (`utt1`, see
+  `docs/device-protocol.md`) reports what it actually played. The add-on then
+  arms a confirmation only once the question has played to its end. The
+  follow-up window starts when the device finishes playing, and the turn
+  summary gains `speech_end_to_first_audible_ms`. Older firmware gets the same
+  queue with plain audio and estimated playout.
+- An idle, follow-up or silent session close waits while speech is still
+  being delivered (at most 15 s); a stop never waits.
+- After a lost connection, an announcement or a result that did not finish
+  playing is delivered again once, within 30 s of reconnecting.
+- The hello carries `chain_prime_ms` and `utt_cushion_ms` (per device) only
+  when the option is on.
+- With the option off, nothing changes: the device receives the same bytes
+  and messages as in 0.20.4, which a test checks.
+
+### Device messages
+
+- The add-on reads the newer firmware's `start` fields (`caps`, `fw`,
+  `last_disconnect`, `prev_utt`) and the interrupt's `reason` and `seq`, and
+  logs them. A housekeeping interrupt (`no_speech`, `residual`) no longer
+  counts as someone acknowledging a timer; `stop`, `wake`, `button` and
+  `mute` still do, and an interrupt from older firmware without a reason
+  counts as before.
+
+### Measured
+
+- `reply_realtime_ratio`: the model's pace per reply.
+- Per-turn waits in the turn summary: `wait_ack_lag_ms`,
+  `wait_guess_quiet_ms`, `wait_clip_ms`, `wait_lead_hold_ms`, plus
+  `wait_owner_queue_ms` and `wait_device_prime_ms` with the owner on.
+
 ## 0.20.4 (fork)
 
 ### Fixed: "your timer timer is done"

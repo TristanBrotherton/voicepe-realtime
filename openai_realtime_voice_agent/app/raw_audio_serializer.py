@@ -37,6 +37,95 @@ SELF_WAKE_TAIL_S = 0.6
 MIC_OPEN_GAP_S = 1.0
 
 
+# Why the device sent {"type":"interrupt"} (firmware capability "ireason1";
+# docs/device-protocol.md). A user interrupt stops what is playing; the last
+# two are housekeeping and do not mean anyone heard anything.
+INTERRUPT_REASONS = ("stop", "wake", "button", "mute", "no_speech", "residual")
+HOUSEKEEPING_REASONS = frozenset({"no_speech", "residual"})
+DISCONNECT_WHY = ("ws_error", "ws_closed", "wifi", "tx_timeout", "reboot")
+UTT_ACK_STATES = ("playing", "progress", "done", "cut", "dropped")
+_INT_LIMIT = 2 ** 31
+
+
+def _small_int(value: Any) -> Optional[int]:
+    return value if type(value) is int and 0 <= value < _INT_LIMIT else None
+
+
+def _number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if -_INT_LIMIT < value < _INT_LIMIT else None
+
+
+def _token(value: Any, limit: int = 32) -> str:
+    if not isinstance(value, str):
+        return ""
+    return "".join(c for c in value if c.isalnum() or c in "-_.:")[:limit]
+
+
+def parse_interrupt(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The well-formed fields of an extended interrupt: reason, seq, utt, fed."""
+    info: Dict[str, Any] = {}
+    reason = data.get("reason")
+    if isinstance(reason, str) and reason in INTERRUPT_REASONS:
+        info["reason"] = reason
+    for key in ("seq", "utt", "fed"):
+        value = _small_int(data.get(key))
+        if value is not None:
+            info[key] = value
+    return info
+
+
+def parse_start(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The well-formed fields of an extended start: caps, fw, last_disconnect, prev_utt."""
+    info: Dict[str, Any] = {}
+    caps = data.get("caps")
+    if isinstance(caps, list):
+        info["caps"] = [c for c in (_token(c, 16) for c in caps[:16]) if c]
+    fw = _token(data.get("fw"), 40)
+    if fw:
+        info["fw"] = fw
+    last = data.get("last_disconnect")
+    if isinstance(last, dict):
+        parsed: Dict[str, Any] = {}
+        if last.get("why") in DISCONNECT_WHY:
+            parsed["why"] = last["why"]
+        for key in ("esp_err", "errno", "up_s", "ago_s"):
+            value = _number(last.get(key))
+            if value is not None:
+                parsed[key] = value
+        reset = last.get("reset")
+        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
+            parsed["reset"] = _number(reset)
+        elif _token(reset):
+            parsed["reset"] = _token(reset)
+        if parsed:
+            info["last_disconnect"] = parsed
+    prev = data.get("prev_utt")
+    if isinstance(prev, dict):
+        parsed = {key: _small_int(prev.get(key)) for key in ("id", "fed", "bytes")}
+        parsed = {k: v for k, v in parsed.items() if v is not None}
+        if prev.get("st") in UTT_ACK_STATES:
+            parsed["st"] = prev["st"]
+        if "id" in parsed:
+            info["prev_utt"] = parsed
+    return info
+
+
+def parse_utt_ack(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A well-formed utt_ack, or None."""
+    uid = _small_int(data.get("id"))
+    st = data.get("st")
+    if uid is None or st not in UTT_ACK_STATES:
+        return None
+    ack: Dict[str, Any] = {"type": "utt_ack", "id": uid, "st": st}
+    for key in ("fed", "wait_ms", "und"):
+        value = _small_int(data.get(key))
+        if value is not None:
+            ack[key] = value
+    return ack
+
+
 def parse_wake_meta(data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract the well-formed wake metadata fields; drop everything else."""
     meta: Dict[str, Any] = {}
@@ -122,8 +211,19 @@ class RawAudioSerializer(FrameSerializer):
         self._set("interrupt", handler)
 
     def set_session_start_handler(self, handler):
-        """Async no-arg callback fired on 'start' (once per WS connection)."""
+        """Async callback([info]) fired on 'start' (once per WS connection);
+        ``info`` holds the parsed caps, fw, last_disconnect and prev_utt."""
         self._set("start", handler)
+
+    def set_speaker_interrupt_handler(self, handler):
+        """Async callback(info) on EVERY device interrupt, before the stop
+        handling and even when enrollment ignores it: the device has flushed
+        its speaker either way (the speaker owner must know)."""
+        self._set("speaker_interrupt", handler)
+
+    def set_utt_ack_handler(self, handler):
+        """Async callback(ack) for a well-formed device utt_ack."""
+        self._set("utt_ack", handler)
 
     def set_mic_flush_handler(self, handler):
         """Async no-arg callback fired on 'flush' (follow-up window timed out)."""
@@ -216,17 +316,44 @@ class RawAudioSerializer(FrameSerializer):
     async def _handle_control(self, data: Dict[str, Any]) -> None:
         kind = data.get("type")
         if kind == "interrupt":
+            info = parse_interrupt(data)
+            enrolling = self._enrolling()
+            # The device has flushed its speaker whatever the add-on does next:
+            # the speaker owner (when on) learns it first, even when the
+            # interrupt itself is ignored below.
+            await self._call("speaker_interrupt", dict(info, ignored=enrolling))
             # During voice enrollment the stop-word model false-fires on the
             # user's repetition batches; ignore so the captured batch survives.
-            if self._enrolling():
+            if enrolling:
                 logger.info("🛑 device interrupt IGNORED (enrollment active)")
                 return
-            logger.info("🛑 device interrupt received")
-            self._last_interrupt_mono = time.monotonic()
-            await self._call("interrupt")
+            if info:
+                self.last_interrupt = info
+                logger.info("🛑 device interrupt received ("
+                            + ", ".join(f"{k} {v}" for k, v in info.items()) + ")")
+            else:
+                logger.info("🛑 device interrupt received")
+            # A housekeeping interrupt (the no-speech watchdog, a residual
+            # reply at a new wake) is not someone acknowledging a timer.
+            if info.get("reason") not in HOUSEKEEPING_REASONS:
+                self._last_interrupt_mono = time.monotonic()
+            await self._call("interrupt", info)
         elif kind == "start":
-            logger.info("🎬 device connection start received")
-            await self._call("start")
+            info = parse_start(data)
+            self.device_caps = list(info.get("caps") or [])
+            self.device_fw = info.get("fw", "")
+            self.last_disconnect = info.get("last_disconnect")
+            self.prev_utt = info.get("prev_utt")
+            if info:
+                logger.info("🎬 device connection start received "
+                            + json.dumps(info, separators=(",", ":")))
+            else:
+                logger.info("🎬 device connection start received")
+            await self._call("start", info)
+        elif kind == "utt_ack":
+            ack = parse_utt_ack(data)
+            if ack is not None:
+                await self._call("utt_ack", ack)
         elif kind == "flush":
             logger.info("🧽 device mic flush received")
             if self._speaker_probe is not None:
