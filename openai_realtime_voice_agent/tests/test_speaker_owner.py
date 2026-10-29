@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import unittest
+from types import SimpleNamespace
 
 from app import speaker_owner as so
 from tests import fake_device as fd
@@ -287,12 +288,84 @@ class TestOutcomes(unittest.TestCase):
             await owner.shutdown()
         run_virtual(go())
 
-    def test_a_missing_done_is_assumed_and_flagged(self):
+    def test_a_missing_done_is_unknown_never_done(self):
+        """On a test device an answer the device never finished (last ack
+        `playing`, fed 0, no `done`) was logged done, fed 0, est:true. With
+        bytes unaccounted for it is `unknown`; a late report from the device
+        corrects it."""
+        async def go():
+            owner, sink = owner_with_sink()
+            utt = owner.submit(so.RESULT, pcm(900))
+            await asyncio.sleep(0.3)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "playing", "fed": 0, "wait_ms": 200})
+            await asyncio.sleep(0.9 + so.ACK_OVERDUE_S + 0.2)
+            self.assertEqual((utt.state, utt.estimated, utt.fed, utt.reason),
+                             (so.UNKNOWN, True, 0, "no_done"))
+            self.assertNotEqual(utt.state, so.DONE)
+            self.assertFalse(owner.busy, "an unknown outcome still frees the queue")
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "done", "fed": 43200, "und": 0})
+            self.assertEqual((utt.state, utt.fed, utt.estimated), (so.DONE, 43200, False),
+                             "the device's late account is the fact")
+            self.assertEqual(owner.counters["unknown"], 0)
+            self.assertEqual(owner.counters["done"], 1)
+            await owner.shutdown()
+        run_virtual(go())
+
+    def test_only_the_device_makes_an_utterance_done(self):
+        """Progress up to the last byte is not a `done`: the device never
+        finished it (its `utt_end` may not have arrived)."""
         async def go():
             owner, sink = owner_with_sink()
             utt = owner.submit(so.REPLY, pcm(300))
-            await asyncio.sleep(0.2 + 0.3 + so.ACK_OVERDUE_S + 0.1)
-            self.assertEqual((utt.state, utt.estimated), (so.DONE, True))
+            await asyncio.sleep(0.3)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "playing", "fed": 0, "wait_ms": 200})
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "progress", "fed": 14400})
+            await asyncio.sleep(0.3 + so.ACK_OVERDUE_S + 0.2)
+            self.assertEqual((utt.state, utt.estimated, utt.fed), (so.UNKNOWN, True, 14400))
+            await owner.shutdown()
+        run_virtual(go())
+
+    def test_estimated_done_never_has_fewer_bytes_than_sent(self):
+        """est:true never becomes done with fed < bytes, however the wait
+        ends (no acks at all, a playing ack, progress short of the end)."""
+        async def go():
+            for acks in ([], [("playing", 0)], [("playing", 0), ("progress", 4800)]):
+                owner, sink = owner_with_sink()
+                utt = owner.submit(so.REPLY, pcm(300))
+                await asyncio.sleep(0.3)
+                for st, fed in acks:
+                    owner.on_ack({"type": "utt_ack", "id": utt.id, "st": st, "fed": fed})
+                await asyncio.sleep(0.6 + so.ACK_OVERDUE_S + 0.2)
+                self.assertTrue(utt.terminal, acks)
+                self.assertFalse(utt.state == so.DONE and utt.estimated and (utt.fed or 0) < utt.total,
+                                 acks)
+                self.assertEqual(utt.state, so.UNKNOWN, acks)
+                await owner.shutdown()
+        run_virtual(go())
+
+    def test_a_late_start_or_a_stall_the_device_reports_gets_its_time(self):
+        """On a test device the device started 1.9 s after the
+        first byte went out and stalled mid-utterance; the add-on gave up on
+        its send-time estimate. Progress the device reports moves the
+        deadline: the real `done` lands and is the outcome."""
+        async def go():
+            owner, sink = owner_with_sink()
+            utt = owner.submit(so.RESULT, pcm(2700))       # 129600 bytes
+            await asyncio.sleep(1.9)                        # late start
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "playing", "fed": 0, "wait_ms": 370})
+            await asyncio.sleep(1.0)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "progress", "fed": 52800})
+            await asyncio.sleep(1.0)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "progress", "fed": 79200})
+            for _ in range(3):                              # stalled: no new bytes
+                await asyncio.sleep(1.0)
+                owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "progress", "fed": 79200})
+            self.assertFalse(utt.terminal, "still within the time the rest takes")
+            await asyncio.sleep(0.5)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "progress", "fed": 110000})
+            await asyncio.sleep(0.5)
+            owner.on_ack({"type": "utt_ack", "id": utt.id, "st": "done", "fed": 129600, "und": 1})
+            self.assertEqual((utt.state, utt.fed, utt.estimated), (so.DONE, 129600, False))
             await owner.shutdown()
         run_virtual(go())
 
@@ -418,6 +491,170 @@ class TestEndToEnd(unittest.TestCase):
                 if errors:
                     failures.append(f"{mode} seed {seed}: {errors[:3]}")
         self.assertEqual(failures, [])
+
+
+# ---------------------------------------------------------------------------
+# device faults and model pauses (found in the first real-audio test)
+# ---------------------------------------------------------------------------
+
+def wired(mode=so.UTT):
+    loop = asyncio.get_event_loop()
+    device = fd.FakeDevice(mode)
+    owner = so.SpeakerOwner(device.send_text, device.send_bytes, framing=mode, clock=loop.time)
+    device.attach(owner)
+    return owner, device
+
+
+class TestDeviceFaults(unittest.TestCase):
+    def test_a_stall_mid_utterance_still_ends_done_with_every_byte(self):
+        """A 2.6 s Wi-Fi stall in the middle of a reply, with the
+        device's acks delayed too. The device finishes late; its `done` is
+        the outcome (fed == bytes), not an estimate."""
+        async def go():
+            owner, device = wired()
+            utt = owner.open(so.RESULT, turn="t1")
+            data = fd.tagged_pcm(1, 2700)
+            for i in range(0, len(data), 4800):
+                owner.feed(utt, data[i:i + 4800])
+                if i == 4800 * 8:
+                    device.stall(2.6, uplink=True)
+                await asyncio.sleep(0.1)
+            owner.end(utt)
+            await utt.wait_finished(15.0)
+            self.assertEqual((utt.state, utt.fed, utt.estimated), (so.DONE, len(data), False))
+            self.assertEqual(device.records[utt.id].state, "done")
+            device.stop()
+            await owner.shutdown()
+        run_virtual(go())
+
+    def test_a_lost_utt_end_is_unknown_and_the_next_utterance_still_plays(self):
+        """Older firmware lost a `utt_end` split across two TCP reads: the
+        device never finished the utterance. The add-on must not call it
+        done, and must not wait forever."""
+        async def go():
+            owner, device = wired()
+            first = owner.open(so.RESULT, turn="t1")
+            device.drop_text = lambda m: m.get("type") == "utt_end" and m.get("id") == first.id
+            owner.feed(first, fd.tagged_pcm(1, 900))
+            owner.end(first)
+            await first.wait_finished(10.0)
+            self.assertEqual((first.state, first.estimated), (so.UNKNOWN, True))
+            device.drop_text = None
+            second = owner.submit(so.ANNOUNCE, fd.tagged_pcm(2, 500))
+            await second.wait_finished(10.0)
+            self.assertEqual((second.state, second.fed), (so.DONE, second.total))
+            self.assertEqual((first.state, first.estimated), (so.DONE, False),
+                             "the device's late done (at the next start) corrects it")
+            device.stop()
+            await owner.shutdown()
+        run_virtual(go())
+
+
+class TestQuietGaps(unittest.TestCase):
+    """SpeakerOwnerProcessor: a pause inside a reply that is still under way
+    keeps its utterance open (no end, no idle); only a dead source or the end
+    of the reply ends it."""
+
+    def _processor(self, owner, active, source):
+        from app.speaker_owner_pipeline import SpeakerOwnerProcessor
+        loop = asyncio.get_event_loop()
+        proc = SpeakerOwnerProcessor(owner, reply_active=lambda: active["v"],
+                                     source_activity=lambda: source["t"], clock=loop.time)
+        frames = []
+        proc._emit = lambda frame: frames.append(type(frame).__name__)
+        return proc, frames
+
+    @staticmethod
+    def _frame(pcm_bytes, kind=so.RESULT, new=False):
+        from pipecat.frames.frames import OutputAudioRawFrame
+        from app.speaker_owner_pipeline import label
+        return label(OutputAudioRawFrame(audio=pcm_bytes, sample_rate=24000, num_channels=1),
+                     kind, new, "t1")
+
+    def test_an_answer_after_a_pause_is_not_lost_and_nothing_goes_idle(self):
+        """After a result: "One moment, <name>." then 3.4 s of model silence, then
+        the answer. The first utterance used to end on the quiet gap, the
+        device went idle and the answer was never played (logged done)."""
+        async def go():
+            loop = asyncio.get_event_loop()
+            owner, device = wired()
+            idle = []
+            owner.idle_observers.append(lambda: idle.append(loop.time()))
+            active = {"v": True}
+            source = {"t": loop.time()}
+            proc, frames = self._processor(owner, active, source)
+            ack = fd.tagged_pcm(1, 1000)
+            for i in range(0, len(ack), 4800):
+                proc._feed(self._frame(ack[i:i + 4800]))
+                source["t"] = loop.time()
+                await asyncio.sleep(0.1)
+            first = proc._open
+            for _ in range(34):                 # the model streams silence
+                source["t"] = loop.time()
+                await asyncio.sleep(0.1)
+            self.assertFalse(first.closed, "the pause did not end the reply's utterance")
+            self.assertEqual(idle, [], "the owner never went idle mid-reply")
+            answer = fd.tagged_pcm(2, 900)
+            for i in range(0, len(answer), 4800):
+                proc._feed(self._frame(answer[i:i + 4800], new=i == 0))
+                source["t"] = loop.time()
+                await asyncio.sleep(0.1)
+            second = proc._open
+            self.assertIsNot(first, second, "the answer opened its own utterance")
+            self.assertTrue(first.closed)
+            active["v"] = False                 # the reply is over
+            await second.wait_finished(10.0)
+            await first.wait_finished(1.0)
+            self.assertEqual([(u.state, u.fed == u.total) for u in (first, second)],
+                             [(so.DONE, True), (so.DONE, True)])
+            heard, _runs, _span = fd.heard_by_key(SimpleNamespace(
+                device=device, pcm={1: ack, 2: answer}))
+            self.assertEqual((heard[1], heard[2]), (ack, answer), "both heard whole")
+            self.assertEqual(len(idle), 1, "idle once, after the answer")
+            self.assertNotIn("BotStoppedSpeakingFrame", frames[:-1])
+            device.stop()
+            await proc._stop_tasks()
+            await owner.shutdown()
+        run_virtual(go())
+
+    def test_a_dead_source_ends_the_utterance_as_truncated(self):
+        async def go():
+            loop = asyncio.get_event_loop()
+            owner, device = wired()
+            active = {"v": True}
+            source = {"t": loop.time()}
+            proc, _frames = self._processor(owner, active, source)
+            proc._feed(self._frame(fd.tagged_pcm(1, 300)))
+            source["t"] = loop.time()
+            utt = proc._open
+            from app import speaker_owner_pipeline as sop
+            await asyncio.sleep(sop.SOURCE_DEAD_S + 1.0)
+            self.assertTrue(utt.closed)
+            self.assertTrue(utt.truncated, "a source that died is flagged")
+            device.stop()
+            await proc._stop_tasks()
+            await owner.shutdown()
+        run_virtual(go())
+
+    def test_a_quiet_gap_after_the_reply_ends_the_utterance(self):
+        async def go():
+            loop = asyncio.get_event_loop()
+            owner, device = wired()
+            active = {"v": False}
+            source = {"t": loop.time()}
+            proc, _frames = self._processor(owner, active, source)
+            proc._feed(self._frame(fd.tagged_pcm(1, 300)))
+            utt = proc._open
+            from app import speaker_owner_pipeline as sop
+            for _ in range(int(sop.SOURCE_QUIET_S * 10) + 3):
+                source["t"] = loop.time()
+                await asyncio.sleep(0.1)
+            self.assertTrue(utt.closed)
+            self.assertFalse(utt.truncated)
+            device.stop()
+            await proc._stop_tasks()
+            await owner.shutdown()
+        run_virtual(go())
 
 
 if __name__ == "__main__":

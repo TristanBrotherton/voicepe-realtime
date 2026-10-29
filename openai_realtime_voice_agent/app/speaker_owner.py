@@ -34,6 +34,10 @@ Framing (``docs/device-protocol.md``):
 - ``legacy``: plain binary, as older firmware expects. Same queue and order;
   playing and done are estimated from the wall clock.
 
+An utt1 utterance the device never reported finished ends as ``unknown``
+(a later report from the device replaces it), never as ``done``: only the
+device's ``done`` makes an utt1 utterance done.
+
 This module is pure: it knows nothing about pipecat, GPT-Live or the
 WebSocket. It is given two async senders and a clock.
 """
@@ -65,7 +69,9 @@ COLD_GAP_S = 0.6
 # Silence ahead of a clip on a cold legacy device, so the chain's start-up loss
 # falls on silence (utt1 devices prime themselves).
 LEGACY_LEAD_IN_MS = 200
-# utt1: a `done` this overdue is assumed (and logged as an estimate).
+# utt1: a report this overdue (past the latest of the send-time playout
+# estimate, the utterance's end going out and the rest of it from the
+# device's last progress) ends the wait as `unknown`, never `done`.
 ACK_OVERDUE_S = 3.0
 # utt1 firmware tracks at most this many utterances at once.
 DEVICE_MAX_UTTS = 16
@@ -84,7 +90,10 @@ LEGACY, UTT = "legacy", "utt1"
 
 QUEUED, SENDING, SENT, PLAYING = "queued", "sending", "sent", "playing"
 DONE, CUT, DROPPED, LOST = "done", "cut", "dropped", "lost"
-TERMINAL = frozenset({DONE, CUT, DROPPED, LOST})
+# utt1: sent, but the device never said how it ended (no `done`, `cut` or
+# `dropped` in time). Not known to be heard; never counted as `done`.
+UNKNOWN = "unknown"
+TERMINAL = frozenset({DONE, CUT, DROPPED, LOST, UNKNOWN})
 
 # Interrupt reasons. A user interrupt stops what plays; housekeeping ones
 # (the no-speech watchdog, a residual reply at a new wake) still flush.
@@ -111,6 +120,8 @@ class Utterance:
         self.total = 0                           # bytes received from the producer
         self.sent = 0                            # bytes written to the device
         self.fed: Optional[int] = None           # bytes the device's chain accepted
+        self.fed_mono: Optional[float] = None    # when the device last reported progress
+        self.settled_mono: Optional[float] = None  # when its end (utt_end) went out
         self.estimated = False                   # outcome is an estimate, not a fact
         self.truncated = False                   # source died before it closed
         self._keep: Optional[bytearray] = None   # its PCM, kept for redelivery
@@ -237,7 +248,7 @@ class SpeakerOwner:
         self._turn_acked: Dict[str, int] = {}      # turn -> ack/clip utterances started
         self._turn_answered: Dict[str, int] = {}   # turn -> answers started
         self._was_busy = False
-        self.counters = {"cut": 0, "lost": 0, "dropped": 0, "done": 0}
+        self.counters = {"cut": 0, "lost": 0, "dropped": 0, "done": 0, "unknown": 0}
 
     # ------------------------------------------------------------------
     # state
@@ -451,6 +462,8 @@ class SpeakerOwner:
         fed = msg.get("fed")
         now = self._now()
         if isinstance(fed, int) and fed >= 0:
+            if not utt.terminal and (utt.fed is None or fed > utt.fed or st == "playing"):
+                utt.fed_mono = now  # the device is moving through it
             utt.fed = fed
             if utt.start_offset is not None and not utt.terminal:
                 # The chain accepted `fed` bytes of it: what is still queued on
@@ -470,12 +483,19 @@ class SpeakerOwner:
             outcome = {"done": DONE, "cut": CUT, "dropped": DROPPED}[st]
             if utt.terminal:
                 if utt.state != outcome:
-                    # The add-on decided first (at the interrupt); the device's
-                    # account is the fact.
+                    # The add-on decided first (at the interrupt, or when the
+                    # device's report was overdue); the device's account is
+                    # the fact, and the corrected line is logged.
                     logger.info(f"🔈 utt {utt.id}: device reports {outcome}, add-on had {utt.state}")
                     self._count(utt.state, -1)
                     utt.state = outcome
+                    if outcome == DONE:
+                        utt.reason = None
                     self._count(outcome, 1)
+                    utt.estimated = False
+                    # Record only: waiters and observers already acted on
+                    # the first outcome.
+                    self._log_record(utt, corrected=True)
                 utt.estimated = False
                 return
             if outcome == DONE and utt.playing_mono is None:
@@ -587,6 +607,7 @@ class SpeakerOwner:
             self._head = None
             if not head.terminal:
                 head.state = SENT if head.state == SENDING else head.state
+                head.settled_mono = self._now()
                 head._settled.set()
                 self._inflight.append(head)
                 self._emit(head, SENT)
@@ -657,17 +678,37 @@ class SpeakerOwner:
                     else:
                         due = self._min(due, utt.play_end_est - now)
             elif utt.fully_sent and utt is not self._head:
-                limit = (utt.play_end_est or now) + ACK_OVERDUE_S
+                limit = self._ack_deadline(utt, now)
                 if now >= limit:
-                    logger.warning(f"⚠️ speaker owner: no done from the device for utterance "
-                                   f"{utt.id} ({utt.kind}); assuming it played")
+                    # Never `done` without the device saying so: speech it
+                    # may not have played must not count as heard. A later
+                    # report from the device replaces this (on_ack).
                     utt.estimated = True
-                    utt.fed = utt.total if utt.fed is None else utt.fed
-                    self._finish(utt, DONE)
+                    utt.fed = utt.fed or 0
+                    logger.warning(f"⚠️ speaker owner: no done from the device for utterance "
+                                   f"{utt.id} ({utt.kind}): {utt.fed} of {utt.total} bytes fed "
+                                   "when last reported; outcome unknown")
+                    self._finish(utt, UNKNOWN, "no_done")
                 else:
                     due = self._min(due, limit - now)
         self._inflight = [u for u in self._inflight if not u.terminal]
         return due if due is None else max(0.001, due)
+
+    @staticmethod
+    def _ack_deadline(utt: Utterance, now: float) -> float:
+        """When a missing utt1 report is overdue: the send-time playout
+        estimate or, if the device reported progress since, the time the rest
+        takes from that report (a device that started late, or stalled
+        mid-utterance and is moving again, gets its time), plus a margin.
+        Never before its end went out (an utterance held open across a pause
+        has a stale estimate) plus the margin."""
+        end = utt.play_end_est if utt.play_end_est is not None else now
+        if utt.settled_mono is not None:
+            end = max(end, utt.settled_mono)
+        if utt.fed_mono is not None:
+            rest = max(0, utt.total - (utt.fed or 0)) / BYTES_PER_S
+            end = max(end, utt.fed_mono + rest)
+        return end + ACK_OVERDUE_S
 
     @staticmethod
     def _min(a: Optional[float], b: float) -> float:
@@ -714,13 +755,18 @@ class SpeakerOwner:
         utt._settled.set()
         utt._finished.set()
         self._count(outcome, 1)
-        try:
-            logger.info("🔈 utt " + json.dumps(dict(utt.record(), framing=self.framing),
-                                               separators=(",", ":")))
-        except Exception:  # pragma: no cover
-            pass
+        self._log_record(utt)
         self._emit(utt, outcome)
         self._check_idle()
+
+    def _log_record(self, utt: Utterance, corrected: bool = False) -> None:
+        record = dict(utt.record(), framing=self.framing)
+        if corrected:
+            record["corrected"] = True
+        try:
+            logger.info("🔈 utt " + json.dumps(record, separators=(",", ":")))
+        except Exception:  # pragma: no cover
+            pass
 
     def _count(self, outcome: str, n: int) -> None:
         if outcome in self.counters:
