@@ -109,6 +109,9 @@ class RawAudioSerializer(FrameSerializer):
         # straight to the socket. While one plays, reply audio waits here so
         # the two streams never interleave in the device's playback ring.
         self._oob_done: Optional[asyncio.Event] = None
+        # Told how long (ms) reply audio waited here behind a prompt: one of
+        # the turn's waits (TurnTimeline.add_wait).
+        self.on_clip_wait: Optional[Callable[[float], None]] = None
 
     # -- handler registration (kept as explicit setters for readability) ----
     def _set(self, name, handler):
@@ -438,10 +441,16 @@ class RawAudioSerializer(FrameSerializer):
                 return json.dumps(frame.message)
         if isinstance(frame, OutputAudioRawFrame):
             if self._oob_done is not None and not self._oob_done.is_set():
+                waited_from = time.monotonic()
                 try:
                     await asyncio.wait_for(self._oob_done.wait(), 3.0)
                 except asyncio.TimeoutError:
                     pass
+                if self.on_clip_wait is not None:
+                    try:
+                        self.on_clip_wait((time.monotonic() - waited_from) * 1000)
+                    except Exception:
+                        pass
             self._reply_audio_since_wake = True
             if self._on_output_audio is not None:
                 try:

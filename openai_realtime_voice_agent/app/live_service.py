@@ -1702,7 +1702,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             f"odd-length {report['odd_length']}, undecodable {report['undecodable']}, "
             f"untimed {report['untimed_deltas']}, timeline gaps {report['timeline_gaps']}"
             f"/overlaps {report['timeline_overlaps']}, "
-            f"pace {report['realtime_ratio']}x real time, "
+            f"pace {report['reply_realtime_ratio']}x real time per reply "
+            f"({report['realtime_ratio']}x over the connection), "
             f"dropped-after-stop {self._suppressed_deltas}, "
             f"backlog-dropped {self._audio_overflow}, "
             f"sha256 {self.audio.digest[:16]}"
@@ -2364,10 +2365,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     continue
                 if self._filler_playing:
                     # Never on top of the fallback clip: the voice waits for it.
+                    waited_from = time.monotonic()
                     try:
                         await asyncio.wait_for(self._filler_done.wait(), 4.0)
                     except asyncio.TimeoutError:
                         pass
+                    self._add_wait("clip", (time.monotonic() - waited_from) * 1000)
                 if chunk.started_segment:
                     await self._speech_segment_started()
                     # A response-start observer can synchronously cancel the
@@ -4135,6 +4138,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             waited = True
             await asyncio.sleep(0.05)
         if waited:
+            self._add_wait("guess_quiet", (time.monotonic() - start) * 1000)
             logger.info(f"⏳ result for {op.op_id} held {int((time.monotonic() - start) * 1000)} ms "
                         "until the dropped guess stopped streaming")
 
@@ -4311,6 +4315,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 if self._gate != "pre" or self._gate_blocked or not self._gate_lag:
                     break
                 self._gate_lag.popleft()
+                self._add_wait("ack_lag", (time.monotonic() - arrived) * 1000, first_only=True)
                 self._enqueue_audio(chunk)
         finally:
             self._gate_release_task = None
@@ -5369,6 +5374,16 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if not end:
             return 0.0
         return max(0.0, end + DEVICE_PLAYOUT_TAIL_S - time.monotonic())
+
+    def _add_wait(self, name: str, ms: float, first_only: bool = False) -> None:
+        """Account a wait in this turn's breakdown (TurnTimeline.add_wait)."""
+        add = getattr(self.turn_timeline, "add_wait", None)
+        if add is None:
+            return
+        try:
+            add(name, ms, first_only=first_only)
+        except Exception as e:  # pragma: no cover - telemetry never breaks audio
+            logger.debug(f"live wait accounting failed: {e!r}")
 
     def _note(self, callback: Optional[Callable[[], None]]) -> None:
         """Fire one lifecycle observer. Never lets a watcher break the audio path."""

@@ -101,9 +101,14 @@ class OutputLeadBuffer(FrameProcessor):
         lead_ms: int | None = None,
         idle_gap_ms: int | None = None,
         max_hold_ms: int | None = None,
+        on_hold=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        # Told how long (ms) each lead was held before its burst: one of the
+        # turn's waits (TurnTimeline.add_wait).
+        self._on_hold = on_hold
+        self._hold_started: float | None = None
         self._lead_ms = _env_int("OUTPUT_LEAD_BUFFER_MS", lead_ms if lead_ms is not None else 0)
         self._idle_gap_s = (idle_gap_ms if idle_gap_ms is not None else 250) / 1000.0
         # Cap defaults comfortably above the lead so it only trips if audio stalls
@@ -164,6 +169,12 @@ class OutputLeadBuffer(FrameProcessor):
         at the next frame boundary instead of pushing stale audio."""
         self._buffering = False
         self._cancel_cap_timer()
+        if self._hold_started is not None and self._on_hold is not None:
+            try:
+                self._on_hold((time.monotonic() - self._hold_started) * 1000)
+            except Exception:
+                pass
+        self._hold_started = None
         gen = self._gen
         while self._held and self._gen == gen:
             f = self._held.pop(0)
@@ -178,6 +189,7 @@ class OutputLeadBuffer(FrameProcessor):
         self._held = []
         self._held_bytes = 0
         self._buffering = False
+        self._hold_started = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -235,6 +247,7 @@ class OutputLeadBuffer(FrameProcessor):
             if not self._buffering and gap_is_cold and not mid_segment:
                 self._gen += 1
                 self._buffering = True
+                self._hold_started = now
                 self._arm_cap_timer(direction)
             self._audio_this_segment = True
 
