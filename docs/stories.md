@@ -112,7 +112,7 @@ your agent or automation does.
 Lists are native Home Assistant tools through the MCP Server integration — no
 agent involved. Timers are personal: nine minutes later it says
 *"Alex, your pasta timer is done"* to whoever set it (speaker recognition),
-waits 20 seconds for any sign of life, and only then rings a gentle bell —
+waits a minute for any sign of life, and only then rings a gentle bell —
 dismissed with "stop" or the button.
 
 *Built in — [Getting Started §1.3](getting-started.md#13-let-it-control-your-home-home-assistant-mcp),

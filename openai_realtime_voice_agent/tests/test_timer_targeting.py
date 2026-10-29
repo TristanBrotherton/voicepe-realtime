@@ -66,6 +66,23 @@ class TestTimerTargeting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1], ("wake", "kitchen"))
         self.assertEqual(self.registry._timers, {})
 
+    async def test_a_stop_during_the_announcement_acknowledges_it(self):
+        acked = {}
+
+        async def announce(text, device_id):
+            acked["at"] = time.monotonic()  # "stop" said while the line plays
+            return True
+
+        async def set_ring(on, device_id, allow_legacy=True):
+            raise AssertionError("an acknowledged timer must not ring")
+
+        self.registry.announcer = announce
+        self.registry.last_wake = lambda device_id: acked.get("at", 0.0)
+        self.registry._timers[2] = _timer("kitchen", "tea")
+        with patch.object(timers, "_set_ring", set_ring):
+            await self.registry._fire(2)
+        self.assertEqual(self.registry._timers, {})
+
     async def test_tools_cannot_see_or_cancel_other_rooms(self):
         first = self.registry.set_timer(60, "tea", device_id="kitchen")
         second = self.registry.set_timer(60, "coffee", device_id="office")

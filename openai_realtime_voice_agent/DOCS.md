@@ -139,7 +139,7 @@ answer back.
 ## 6. Voice timers
 
 Set, cancel and list timers by voice. On expiry: one personal spoken announcement
-(addressed to whoever set the timer), a 20-second grace window (any wake counts as
+(addressed to whoever set the timer), a 60-second grace window (a wake, the button or "stop" counts as
 acknowledged), then a gentle bell only if unacknowledged — silenced by the center
 button or "stop".
 

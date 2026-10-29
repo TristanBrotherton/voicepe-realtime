@@ -92,6 +92,8 @@ class RawAudioSerializer(FrameSerializer):
         # back through the microphone (see is_self_wake).
         self.self_wakes_suppressed = 0
         self._last_button_mono = 0.0
+        # Last device "stop" (interrupt); acknowledges a timer like a wake.
+        self._last_interrupt_mono = 0.0
         # Set on wake; cleared when we ack the first mic frame back to the
         # device (cancels its no-speech watchdog — audio is flowing).
         self._ack_pending = False
@@ -217,6 +219,7 @@ class RawAudioSerializer(FrameSerializer):
                 logger.info("🛑 device interrupt IGNORED (enrollment active)")
                 return
             logger.info("🛑 device interrupt received")
+            self._last_interrupt_mono = time.monotonic()
             await self._call("interrupt")
         elif kind == "start":
             logger.info("🎬 device connection start received")

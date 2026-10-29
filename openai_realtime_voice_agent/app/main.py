@@ -1068,6 +1068,7 @@ class Application:
             return max(
                 getattr(ser, "_last_wake_mono", 0.0),
                 getattr(ser, "_last_button_mono", 0.0),
+                getattr(ser, "_last_interrupt_mono", 0.0),
             )
 
         self.timer_registry.last_wake = _last_wake
