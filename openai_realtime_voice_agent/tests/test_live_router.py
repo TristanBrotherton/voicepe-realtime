@@ -370,25 +370,24 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.2)
                 self.assertEqual(h.heard(), b"", "the guess is never heard")
 
-    async def test_a_guess_longer_than_the_wait_is_not_heard_after_the_result(self):
+    async def test_a_long_guess_is_waited_out_before_the_result_goes_in(self):
         """On a test device the voice was telling its own story (a guess)
-        when the result went in. The guess outlasted the wait, the commentary
-        was acknowledged mid-guess and the rest of the guess played as the
-        answer; the real answer followed as a second story. The voice
-        finishes its guess before it answers, so the guess's tail stays
-        dropped until its turn ends, and only the answer is heard."""
+        when the result went in. The 4 s wait ran out, the commentary went in
+        mid-guess, and the voice finished its story (heard from mid-way)
+        before it told the backend's one: two stories. Dropping the rest
+        instead lost the answer when the voice ran straight from its guess
+        into it. The voice finishes what it is saying before it takes in the
+        result, so the result now waits for the whole guess (the device
+        shows `thinking` meanwhile), and only the answer is heard."""
         backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
                               response(message("The Atrium Lamp is on.")))
         backend.gate.clear()
-        guess = fx.tone(2000, freq=330.0)
+        guess = fx.tone(6000, freq=330.0)
         reply = fx.tone(300)
-        with patch.object(live_service_module, "GUESS_QUIET_S", 0.25), \
-                patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.3), \
-                patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
             async with RouterHarness(self, backend) as h:
                 await h.user_says("Turn on the Atrium Lamp.")
                 await asyncio.sleep(0.15)
-                acked = asyncio.Event()
 
                 async def stream_guess():
                     for i in range(0, len(guess), 4800):
@@ -402,16 +401,19 @@ class VerifiedOnlySpeech(Patched):
                 streaming = asyncio.ensure_future(stream_guess())
                 await asyncio.sleep(0.25)
                 backend.gate.set()
-                await h.wait_commentary()
-                h.socket.push({"type": "session.commentary.appended"})
-                acked.set()
+                await asyncio.sleep(4.5)          # past the old 4 s cap
+                self.assertEqual(h.socket.of("session.commentary.append"), [],
+                                 "the result waits while the guess streams")
+                self.assertGreater(h.service.turn_liveness.in_flight, 0, "the device shows thinking")
+                self.assertTrue(h.service.router_pending, "the session stays open for it")
                 await streaming
-                self.assertEqual(h.heard(), b"", "the guess's tail after the result is not heard")
-                await asyncio.sleep(0.5)          # the guess's turn ends
+                await h.wait_commentary(timeout=3.0)
+                self.assertEqual(h.service.turn_liveness.in_flight, 0)
+                h.socket.push({"type": "session.commentary.appended"})
                 h.voice_says("The Atrium Lamp is on now.", ms=300)
                 await h.sink.wait_for(TTSAudioRawFrame)
                 await asyncio.sleep(0.2)
-                self.assertEqual(h.heard(), reply, "only the answer, whole")
+                self.assertEqual(h.heard(), reply, "only the answer, whole; nothing of the guess")
 
     async def test_an_acknowledgement_after_the_result_keeps_the_reply_open(self):
         """On a test device, after the result went in the voice
