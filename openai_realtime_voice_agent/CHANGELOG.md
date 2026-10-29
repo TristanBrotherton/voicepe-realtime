@@ -2,6 +2,19 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.3 (fork)
+
+### Fixed: a timer said the name twice, then rang anyway
+
+- The timer line ("Sam, your timer is done.") is voiced by the Live voice
+  and cut out of what it says. When the voice ran its own "Sam," straight
+  into the line, the cut walked back across both, and the name was heard
+  twice. The walk back now stops where the discarded words end.
+- A heard timer no longer rings. The bell after the announcement is for a
+  timer nobody heard: a wake, the button or "stop" on that device from the
+  start of the announcement acknowledges it (a "stop" said during the line
+  used to be missed), and the wait before the bell is 60 s instead of 20 s.
+
 ## 0.20.2 (fork)
 
 ### Fixed: a command Home Assistant rejected was reported as done

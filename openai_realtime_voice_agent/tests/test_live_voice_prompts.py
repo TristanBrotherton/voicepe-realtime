@@ -95,6 +95,17 @@ class CutLine(unittest.TestCase):
         self.assertIsNotNone(pcm)
         self.assertLess(len(pcm), ms(400 + 800 + 600))
 
+    def test_a_run_together_interjection_does_not_come_back_with_the_line(self):
+        """2026-10-28: a timer said the name twice. The voice ran its own
+        "Sam," straight into the line, so the onset walk took both."""
+        timeline = fx.tone(500) + fx.tone(1500, freq=330) + fx.silence(600)
+        deltas = [transcript("Sam,", 0, 400),
+                  transcript(" Sam, your timer is done.", 500, 1800)]
+        pcm = cut_line(timeline, deltas, "Sam, your timer is done.")
+        self.assertIsNotNone(pcm)
+        self.assertLessEqual(len(pcm), ms(1500 + 600 + 100), "the interjection stays out")
+        self.assertGreaterEqual(len(pcm), ms(1500), "the line is all there")
+
     def test_the_cut_runs_past_the_last_block_until_the_output_is_quiet(self):
         # Transcript says the line ends at 600 ms; the voice keeps going to 1100.
         timeline = fx.tone(1100) + fx.silence(800)

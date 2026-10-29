@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 MAX_TIMERS = 10
 MAX_DURATION_S = 24 * 3600
 RING_AUTO_OFF_S = 120  # stop ringing after 2 min if nobody silences it
-ANNOUNCE_GRACE_S = 20  # spoken announcement first; ring only if unacknowledged
+ANNOUNCE_GRACE_S = 60  # spoken announcement first; ring only if unacknowledged
 
 
 def _ring_entity(device_id: str, allow_legacy: bool = True) -> str:
@@ -98,7 +98,9 @@ class TimerRegistry:
         # "timer 3" default labels make clumsy sentences ("your timer 3 timer")
         nice = "" if re.fullmatch(r"timer \d+", label) else f"{label} "
         logger.info(f"⏰ timer {tid} ('{label}', owner={owner or '-'}) expired")
-        # 1. One personal spoken announcement (no nagging nudges).
+        # 1. One personal spoken announcement (no nagging nudges). A wake,
+        # button or "stop" from here on, during the line too, acknowledges it.
+        t0 = time.monotonic()
         announced = False
         if self.announcer is not None:
             try:
@@ -108,12 +110,12 @@ class TimerRegistry:
                 )
             except Exception as e:
                 logger.warning(f"⚠️ timer announcement failed: {e!r}")
-        # 2. Grace: a wake from the originating device acknowledges it.
+        # 2. Grace: a wake, button or "stop" on the originating device
+        # acknowledges it.
         if announced:
-            t0 = time.monotonic()
             await asyncio.sleep(ANNOUNCE_GRACE_S)
             if self.last_wake is not None and self.last_wake(t["device_id"]) > t0:
-                logger.info(f"⏰ timer {tid} acknowledged by wake — no ring")
+                logger.info(f"⏰ timer {tid} acknowledged — no ring")
                 self._timers.pop(tid, None)
                 return
         # 3. The gentle bell (auto-off backstop unchanged).

@@ -182,12 +182,13 @@ def _first_audible_ms(timeline: bytes, start: int = 0) -> Optional[float]:
     return None
 
 
-def _speech_onset(timeline: bytes, lo: int) -> int:
-    """``lo`` moved back to where the speech it lands in begins (see ONSET_*)."""
+def _speech_onset(timeline: bytes, lo: int, floor: int = 0) -> int:
+    """``lo`` moved back to where the speech it lands in begins (see ONSET_*),
+    never before ``floor``."""
     block = _ms_to_bytes(BLOCK_MS)
     lo = max(0, min(lo, len(timeline)))
     lo -= lo % 2
-    floor = max(0, lo - _ms_to_bytes(ONSET_MAX_MS))
+    floor = max(0, floor - floor % 2, lo - _ms_to_bytes(ONSET_MAX_MS))
     quiet_ms, cut = 0.0, lo
     pos = lo
     while pos - block >= floor:
@@ -229,7 +230,12 @@ def cut_line(timeline: bytes, transcripts: List[Tuple[str, object, object]],
     offset = (onset - float(first)) if (first is not None and onset is not None) else 0.0
     start_ms, end_ms = span[0] + offset, span[1] + offset
     lo = _ms_to_bytes(max(0.0, start_ms - LEAD_MS))
-    lo = _speech_onset(timeline, lo)
+    # The walk back stops where the discarded interjection's words end: run
+    # together ("Sam, Sam, your timer is done.") it is one stretch of
+    # speech and would come back with the line, the name heard twice.
+    before = [t[2] for t in transcripts[:index] if isinstance(t[2], (int, float))]
+    floor = _ms_to_bytes(max(0.0, float(max(before)) + offset)) if before else 0
+    lo = _speech_onset(timeline, lo, min(floor, lo))
     hi = _ms_to_bytes(max(0.0, end_ms))
     quiet_ms = 0.0
     block = _ms_to_bytes(BLOCK_MS)
