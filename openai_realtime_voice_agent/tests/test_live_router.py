@@ -768,6 +768,35 @@ class SearchAnswerIsTheResult(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "12 to 15 degrees with showers.")
         self.assertEqual(len(backend.bodies), 1, "one backend call, not two")
 
+    async def test_a_news_answer_to_a_request_is_spoken(self):
+        """Kitchen 2026-10-30: "Can you give me a summary of the Israeli
+        elections please" searched, and the answer was replaced by "could
+        not be confirmed": the news text read as a claimed outcome."""
+        from app.tool_results import classify_result
+        answer = ("Election day is set for October 27. Likud is now leading the polls, "
+                  "and two opposition parties have already merged their lists.")
+        backend = FakeBackend(response(call("web_search", {"query": "Israeli elections"}, "c1")),
+                              response(message("Rephrased.")))
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post))
+
+        async def execute(name, args):
+            return answer, classify_result(answer)
+        result = await router.route("Can you give me a summary of the Israeli elections please", execute)
+        self.assertEqual(result.kind, LOOKUP)
+        self.assertEqual(result.text, answer)
+
+    async def test_a_household_request_answered_by_a_search_stays_protected(self):
+        from app.tool_results import classify_result
+        answer = "The lights are now off."
+        backend = FakeBackend(response(call("web_search", {"query": "lights"}, "c1")),
+                              response(message("Rephrased.")))
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post))
+
+        async def execute(name, args):
+            return answer, classify_result(answer)
+        result = await router.route("Turn off the kitchen lights.", execute)
+        self.assertEqual(result.kind, FAILED)
+
     async def test_a_search_without_an_answer_goes_back_to_the_backend(self):
         from app import web_search_tool
         for miss in (web_search_tool.NO_RESULT, web_search_tool.FAILED, web_search_tool.TIMED_OUT,
