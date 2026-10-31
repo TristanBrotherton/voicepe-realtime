@@ -202,11 +202,15 @@ class ReadOnlyAnswers(unittest.IsolatedAsyncioTestCase):
             ("What about turning off the lights", "The lights are turned off."),
             ("Is there any way you can turn off the lights", "The lights are turned off."),
             ("Which lights are on, turn them all off", "The lights are now off."),
-            ("Are the lights on?", "The lights are now off."),
         ):
             result = await self.route(request, response(message(answer)))
             self.assertEqual(result.kind, FAILED, request)
             self.assertIn("do not say it was done", result.commentary(), request)
+        # 0.20.11: a pure state question changes nothing (its tools are
+        # read-only), so "now off" in a remark answering it is a state, not
+        # a claimed outcome; it is spoken as a remark.
+        result = await self.route("Are the lights on?", response(message("The lights are now off.")))
+        self.assertEqual(result.kind, REPLY)
 
     async def test_a_read_still_cannot_verify_an_action_for_a_command(self):
         result = await self.route("Unlock the door.", response(call("todo__get_items", {}, "c1")),
@@ -226,13 +230,17 @@ class ReadOnlyAnswers(unittest.IsolatedAsyncioTestCase):
             ("What's the volume, turn it down", "The volume is now 30 percent."),
             ("Where's the vacuum, send it home", "The vacuum is now docked."),
             ("Are the lights on, if so switch them off", "The lights are now off."),
-            ("Are the lights on?", "The lights are now off."),
             ("Did you turn off the lights", "They're turned off now; I've checked."),
         ):
             result = await self.route(request, response(call("todo__get_items", {}, "c1")),
                                       response(message(answer)))
             self.assertEqual(result.kind, FAILED, request)
             self.assertNotIn("Verified", result.commentary(), request)
+        # 0.20.11: a pure state question answered from a read is a lookup,
+        # whatever its wording ("now off" is the state it read).
+        result = await self.route("Are the lights on?", response(call("todo__get_items", {}, "c1")),
+                                  response(message("The lights are now off.")))
+        self.assertEqual(result.kind, LOOKUP)
 
     async def test_merge_a_read_cannot_verify_an_outcome_for_a_household_verb(self):
         """haintent review fold-in (v35 merge): "They're turned off." after

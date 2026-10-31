@@ -746,6 +746,113 @@ class ReadOnlyClaims(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await router.route("Is the door locked?", execute)).kind, LOOKUP)
 
 
+class DoneOnlyIfAnActionRan(unittest.IsolatedAsyncioTestCase):
+    """0.20.11: a house request is done only if an action tool succeeded;
+    anything else is answered as it is. Decided by what ran, not by the
+    wording of the request or the reply (0.20.10 review)."""
+
+    async def route(self, user_text, *responses, heard=None):
+        from app.tool_results import classify_result
+        backend = FakeBackend(*responses)
+        recognizer = None
+        if heard is not None:
+            recognizer = FakeRecognizer()
+            recognizer.last_heard = heard
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post),
+                            recognizer=recognizer)
+        executed = []
+
+        async def execute(name, args):
+            executed.append(name)
+            if name.endswith("get_items"):
+                raw = {"items": ["milk", "eggs"]}
+            elif name.endswith("GetDateTime"):
+                raw = {"time": "18:00"}
+            elif name == "web_search":
+                raw = "Polls close at ten; turnout is already above 60 percent."
+            else:
+                raw = {"success": True, "speech": "The kitchen lights are on."}
+            return raw, classify_result(raw)
+        return await router.route(user_text, execute), executed
+
+    async def test_a_read_cannot_make_a_house_request_done(self):
+        for request, read, answer in (
+            ("Turn off the kitchen lights", "homeassistant__GetLiveContext", "The kitchen lights are off."),
+            ("Lock the front door", "homeassistant__GetLiveContext", "The front door is secure now."),
+            ("Add milk to the list", "todo__get_items", "Milk is on the list."),
+        ):
+            result, _ = await self.route(request, response(call(read, {}, "c1")), response(message(answer)))
+            self.assertEqual(result.kind, FAILED, request)
+            self.assertNotIn("Verified", result.commentary(), request)
+            self.assertIn("Nothing was changed", result.commentary(), request)
+            self.assertIn("do not say it was done", result.commentary(), request)
+
+    async def test_a_question_back_after_a_read_is_asked(self):
+        result, _ = await self.route("Turn on the lamp", response(call("homeassistant__GetLiveContext", {}, "c1")),
+                                     response(message("Which lamp, the desk lamp or the floor lamp?")))
+        self.assertEqual(result.kind, REPLY)
+        self.assertIn("nothing has been done", result.commentary())
+
+    async def test_a_list_read_for_remind_me_is_spoken(self):
+        result, _ = await self.route("Can you remind me what's on the shopping list?",
+                                     response(call("todo__get_items", {}, "c1")),
+                                     response(message("Milk and eggs are already on it.")))
+        self.assertEqual(result.kind, LOOKUP)
+        self.assertEqual(result.text, "Milk and eggs are already on it.")
+
+    async def test_a_news_turn_with_mixed_reads_is_spoken(self):
+        answer = "Polls close at ten; turnout is already above 60 percent."
+        result, executed = await self.route(
+            "Can you give me a summary of the Israeli elections please",
+            response(call("llm__GetDateTime", {}, "c1")),
+            response(call("web_search", {"query": "Israeli elections"}, "c2")),
+            response(message("Rephrased.")))
+        self.assertEqual(executed, ["llm__GetDateTime", "web_search"])
+        self.assertEqual(result.kind, LOOKUP)
+        self.assertEqual(result.text, answer)
+
+    async def test_a_command_home_assistant_parsed_is_not_done_by_a_read(self):
+        """No household verb in the words; Home Assistant's parser heard a
+        command, and the backend only read."""
+        result, executed = await self.route(
+            "Test lamp on.", response(call("homeassistant__GetLiveContext", {}, "c1")),
+            response(message("The test lamp is on.")),
+            heard={"intent": "HassTurnOn", "slots": {"name": "test lamp"}, "targets": 1, "unmatched": []})
+        self.assertEqual(executed, ["homeassistant__GetLiveContext"])
+        self.assertEqual(result.kind, FAILED)
+
+    async def test_a_parsed_read_intent_is_not_a_house_request(self):
+        result, _ = await self.route(
+            "weather outside.", response(call("homeassistant__GetLiveContext", {}, "c1")),
+            response(message("It is now 12 degrees and cloudy.")),
+            heard={"intent": "HassGetWeather", "slots": {}, "targets": 1, "unmatched": []})
+        self.assertEqual(result.kind, LOOKUP)
+
+    async def test_a_house_request_whose_action_ran_is_an_action(self):
+        result, _ = await self.route("Turn on the kitchen lights",
+                                     response(call("intent__HassTurnOn", {"name": "kitchen"}, "c1")),
+                                     response(message("The kitchen lights are on.")))
+        self.assertEqual(result.kind, ACTION)
+
+    def test_house_request_shape(self):
+        from app.live_router import is_house_request
+        for text in ("Turn off the kitchen lights", "Lock the front door", "Add milk to the list",
+                     "Remind me to call Alex at five", "Remember that the bins go out on Tuesday",
+                     "Make the living room warmer", "Put milk on the shopping list", "Put on some music",
+                     "Did you turn off the lights?", "Which lights are on, turn them all off",
+                     "Is it possible to turn on the heat?", "Can you send Alex a message"):
+            self.assertTrue(is_house_request(text), text)
+        for text in ("Can you remind me what's on the shopping list?", "Is the door locked?",
+                     "Is the garage open?", "Can you give me a summary of the Israeli elections please",
+                     "When does the match start?", "Do you remember what I said about the bins?",
+                     "Can you make me a summary of the news", "Can you put together a summary on the news",
+                     "Who turned the lights off?", "Is the Voice PE test light on?"):
+            self.assertFalse(is_house_request(text), text)
+        self.assertTrue(is_house_request("Test lamp on", {"intent": "HassTurnOn"}))
+        self.assertFalse(is_house_request("Test lamp on", {"intent": "HassTurnOn", "question": True}))
+        self.assertFalse(is_house_request("weather", {"intent": "HassGetWeather"}))
+
+
 from app.live_router import is_state_question  # noqa: E402
 
 
