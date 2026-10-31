@@ -1260,7 +1260,8 @@ class TurnRouter:
         if actions and not any(r.ok for r in actions):
             # Every action failed; a successful read does not make it done.
             return RouteResult(FAILED, text, "backend", runs, timings)
-        if not any(r.ok and _is_action_tool(r.name) for r in runs) and (
+        if not any(r.ok and _is_action_tool(r.name) for r in runs) and not _is_information_lookup(
+                user_text, runs) and (
                 (claims_action(text) or (_HOUSEHOLD_VERB.search(user_text or "") and claims_success(text)))
                 if is_action_shaped(user_text) else claims_action_for_question(text)):
             # haintent review (v35 merge): for a request with a household verb
@@ -1493,6 +1494,19 @@ _READ_TOOLS = re.compile(r"(?:^|__)(?:Get|get_|list_|recall|web_search|GetLiveCo
 
 def _is_action_tool(name: str) -> bool:
     return not _READ_TOOLS.search(name or "")
+
+
+# Tools that read the world or memory, not the house.
+_INFORMATION_TOOLS = re.compile(r"(?:^|__)(?:web_search|recall)", re.I)
+
+
+def _is_information_lookup(user_text: str, runs: List["ToolRun"]) -> bool:
+    """A request with no household verb answered only by information tools
+    ("Can you give me a summary of the Israeli elections?", Kitchen
+    2026-10-30). Its answer reports news, not the house: "is now leading"
+    or "has already" in it is not a claimed outcome."""
+    return bool(runs) and not _HOUSEHOLD_VERB.search(user_text or "") and all(
+        _INFORMATION_TOOLS.search(r.name or "") for r in runs)
 
 
 # Tools a read-only question may not run: Home Assistant intents that change

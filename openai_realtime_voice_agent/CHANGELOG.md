@@ -2,6 +2,18 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.10 (fork)
+
+### Fixed: a news answer replaced by "could not be confirmed"
+
+- A request with no household verb that only a web search or memory read
+  answered ("Can you give me a summary of the elections?") had its answer
+  checked like a household command. News wording such as "is now leading"
+  or "have already merged" read as a claimed outcome, so the voice said it
+  could not confirm it instead of giving the answer. Those answers are now
+  spoken. A household request ("Turn off the lights") answered only by a
+  search stays protected.
+
 ## 0.20.9 (fork)
 
 ### Fixed: an answer lost behind a long guess
