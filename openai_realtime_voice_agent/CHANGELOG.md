@@ -2,6 +2,32 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.11 (fork)
+
+### Changed: "done" is decided by what ran, not by how the reply is worded
+
+- The false-success guard used to read the wording of the request and of
+  the reply. It failed both ways: true answers were suppressed ("Can you
+  remind me what's on the shopping list?" answered from the list, a news
+  answer that also read the clock) and false claims got through ("Turn off
+  the kitchen lights" answered "The kitchen lights are off." after only a
+  read, "Lock the front door" answered "The front door is secure now.",
+  "Add milk to the list" answered "Milk is on the list.").
+- Now a request to change the house (Home Assistant's own parser heard a
+  command, or a household verb is in a request rather than a question) is
+  done only if an action tool succeeded. If none did, the voice is told
+  nothing was changed and must not say it was done, whatever the reply
+  says; a question back ("Which lamp?") is still asked. Questions,
+  searches, reads and "can you summarise ..." are spoken as they are.
+- A reply with no tool behind it may still not claim an outcome for a house
+  request, or say the assistant did something itself.
+- "remind", "remember", "make" and "put" count as household verbs only in
+  the forms that ask for a change ("remind me to ...", "remember that ...",
+  "make it warmer", "put milk on the list", "put on some music").
+- Unchanged: every action failed means not done, even with a successful
+  read; a state question still cannot run control tools; locks still need
+  a spoken yes.
+
 ## 0.20.10 (fork)
 
 ### Fixed: a news answer replaced by "could not be confirmed"

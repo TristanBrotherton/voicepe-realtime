@@ -1228,17 +1228,18 @@ class TurnRouter:
             return RouteResult(NOTHING, "", "backend", [], timings)
         if not runs and (upper == CHAT or not text):
             return RouteResult(CHAT_KIND, "", "backend", [], timings)
+        house = is_house_request(user_text, heard_info)
         if not runs:
             # A clarifying question, or a remark from the conversation so far.
-            # With no tool behind it, it may not claim that anything happened.
-            # A read-only question answered from what the backend already
-            # knows ("The front door is locked.") is a remark, not a claim;
-            # for anything else an asserted outcome is not confirmed.
-            if claims_success(text) and (is_action_shaped(user_text) or claims_own_action(text)
-                                         or claims_action_for_question(text)):
+            # With no tool behind it nothing happened, so it may not say that
+            # anything did: an outcome asserted for a house request, or the
+            # assistant saying it did something itself. A question answered
+            # from what the backend already knows ("The front door is
+            # locked.") is a remark and is spoken.
+            if (house and claims_success(text)) or (
+                    claims_own_action(text) and (claims_success(text) or is_action_shaped(user_text))):
                 logger.warning("⛔ router: backend claimed an outcome with no tool this turn; not spoken")
-                return RouteResult(FAILED, "That could not be confirmed, so it may not have been done.",
-                                   "backend", [], timings)
+                return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", [], timings)
             return RouteResult(REPLY, text, "backend", [], timings)
         if any(r.pending_confirmation for r in runs):
             return RouteResult(CONFIRM, text, "backend", runs, timings)
@@ -1260,18 +1261,18 @@ class TurnRouter:
         if actions and not any(r.ok for r in actions):
             # Every action failed; a successful read does not make it done.
             return RouteResult(FAILED, text, "backend", runs, timings)
-        if not any(r.ok and _is_action_tool(r.name) for r in runs) and not _is_information_lookup(
-                user_text, runs) and (
-                (claims_action(text) or (_HOUSEHOLD_VERB.search(user_text or "") and claims_success(text)))
-                if is_action_shaped(user_text) else claims_action_for_question(text)):
-            # haintent review (v35 merge): for a request with a household verb
-            # ("Did you turn off the lights?") any asserted outcome counts,
-            # not only "I ..." (a read cannot verify "They're turned off.").
-            # Only reads succeeded, yet the text says something was done.
-            logger.warning("⛔ router: backend claimed an outcome with no tool this turn "
-                           "(only read tools succeeded); not spoken as verified")
-            return RouteResult(FAILED, "That could not be confirmed, so it may not have been done.",
-                               "backend", runs, timings)
+        if house and not any(r.ok and _is_action_tool(r.name) for r in runs):
+            # A request to change the house where nothing that changes it ran:
+            # whatever the reply says, it was not done. Decided by what ran,
+            # never by the reply's wording (0.20.10: a news answer read as a
+            # claimed outcome; "The kitchen lights are off." after only a read
+            # was spoken as verified).
+            if text.strip().endswith("?"):
+                # A read, then a question back ("Which lamp, the desk or the
+                # floor lamp?"): asked as a question; nothing has been done.
+                return RouteResult(REPLY, text, "backend", runs, timings)
+            logger.warning("⛔ router: a house request ran no action (only reads); not spoken as done")
+            return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", runs, timings)
         actionish = any(_is_action_tool(r.name) for r in runs)
         return RouteResult(ACTION if actionish else LOOKUP, text, "backend", runs, timings)
 
@@ -1380,8 +1381,9 @@ _ACTION_CLAIM = re.compile(
 
 
 def claims_action(text: str) -> bool:
-    """Does a reply backed only by reads say the assistant did something?
-    A state answer ("The door is locked.") is not such a claim."""
+    """Does held speech say the assistant did something? (The fast-chat veto
+    and the experiment-override grammar check.) A state answer ("The door is
+    locked.") is not such a claim."""
     return bool(_ACTION_CLAIM.search(text or ""))
 
 
@@ -1393,20 +1395,18 @@ _OWN_ACTION_CLAIM = re.compile(
     re.I)
 
 
+# A reply opened by a bare past participle ("Turned the lights
+# off.", "Added milk.") is the assistant reporting its own action. "Set" and
+# "checked" are left out: "Set to 22 degrees." answers a question.
+_BARE_OWN_ACTION = re.compile(
+    r"^\W*(?:turned|switched|added|removed|locked|unlocked|opened|closed|started|stopped|paused|resumed|"
+    r"cancel(?:l)?ed|muted|unmuted|sent|played|armed|disarmed)\b", re.I)
+
+
 def claims_own_action(text: str) -> bool:
     """Does a reply say the assistant itself did (or will do) something?"""
-    return bool(_OWN_ACTION_CLAIM.search((text or "").replace("’", "'")))
-
-
-# "is now"/"are now" before a reading ("It is now 21 degrees") describes
-# state. Before anything else ("The lights are now off") it stays a claim.
-_NOW_READING = re.compile(r"\b(?:is|are)\s+now\s+(?=(?:\d|about\b|around\b|at\b|reading\b|showing\b))", re.I)
-
-
-def claims_action_for_question(text: str) -> bool:
-    """claims_action for a reply backed only by reads to a pure state
-    question: identical, except that "is now <a reading>" is not a claim."""
-    return claims_action(_NOW_READING.sub(" ", text or ""))
+    text = (text or "").replace("’", "'")
+    return bool(_OWN_ACTION_CLAIM.search(text) or _BARE_OWN_ACTION.search(text))
 
 
 # A question about state. "did/have/has" are not leads: "Did you turn off
@@ -1423,11 +1423,20 @@ _REQUEST_FORM = re.compile(
 # service's _SILENT_TOOL_COMMAND list and more). Inflected forms count for
 # the verbs whose participles are not ordinary state words; "locked",
 # "closed", "opened" stay state words so "Is the door locked?" is a question.
+# Verbs that are as often part of a question or a lookup ("Can you remind me
+# what's on the list?", "make me a summary", "put together", "do you
+# remember what ...") count only in the forms that ask for a change: a
+# reminder at a time, a note to keep, a list add, a device made warmer.
 _HOUSEHOLD_VERB = re.compile(
     r"\b(?:(?:turn|switch|add|remove|delete|complete|start|stop|cancel|play|pause|resume|mute|unmute|"
-    r"dim|brighten|vacuum|remember|forget|make|bump|cool|heat|send|kill|remind|raise|lower|increase|"
-    r"decrease|skip|shut|activate|deactivate|arm|disarm|clean|put|warm\s+up)"
-    r"(?:s|es|ed|d|ing|ped|ping|ned|ning)?|set|setting|check\s+off|checked\s+off|lock|unlock|open|close)\b",
+    r"dim|brighten|vacuum|forget|bump|cool|heat|send|kill|raise|lower|increase|"
+    r"decrease|skip|shut|activate|deactivate|arm|disarm|clean|warm\s+up)"
+    r"(?:s|es|ed|d|ing|ped|ping|ned|ning)?|set|setting|check\s+off|checked\s+off|lock|unlock|open|close"
+    r"|remind(?:s|ing)?\s+(?:me|us|him|her|them)\s+(?:to|in|at|on|tomorrow|tonight|that)"
+    r"|(?<!you\s)remember\s+(?:that|this|to)"
+    r"|make\s+(?:\w+\s+){1,4}?(?:warmer|cooler|colder|hotter|brighter|dimmer|darker|louder|quieter|softer)"
+    r"|put\s+on|put\s+(?:it|them|this|that)\s+(?:on|off|back)"
+    r"|put\s+(?:\w+\s+){1,4}?(?:on|onto|in|into)\s+(?:the|my|our)\s+(?:\w+\s+){0,2}?list)\b",
     re.I)
 
 
@@ -1489,24 +1498,40 @@ def is_action_shaped(text: str) -> bool:
     return not is_read_only_question(text)
 
 
+# Home Assistant intents that only read (or do nothing): HassGetState,
+# HassGetWeather, HassClimateGetTemperature, HassTimerStatus, HassNevermind ...
+_READ_INTENT = re.compile(r"Get|Status|LastItems|Nevermind|Respond", re.I)
+
+# What a failed house request tells the voice (FAILED commentary adds "do
+# not say it was done").
+NOTHING_CHANGED_TEXT = "Nothing was changed: no action ran for this request."
+
+
+def is_house_request(user_text: str, heard_info: Optional[Dict[str, Any]] = None) -> bool:
+    """Does the user ask for the house to change? Home Assistant's own
+    parser heard a command (any intent that is not a read), or a household
+    verb is in a request, or in a clause that is not a question ("When does
+    the match start?" and "Is the garage open?" are questions). Such a turn
+    is done only if an action tool succeeded; for anything else (questions,
+    searches, reads, "can you summarise ...") the answer is spoken as it is."""
+    if heard_info and not heard_info.get("question") and heard_info.get("intent") and not _READ_INTENT.search(
+            str(heard_info.get("intent"))):
+        return True
+    normalized = " ".join((user_text or "").replace("’", "'").split())
+    if not _HOUSEHOLD_VERB.search(normalized):
+        return False
+    if _REQUEST_FORM.search(normalized):
+        return True
+    # "Is the door locked and lock it": the second clause is the request.
+    clauses = [c.strip() for c in re.split(r"[.?!;,]+|\s+(?:and|then|but)\s+", normalized) if c.strip()]
+    return any(_HOUSEHOLD_VERB.search(c) and not _QUESTION_LEAD.match(c) for c in clauses)
+
+
 _READ_TOOLS = re.compile(r"(?:^|__)(?:Get|get_|list_|recall|web_search|GetLiveContext|GetDateTime)", re.I)
 
 
 def _is_action_tool(name: str) -> bool:
     return not _READ_TOOLS.search(name or "")
-
-
-# Tools that read the world or memory, not the house.
-_INFORMATION_TOOLS = re.compile(r"(?:^|__)(?:web_search|recall)", re.I)
-
-
-def _is_information_lookup(user_text: str, runs: List["ToolRun"]) -> bool:
-    """A request with no household verb answered only by information tools
-    ("Can you give me a summary of the Israeli elections?", Kitchen
-    2026-10-30). Its answer reports news, not the house: "is now leading"
-    or "has already" in it is not a claimed outcome."""
-    return bool(runs) and not _HOUSEHOLD_VERB.search(user_text or "") and all(
-        _INFORMATION_TOOLS.search(r.name or "") for r in runs)
 
 
 # Tools a read-only question may not run: Home Assistant intents that change
