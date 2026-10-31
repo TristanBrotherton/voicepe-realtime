@@ -1509,13 +1509,18 @@ NOTHING_CHANGED_TEXT = "Nothing was changed: no action ran for this request."
 
 def is_house_request(user_text: str, heard_info: Optional[Dict[str, Any]] = None) -> bool:
     """Does the user ask for the house to change? Home Assistant's own
-    parser heard a command (any intent that is not a read), or a household
+    parser resolved a command (any intent that is not a read), or a household
     verb is in a request, or in a clause that is not a question ("When does
     the match start?" and "Is the garage open?" are questions). Such a turn
     is done only if an action tool succeeded; for anything else (questions,
     searches, reads, "can you summarise ...") the answer is spoken as it is."""
-    if heard_info and not heard_info.get("question") and heard_info.get("intent") and not _READ_INTENT.search(
-            str(heard_info.get("intent"))):
+    # Only a parse that resolved its slots counts: for an arbitrary sentence
+    # Home Assistant's parser returns a wildcard guess with every slot
+    # unmatched ("Can you give me a summary of the Israeli elections" heard
+    # as HassTurnOn, name "give me a summary", area "Israeli elections";
+    # Garage trial of 0.20.11).
+    if (heard_info and not heard_info.get("question") and heard_info.get("intent")
+            and not heard_info.get("unmatched") and not _READ_INTENT.search(str(heard_info.get("intent")))):
         return True
     normalized = " ".join((user_text or "").replace("’", "'").split())
     if not _HOUSEHOLD_VERB.search(normalized):

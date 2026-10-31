@@ -821,6 +821,25 @@ class DoneOnlyIfAnActionRan(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executed, ["homeassistant__GetLiveContext"])
         self.assertEqual(result.kind, FAILED)
 
+    async def test_a_wildcard_parse_is_not_a_command(self):
+        """Garage trial of 0.20.11: Home Assistant's parser heard the news
+        request as HassTurnOn with every slot unmatched, and the search
+        answer was replaced by "nothing was changed"."""
+        answer = "Polls close at ten; turnout is already above 60 percent."
+        heard = {"intent": "HassTurnOn", "slots": {"name": "give me a summary ", "area": "Israeli elections"},
+                 "targets": 0, "unmatched": ["area", "name"]}
+        result, _ = await self.route("Can you give me a summary of the Israeli elections, please",
+                                     response(call("web_search", {"query": "Israeli elections"}, "c1")),
+                                     response(message("Rephrased.")), heard=heard)
+        self.assertEqual(result.kind, LOOKUP)
+        self.assertEqual(result.text, answer)
+        heard = {"intent": "HassTurnOn", "slots": {"name": "remind me what's ", "area": "shopping list"},
+                 "targets": 0, "unmatched": ["area", "name"]}
+        result, _ = await self.route("Can you remind me what's on the shopping list?",
+                                     response(call("todo__get_items", {}, "c1")),
+                                     response(message("Milk and eggs are already on it.")), heard=heard)
+        self.assertEqual(result.kind, LOOKUP)
+
     async def test_a_parsed_read_intent_is_not_a_house_request(self):
         result, _ = await self.route(
             "weather outside.", response(call("homeassistant__GetLiveContext", {}, "c1")),
@@ -850,6 +869,7 @@ class DoneOnlyIfAnActionRan(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(is_house_request(text), text)
         self.assertTrue(is_house_request("Test lamp on", {"intent": "HassTurnOn"}))
         self.assertFalse(is_house_request("Test lamp on", {"intent": "HassTurnOn", "question": True}))
+        self.assertFalse(is_house_request("Test lamp on", {"intent": "HassTurnOn", "unmatched": ["name"]}))
         self.assertFalse(is_house_request("weather", {"intent": "HassGetWeather"}))
 
 
