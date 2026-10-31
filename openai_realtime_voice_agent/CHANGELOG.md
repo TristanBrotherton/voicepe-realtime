@@ -2,6 +2,17 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.20.12 (fork)
+
+### Fixed: a news answer replaced by "nothing was changed"
+
+- 0.20.11 treated any command Home Assistant's parser heard as a request
+  to change the house. For an arbitrary sentence the parser returns a
+  wildcard guess with every slot unmatched ("Can you give me a summary of
+  the elections, please" heard as "turn on", name "give me a summary"), so
+  the search answer was replaced (seen on a test device). Only a parse that
+  resolved its slots counts now.
+
 ## 0.20.11 (fork)
 
 ### Changed: "done" is decided by what ran, not by how the reply is worded
