@@ -4541,13 +4541,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._send_commentary(text, did)
 
     async def _send_commentary(self, text: str, delegation_id: Optional[str]) -> None:
+        # Stamped first: its acknowledgement is judged against this.
+        self._commentary_sent_mono = time.monotonic()
         for chunk in chunk_text(text):
             payload = context_append("commentary", chunk, delegation_id)
             self._pending_appends[payload["event_id"]] = time.monotonic()
             while len(self._pending_appends) > IN_FLIGHT_LIMIT:
                 self._pending_appends.pop(next(iter(self._pending_appends)))
             await self._send_or_queue(payload)
-        self._commentary_sent_mono = time.monotonic()
         logger.info(f"🗣️ router commentary sent ({len(text)} chars"
                     + (f", delegation {delegation_id}" if delegation_id else ", session-wide") + ")")
 
