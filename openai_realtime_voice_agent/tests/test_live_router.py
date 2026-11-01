@@ -511,6 +511,25 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.1)
                 self.assertEqual(h.heard(), answer)
 
+    async def test_a_result_answered_with_only_an_acknowledgement_is_asked_for_once(self):
+        """Seen on a device: the action ran, the voice said "One moment." and
+        stopped, and the session closed with the result unsaid."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        with patch.object(live_service_module, "ANSWER_OWED_NUDGE_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                h.voice_says("One moment.", ms=100)
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before + 1, "asked once")
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before + 1, "only once")
+
     async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
         """The bound: an answer the voice runs into with no gap at all must not
         be lost for good."""

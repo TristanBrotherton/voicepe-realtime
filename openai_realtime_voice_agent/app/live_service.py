@@ -375,6 +375,10 @@ GUESS_TAIL_MIN_ANSWER_S = 0.6
 # under way (no utterance end, no idle) until the answer is spoken, at most
 # this long after the acknowledgement.
 ANSWER_OWED_MAX_S = 10.0
+# Said nothing, or only an acknowledgement, this long after a verified result's
+# acknowledgement: asked once to say it (the action ran and the user heard only
+# "One moment."). Past the 3.4 s the answer has been seen to take.
+ANSWER_OWED_NUDGE_S = 4.5
 # Spoken when the router finds no request after the user already heard an
 # acknowledgement (they did ask something; it was not caught).
 # Tools that take long by nature (an agent, a web search); only these make a
@@ -1050,6 +1054,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_held: list = []
         self._guess_tail_open = False
         self._last_commentary: Optional[tuple] = None
+        self._answer_nudged = False
         # The start of the answer, in before the acknowledgement (ANSWER_EARLIEST_S).
         self._gate_answer_head: List = []
         # What the voice has said (heard, not dropped) since the verified
@@ -1621,6 +1626,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         (promoted) or already gone in is left alone."""
         self._guess_tail_held = []
         self._guess_tail_open = False
+        self._answer_nudged = True
         for task in [t for t in self._tasks.values() if t.session_sent_mono is not None]:
             # A task's result going into the session the stop is closing,
             # none of it played yet: not handed back for the next wake.
@@ -3846,6 +3852,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_since = None
         self._guess_tail_held = []
         self._guess_tail_open = False
+        self._answer_nudged = False
         self._gate_answer_head = []
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
@@ -4586,6 +4593,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._gate == "post":
                 self._result_acked = True
                 self._result_acked_mono = time.monotonic()
+                if not self._answer_nudged:
+                    self._spawn(self._answer_owed_watch(self._result_acked_mono), "live-answer-owed")
             # Non-acknowledgement speech still streaming when the result went
             # in ends its claim on the speaker at its first gap (GUESS_TAIL_*).
             if self._gate_drop_until_ack and self._guess_streaming():
@@ -4642,6 +4651,21 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_dropped_last = now
         self._gate_dropped_streak += 1
 
+    async def _answer_owed_watch(self, acked: float) -> None:
+        await asyncio.sleep(ANSWER_OWED_NUDGE_S)
+        if (self._result_acked_mono == acked and not self._answer_nudged and not self._guess_tail_open
+                and self.answer_owed):
+            await self._ask_for_the_result("the voice has only acknowledged the result")
+
+    async def _ask_for_the_result(self, why: str) -> None:
+        """Once per result: the commentary again, to be said now."""
+        if self._answer_nudged or self._last_commentary is None or "Say nothing" in self._last_commentary[0]:
+            return
+        self._answer_nudged = True
+        logger.info(f"🔁 {why}: asking it to say the result")
+        text, delegation_id = self._last_commentary
+        await self._send_commentary("You have not said this out loud yet. Say it now. " + text, delegation_id)
+
     def _guess_tail_continues(self, chunk) -> bool:
         """Is this chunk still the tail of the dropped guess?"""
         now = time.monotonic()
@@ -4689,10 +4713,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._enqueue_audio(chunk)
             # The answer is no longer owed; these words were not counted while dropped.
             self._post_text = (self._post_text + " (ran on from the guess)")[-2000:]
-        elif self._last_commentary is not None:
-            logger.info("🔁 the voice's guess was all it said, and it was dropped: asking it to say the result")
-            text, delegation_id = self._last_commentary
-            await self._send_commentary("You have not said this out loud yet. Say it now. " + text, delegation_id)
+        else:
+            await self._ask_for_the_result("the voice's guess was all it said, and it was dropped")
 
     def _gate_push(self, chunk, end_ms: Optional[float] = None) -> None:
         if self._gate == "idle":
