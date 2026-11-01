@@ -93,8 +93,8 @@ def _env_seconds(name: str, default: float, low: float, high: float) -> float:
         return default
 
 
-# A reply with no transcript 3.5 s after the speech began: the transcript is not coming.
-REPLY_WITHOUT_TRANSCRIPT_WAIT_S = 3.5
+# A reply with no transcript this long after the speech began: it is not coming (it has come 6.1 s after).
+REPLY_WITHOUT_TRANSCRIPT_WAIT_S = 7.0
 
 
 class SpeechOnsetDetector:
