@@ -4728,6 +4728,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._gate != "pre":
             self._gate_lag.clear()
             self._gate_held.clear()
+            self._gate_answer_head = []
         self._gate = "pre"
 
     def _gate_lag_is_ack(self, arrived: float, end_ms: Optional[float]) -> bool:

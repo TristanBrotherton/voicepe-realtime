@@ -44,10 +44,10 @@ JITTER_EVERY = 10
 # The transport writes whole 40 ms chunks (1,920 bytes at 24 kHz mono PCM16) off
 # a 1.0x monotonic pacer. A gap materially longer than one chunk means it had
 # nothing queued when the pacer came round, which is exactly what reaches the
-# speaker as a dry I2S chain. 150 ms leaves room for event-loop scheduling on a
-# loaded machine (a busy host alone has stretched one write to 118 ms) while
-# still being below the 160 ms source jitter the lead is there to absorb.
-MAX_WRITE_GAP_MS = 150
+# speaker as a dry I2S chain. 90 ms leaves room for event-loop scheduling on a
+# loaded CI box while still being far below the 160 ms source jitter the lead is
+# there to absorb.
+MAX_WRITE_GAP_MS = 90
 
 # 3 s of idle silence, then speech, then idle again: the shape that precedes
 # every real reply, because the endpoint streams silence continuously and there

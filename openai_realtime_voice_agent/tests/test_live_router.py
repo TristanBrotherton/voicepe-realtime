@@ -500,6 +500,29 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.1)
                 self.assertEqual(h.heard(), answer, "the answer, whole and in order")
 
+    async def test_the_start_of_an_answer_is_not_played_into_new_words(self):
+        """The user speaks again before the late acknowledgement: what was
+        held for the old result never plays into the new utterance."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("Done.", ms=200)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(live_service_module.ANSWER_EARLIEST_S + 0.05)
+                await self._stream(h, fx.tone(200, freq=440.0))
+                self.assertTrue(h.service._gate_answer_head)
+                h.service._gate_continue_utterance()
+                self.assertFalse(h.service._gate_answer_head)
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), b"")
+
     async def test_an_acknowledgement_after_the_result_keeps_the_reply_open(self):
         """On a test device, after the result went in the voice
         said "One moment, <name>.", paused 3.4 s, then answered. The pause
