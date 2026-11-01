@@ -341,6 +341,27 @@ DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Sp
 # while it lasts the device shows `thinking` and the session stays open.
 GUESS_QUIET_S = 0.6
 GUESS_WAIT_MAX_S = 20.0
+# The answer's audio starts at least ANSWER_EARLIEST_S after the commentary is
+# sent (402 ms at the least over 178 results on test devices, 770 ms typically).
+# The commentary's acknowledgement is not tied to it (174 to 1006 ms), so with a
+# guess dropped until the acknowledgement, a late one cost the answer its first
+# words. Audio that starts this long after the commentary, with the guess quiet
+# when it went in, is the answer: it is held until the acknowledgement and played.
+ANSWER_EARLIEST_S = 0.35
+GATE_ANSWER_HEAD_MAX_CHUNKS = 40   # 4 s
+# A guess can still be streaming when the commentary's acknowledgement lands
+# (it outlasted the wait, or the voice ran on from an acknowledgement): its tail
+# must not play as the answer. It is recognised by its audio alone, not its
+# transcript turn (cutting at transcript turns lost real answers): at least
+# GUESS_TAIL_MIN_CHUNKS of audible audio that began before the answer could have
+# and was still coming after the commentary went in, dropped right up to the
+# acknowledgement. It keeps being dropped until its first gap of GUESS_TAIL_GAP_S
+# (longer than the stream's own stalls, up to 380 ms), and the speech after that
+# is heard. Bounded by GUESS_TAIL_MAX_S from the acknowledgement: a voice that
+# never pauses is heard in the end, rather than an answer behind it being lost.
+GUESS_TAIL_MIN_CHUNKS = 2
+GUESS_TAIL_GAP_S = 0.45
+GUESS_TAIL_MAX_S = 6.0
 # After a verified result is acknowledged, speech that is only an
 # acknowledgement ("One moment, <name>.") does not answer it: the reply stays
 # under way (no utterance end, no idle) until the answer is spoken, at most
@@ -1005,6 +1026,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # guess's rather than the answer.
         self._guess_outlasted_wait = False
         self._post_guess_dropped = False
+        # The stretch of audible audio dropped until the acknowledgement, and
+        # the tail of it past the acknowledgement (GUESS_TAIL_*).
+        self._gate_dropped_since: Optional[float] = None
+        self._gate_dropped_last: Optional[float] = None
+        self._gate_dropped_streak = 0
+        self._guess_tail_since: Optional[float] = None
+        # The start of the answer, in before the acknowledgement (ANSWER_EARLIEST_S).
+        self._gate_answer_head: List = []
         # What the voice has said (heard, not dropped) since the verified
         # result went in. While it is only an acknowledgement ("One moment,
         # <name>."), the answer is still owed (answer_owed).
@@ -2862,7 +2891,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     self._gate_drop_until_ack = True
                     self._post_guess_dropped = True
                     self._need_segment_start = True
-            if self._gate_drop_until_ack and (self._gate == "open" or self._post_guess_dropped):
+            if (self._guess_tail_since is not None
+                    and time.monotonic() - (self._gate_dropped_last or 0.0) >= GUESS_TAIL_GAP_S):
+                # The guess's audio has paused: these words are what follows it.
+                self._guess_tail_since = None
+                self._post_guess_dropped = False
+            if ((self._gate_drop_until_ack or self._guess_tail_since is not None)
+                    and (self._gate == "open" or self._post_guess_dropped)):
                 pass  # the words of a dropped guess never count as the answer
             elif self._gate == "post":
                 # The answer's words: often in before the commentary's
@@ -3763,6 +3798,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_text = ""
         self._gate_blocked = False
         self._gate_drop_until_ack = False
+        self._gate_dropped_since = None
+        self._gate_dropped_last = None
+        self._gate_dropped_streak = 0
+        self._guess_tail_since = None
+        self._gate_answer_head = []
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
         self._gate_ack_until = None
@@ -4491,13 +4531,76 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._gate == "post":
                 self._result_acked = True
                 self._result_acked_mono = time.monotonic()
-            # Whatever non-acknowledgement speech was still streaming when the
-            # result went in has ended its claim on the speaker.
+            # Non-acknowledgement speech still streaming when the result went
+            # in ends its claim on the speaker at its first gap (GUESS_TAIL_*).
+            if self._gate_drop_until_ack and self._guess_streaming():
+                self._guess_tail_since = time.monotonic()
+                self._post_guess_dropped = True
+                logger.info("⏹️ a dropped guess is still streaming at the acknowledgement: "
+                            "its tail stays dropped until its first gap")
+                self._gate_answer_head = []
             self._gate_drop_until_ack = False
+            head, self._gate_answer_head = self._gate_answer_head, []
+            if head:
+                logger.info(f"▶️ the answer's first {len(head)} chunks came before the commentary's "
+                            "acknowledgement: played, not dropped")
+                self._gate_dropped -= len(head)
+                for chunk in head:
+                    self._enqueue_audio(chunk)
         else:
             logger.debug(f"live: ack {kind}")
 
     # -- the pre-result gate -------------------------------------------------
+
+    def _guess_streaming(self) -> bool:
+        """Audible audio has been dropped right up to now, and it began too
+        early to be the answer."""
+        since, last = self._gate_dropped_since, self._gate_dropped_last
+        if (since is None or last is None or self._gate_dropped_streak < GUESS_TAIL_MIN_CHUNKS
+                or time.monotonic() - last >= GUESS_TAIL_GAP_S):
+            return False
+        sent = self._commentary_sent_mono
+        return sent is None or (last >= sent and since < sent + ANSWER_EARLIEST_S)
+
+    def _hold_answer_head(self, chunk) -> None:
+        """Audio dropped until the acknowledgement that can only be the answer."""
+        sent = self._commentary_sent_mono
+        op = self._op
+        if (self._gate != "post" or self._post_guess_dropped or sent is None or op is None
+                or op.result_sent_mono is None or self._guess_streaming()
+                or time.monotonic() - sent < ANSWER_EARLIEST_S
+                or len(self._gate_answer_head) >= GATE_ANSWER_HEAD_MAX_CHUNKS):
+            return
+        if self._gate_answer_head or chunk.audible:
+            self._gate_answer_head.append(chunk)
+
+    def _note_dropped_audio(self, chunk) -> None:
+        if not chunk.audible:
+            return
+        now = time.monotonic()
+        if self._gate_dropped_last is None or now - self._gate_dropped_last >= GUESS_TAIL_GAP_S:
+            self._gate_dropped_since = now
+            self._gate_dropped_streak = 0
+        self._gate_dropped_last = now
+        self._gate_dropped_streak += 1
+
+    def _guess_tail_continues(self, chunk) -> bool:
+        """Is this chunk still the tail of the dropped guess?"""
+        now = time.monotonic()
+        last = self._gate_dropped_last or 0.0
+        if now - (self._guess_tail_since or now) >= GUESS_TAIL_MAX_S:
+            why = f"it ran past {GUESS_TAIL_MAX_S:.0f} s"
+        elif not chunk.audible:
+            return True   # a pause inside the tail: the clock keeps running
+        elif now - last >= GUESS_TAIL_GAP_S:
+            why = f"it paused for {int((now - last) * 1000)} ms"
+        else:
+            self._gate_dropped_last = now
+            return True
+        logger.info(f"▶️ the dropped guess's tail ended: {why}; the voice is heard from here")
+        self._guess_tail_since = None
+        self._post_guess_dropped = False
+        return False
 
     def _gate_push(self, chunk, end_ms: Optional[float] = None) -> None:
         if self._gate == "idle":
@@ -4532,6 +4635,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._gate_release_task = self._spawn(self._gate_release(), "live-gate-release")
             return
         if self._gate in ("post", "open") and self._gate_drop_until_ack:
+            self._gate_dropped += 1
+            self._need_segment_start = True
+            self._note_dropped_audio(chunk)
+            self._hold_answer_head(chunk)
+            return
+        if (self._gate in ("post", "open") and self._guess_tail_since is not None
+                and self._guess_tail_continues(chunk)):
             self._gate_dropped += 1
             self._need_segment_start = True
             return

@@ -415,6 +415,91 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.2)
                 self.assertEqual(h.heard(), reply, "only the answer, whole; nothing of the guess")
 
+    async def _stream(self, h, pcm, words=None, period=0.1):
+        """Audio at about real time, 100 ms a delta, as the real endpoint does."""
+        for i in range(0, len(pcm), 4800):
+            if words:
+                h.socket.push({"type": "session.output_transcript.delta", "delta": words})
+            h.socket.push({"type": "session.output_audio.delta", "delta": b64(pcm[i:i + 4800])})
+            await asyncio.sleep(period)
+
+    async def test_the_tail_of_a_guess_past_the_acknowledgement_is_never_heard(self):
+        """Seen on a device: "I've added a fence post stake to the..." was
+        dropped until the commentary's acknowledgement, and the rest of it
+        ("...list, <name>.") played as the answer. A guess still streaming when
+        the acknowledgement lands stays dropped until its first gap, and the
+        answer behind it is heard whole."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(
+                    self._stream(h, fx.tone(1500, freq=330.0), words=" and on"))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()      # it outlasted the wait
+                await asyncio.sleep(0.3)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                self.assertEqual(h.heard(), b"", "nothing of the guess, not even past the acknowledgement")
+                await asyncio.sleep(0.5)        # the gap
+                answer = fx.tone(300)
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "It's on."})
+                h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer, "the answer, whole")
+                self.assertEqual(h.service._post_text, "It's on.")
+
+    async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
+        """The bound: an answer the voice runs into with no gap at all must not
+        be lost for good."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2), \
+                patch.object(live_service_module, "GUESS_TAIL_MAX_S", 0.5):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(self._stream(h, fx.tone(2000, freq=330.0)))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(0.2)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                self.assertGreater(len(h.heard()), 0, "heard once the bound passed")
+                self.assertLess(len(h.heard()), len(fx.tone(2000)), "and not before it")
+
+    async def test_the_answers_start_before_a_late_acknowledgement_is_heard(self):
+        """The answer's audio comes 0.4 s or more after the commentary, and its
+        acknowledgement can come a second after it. With a guess dropped until
+        the acknowledgement, the answer lost its first words."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                              response(message("The Atrium Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Atrium Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("Done.", ms=200)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(live_service_module.ANSWER_EARLIEST_S + 0.05)
+                answer = fx.tone(600, freq=440.0)
+                await self._stream(h, answer[:9600])    # 200 ms before the acknowledgement
+                self.assertEqual(h.heard(), b"", "nothing plays before the acknowledgement")
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.02)
+                await self._stream(h, answer[9600:])
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer, "the answer, whole and in order")
+
     async def test_an_acknowledgement_after_the_result_keeps_the_reply_open(self):
         """On a test device, after the result went in the voice
         said "One moment, <name>.", paused 3.4 s, then answered. The pause
