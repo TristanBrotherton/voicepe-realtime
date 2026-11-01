@@ -793,7 +793,7 @@ def local_state_answer(match: Optional[LocalMatch]) -> str:
             or not _named(match.slots.get("state"))):
         return ""
     name, state = str(match.slots["name"]).strip(), str(match.slots["state"]).strip()
-    article = "" if name.lower().startswith(("the ", "my ", "our ")) else "The "
+    article = "" if name.lower().startswith(("the ", "my ", "our ")) else "the "
     text = f"{article}{name} is {'' if match.state_matches else 'not '}{state}."
     return text[0].upper() + text[1:]
 

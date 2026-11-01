@@ -657,7 +657,7 @@ class SelfCorrectionInAListRequest(unittest.IsolatedAsyncioTestCase):
         for item in ("oat bites to the shopping list Sorry add it", "milk to the test list actually add it",
                      "milk sorry eggs", "milk I mean eggs", "eggs no wait"):
             self.assertTrue(is_garbled_item(item), item)
-        for item in ("milk", "oat bites", "mac and cheese", "Sorrel", "waiter's friend", "bread", ""):
+        for item in ("milk", "oat bites", "mac and cheese", "sorrel", "waiter's friend", "bread", ""):
             self.assertFalse(is_garbled_item(item), item)
 
     async def test_it_does_not_run_locally_and_the_backend_carries_the_correction(self):
