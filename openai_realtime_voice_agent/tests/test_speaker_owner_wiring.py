@@ -201,31 +201,95 @@ class TestDeviceMessages(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(got[1][1]["wait_ms"], 210)
 
 
+class TestStopReason(unittest.IsolatedAsyncioTestCase):
+    """#35: only the stop word marks the request. The same interrupt also means
+    a barge-in wake, the no-speech watchdog, mute and the button, and firmware
+    without reasons sends none: all of those behave as before."""
+
+    async def _interrupt(self, message):
+        keep = {}
+        calls = []
+        with patch.object(OpenAILiveLLMService, "note_device_stop",
+                          lambda service: calls.append(service)):
+            await run_fixed_scenario(True, keep=keep, interrupt=message)
+        return calls
+
+    async def test_the_stop_word_marks_the_request(self):
+        self.assertEqual(len(await self._interrupt({"type": "interrupt", "reason": "stop", "seq": 1})), 1)
+
+    async def test_no_other_reason_does(self):
+        for reason in ("wake", "button", "mute", "no_speech", "residual"):
+            calls = await self._interrupt({"type": "interrupt", "reason": reason, "seq": 1})
+            self.assertEqual(calls, [], reason)
+
+    async def test_firmware_without_a_reason_behaves_as_before(self):
+        self.assertEqual(await self._interrupt({"type": "interrupt"}), [])
+
+
 class TestOption(unittest.TestCase):
-    def test_the_option_parses_and_defaults_off(self):
+    def test_the_cold_start_lead_is_a_per_device_option_and_stays_200_by_default(self):
+        """The 200 and 400 ms comparison needs no rebuild and no redeploy."""
         directory = DeviceDirectory.from_json(json.dumps([
-            {"name": "a", "speaker_owner": True, "chain_prime_ms": 400, "utt_cushion_ms": 100},
-            {"name": "b", "speaker_owner": "false", "chain_prime_ms": 9000},
+            {"name": "a", "chain_prime_ms": 400, "utt_cushion_ms": 100},
+            {"name": "b", "chain_prime_ms": 9000},
             {"name": "c"},
         ]))
         a, b, c = directory.get("a"), directory.get("b"), directory.get("c")
-        self.assertEqual((a.speaker_owner, a.chain_prime_ms, a.utt_cushion_ms), (True, 400, 100))
-        self.assertEqual((b.speaker_owner, b.chain_prime_ms), (False, None))
-        self.assertIsNone(c.speaker_owner)
+        self.assertEqual((a.chain_prime_ms, a.utt_cushion_ms), (400, 100))
+        self.assertIsNone(b.chain_prime_ms, "out of range is ignored")
+        self.assertIsNone(c.chain_prime_ms)
         handler = WebSocketHandler()
         handler.device_directory = directory
-        self.assertTrue(handler.speaker_owner_on("a"))
-        self.assertFalse(handler.speaker_owner_on("b"))
-        self.assertFalse(handler.speaker_owner_on("c"))
-        self.assertFalse(handler.speaker_owner_on("unknown"))
+        handler.speaker_owner_enabled = True
         hello = handler.hello_payload("a")
         self.assertEqual((hello["chain_prime_ms"], hello["utt_cushion_ms"]), (400, 100))
-        self.assertNotIn("chain_prime_ms", handler.hello_payload("c"))
+        for device in ("b", "c", "unknown"):
+            hello = handler.hello_payload(device)
+            self.assertEqual((hello["chain_prime_ms"], hello["utt_cushion_ms"]), (200, 0), device)
+
+    def test_the_realtime_runtime_sends_no_lead(self):
+        handler = WebSocketHandler()
+        self.assertNotIn("chain_prime_ms", handler.hello_payload("a"))
+
+    def test_an_old_speaker_owner_option_is_ignored(self):
+        """Options saved while it was a switch still parse."""
+        directory = DeviceDirectory.from_json(json.dumps([
+            {"name": "a", "speaker_owner": False, "chain_prime_ms": 300}]))
+        self.assertEqual(directory.get("a").chain_prime_ms, 300)
+        self.assertFalse(hasattr(directory.get("a"), "speaker_owner"))
+
+    def test_every_live_connection_gets_an_owner(self):
+        from app.device_registry import DeviceConnection
+
+        class Client:
+            async def send(self, _data):
+                pass
+
+        class Transport:
+            client = Client()
+        handler = WebSocketHandler()
+        connection = DeviceConnection(device_id="a", websocket=None)
+        connection.transport = Transport()
+        self.assertIsNone(handler._build_speaker_owner(connection), "Realtime: no owner")
+        handler.speaker_owner_enabled = True
+        owner = handler._build_speaker_owner(connection)
+        self.assertIsInstance(owner, so.SpeakerOwner)
+        self.assertEqual(owner.framing, so.LEGACY, "legacy framing until the device offers utt1")
+        self.assertEqual(owner.prime_ms, 200)
+
+    def test_a_device_on_older_firmware_gets_legacy_framing(self):
+        async def _noop(_data):
+            pass
+        owner = so.SpeakerOwner(_noop, _noop, device_id="a")
+        self.assertEqual(owner.set_framing([]), so.LEGACY)
+        self.assertEqual(owner.set_framing(["ireason1"]), so.LEGACY)
+        self.assertEqual(owner.set_framing(["ireason1", "utt1"]), so.UTT)
 
 
 def _handler_with_owner(framing=so.UTT):
     handler = WebSocketHandler()
-    handler.device_directory = DeviceDirectory.from_json(ON)
+    handler.device_directory = DeviceDirectory.from_json("")
+    handler.speaker_owner_enabled = True
     sent = []
 
     async def send(data):

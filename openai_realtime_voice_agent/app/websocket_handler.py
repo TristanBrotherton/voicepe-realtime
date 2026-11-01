@@ -1112,6 +1112,14 @@ class WebSocketHandler:
 
         async def _on_device_interrupt(info=None):
             try:
+                if (info or {}).get("reason") == "stop":
+                    # Only the stop word: the same interrupt also means a
+                    # barge-in wake, the no-speech watchdog, mute or the
+                    # button, and firmware without reasons sends none. Those
+                    # never cancel what the user asked for.
+                    note_stop = getattr(controls, "note_device_stop", None)
+                    if note_stop is not None:
+                        note_stop()
                 await _handle_device_interrupt()
             finally:
                 # The speaker owner flushed when the interrupt arrived
