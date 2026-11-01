@@ -234,7 +234,6 @@ schema:
       wake_open_delay_ms: "int(0,5000)?"
       playback_prebuffer_ms: "int(0,2000)?"
       output_lead_buffer_ms: "int(0,2000)?"
-      speaker_owner: bool?
       chain_prime_ms: "int(0,600)?"
       utt_cushion_ms: "int(0,1000)?"
       live_max_usd_per_day: "float(0,1000)?"

@@ -14,7 +14,7 @@ import logging
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app import speaker_owner as so
 from app.device_config import DeviceDirectory
@@ -23,6 +23,7 @@ from app.live_session_gate import CLOSED, OPEN, LiveSessionGate, LiveSessionPoli
 from app.live_cost import LiveSpendLedger
 from app.raw_audio_serializer import (RawAudioSerializer, parse_interrupt, parse_start,
                                       parse_utt_ack)
+from app.live_service import OpenAILiveLLMService
 from app.websocket_handler import WebSocketHandler
 
 from tests.switch_off_scenario import run_fixed_scenario
@@ -37,8 +38,6 @@ BEFORE_HELLO = {"type": "hello", "proto": 2, "audio_out": "pcm", "follow_up_ms":
                 "follow_up_open_delay_ms": 700, "wake_open_delay_ms": 700,
                 "playback_prebuffer_ms": 0, "trigger_capture": 0}
 
-ON = json.dumps([{"name": "testdevice", "speaker_owner": True}])
-OFF = json.dumps([{"name": "testdevice", "speaker_owner": False}])
 
 _OWNER_LOG = logging.getLogger("app.speaker_owner")
 _OWNER_LOG_LEVEL = _OWNER_LOG.level
@@ -52,25 +51,22 @@ def tearDownModule():
     _OWNER_LOG.setLevel(_OWNER_LOG_LEVEL)
 
 
-class TestSwitchOffIsUnchanged(unittest.IsolatedAsyncioTestCase):
-    async def test_no_option_is_byte_identical_to_before(self):
-        digest, size, texts, hello = await run_fixed_scenario("")
-        self.assertEqual((digest, size, texts, hello),
-                         (BEFORE_SHA256, BEFORE_BYTES, BEFORE_TEXTS, BEFORE_HELLO))
+class TestWithoutTheOwnerIsUnchanged(unittest.IsolatedAsyncioTestCase):
+    """The transport's output path, as the Realtime runtime uses it."""
 
-    async def test_switch_off_is_byte_identical_to_before(self):
+    async def test_no_owner_is_byte_identical_to_before(self):
         keep = {}
-        digest, size, texts, hello = await run_fixed_scenario(OFF, keep=keep)
+        digest, size, texts, hello = await run_fixed_scenario(keep=keep)
         self.assertEqual((digest, size, texts, hello),
                          (BEFORE_SHA256, BEFORE_BYTES, BEFORE_TEXTS, BEFORE_HELLO))
         self.assertIsNone(keep["connection"].speaker_owner)
         self.assertIsNone(keep["service"].speaker_owner)
 
 
-class TestSwitchOn(unittest.IsolatedAsyncioTestCase):
+class TestWithTheOwner(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_framing_delivers_the_same_audio_without_the_hold(self):
         keep = {}
-        digest, size, texts, hello = await run_fixed_scenario(ON, keep=keep)
+        digest, size, texts, hello = await run_fixed_scenario(True, keep=keep)
         self.assertEqual((digest, size), (BEFORE_SHA256, BEFORE_BYTES),
                          "the same audio, byte for byte (replies get no lead-in)")
         self.assertEqual(hello, dict(BEFORE_HELLO, chain_prime_ms=200, utt_cushion_ms=0))
@@ -87,7 +83,7 @@ class TestSwitchOn(unittest.IsolatedAsyncioTestCase):
         keep = {}
         start = {"type": "start", "caps": ["ireason1", "utt1"], "fw": "1.4.0"}
         interrupt = {"type": "interrupt", "reason": "stop", "seq": 4}
-        digest, size, texts, hello = await run_fixed_scenario(ON, start=start,
+        digest, size, texts, hello = await run_fixed_scenario(True, start=start,
                                                               interrupt=interrupt, keep=keep)
         owner = keep["connection"].speaker_owner
         self.assertEqual(owner.framing, so.UTT)
@@ -109,7 +105,7 @@ class TestSwitchOn(unittest.IsolatedAsyncioTestCase):
     async def test_the_lead_buffer_and_pacer_are_bypassed(self):
         """The 600 ms hold is gone: the first audio reaches the device at once."""
         keep = {}
-        await run_fixed_scenario(ON, keep=keep)
+        await run_fixed_scenario(True, keep=keep)
         owner = keep["connection"].speaker_owner
         first = owner.history()[0]
         self.assertLess(first.first_sent_mono - first.submitted, 0.1)

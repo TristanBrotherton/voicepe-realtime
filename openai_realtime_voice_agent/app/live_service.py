@@ -1025,9 +1025,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_dropped = 0
         self._fallback_task: Optional[asyncio.Task] = None
         self._progress_task: Optional[asyncio.Task] = None
-        self._filler_playing = False
-        self._filler_done = asyncio.Event()
-        self._filler_done.set()
         self._speech_end_mono: Optional[float] = None
         self._last_user_delta_mono: Optional[float] = None
         self._turn_heard_mono: Optional[float] = None
@@ -1106,8 +1103,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.spoken_prompts = None
         self.turn_liveness = None
         self.turn_timeline = None
-        # The device's speaker owner (app/speaker_owner.py) when its
-        # `speaker_owner` option is on: model audio is then labelled with
+        # The device's speaker owner (app/speaker_owner.py), attached by the
+        # pipeline: model audio is labelled with
         # what it is (ack, reply, result, prompt) and the owner delivers it.
         # None keeps every old path exactly as it was.
         self.speaker_owner = None
@@ -2545,15 +2542,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 owned = None
                 if isinstance(chunk, _OwnedChunk):
                     owned, chunk = chunk, chunk.chunk
-                # With a speaker owner, queue order replaces this wait.
-                if self._filler_playing and owned is None:
-                    # Never on top of the fallback clip: the voice waits for it.
-                    waited_from = time.monotonic()
-                    try:
-                        await asyncio.wait_for(self._filler_done.wait(), 4.0)
-                    except asyncio.TimeoutError:
-                        pass
-                    self._add_wait("clip", (time.monotonic() - waited_from) * 1000)
                 if chunk.started_segment:
                     await self._speech_segment_started()
                     # A response-start observer can synchronously cancel the
@@ -2581,7 +2569,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     # output-audio-done event, so counting every forwarded frame
                     # would let an idle model hold the session open indefinitely.
                     self._note(self.on_audible_output)
-                self._note_audio_pushed(len(chunk.pcm))
                 frame = TTSAudioRawFrame(
                     audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
                 )
@@ -2658,7 +2645,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             pending["pcm_bytes"] += len(chunk.pcm)
             if chunk.audible:
                 self._note(self.on_audible_output)
-            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -2674,7 +2660,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         pending["pcm_bytes"] += len(event.chunk.pcm)
         if event.chunk.audible:
             self._note(self.on_audible_output)
-        self._note_audio_pushed(len(event.chunk.pcm))
         await self.push_frame(TTSAudioRawFrame(
             audio=event.chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
         ))
@@ -2757,7 +2742,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 return
             if chunk.audible:
                 self._note(self.on_audible_output)
-            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -4906,15 +4890,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # promotion line moves _last_audible_mono, so it counts as heard.
         if self._last_audible_mono == heard_before and not self._device_audio_active() \
                 and self.on_fallback_ack is not None:
-            self._filler_playing = True
-            self._filler_done.clear()
             try:
                 played = await self.on_fallback_ack(self.device_id)
             except Exception:
                 played = False
-            finally:
-                self._filler_playing = False
-                self._filler_done.set()
             if played:
                 self.router_stats["fallback_acks"] += 1
             logger.warning(f"🔈 fallback acknowledgement {'fired' if played else 'wanted'} "
@@ -5498,15 +5477,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 return
             if self._last_audible_mono == heard_before and not self._device_audio_active() \
                     and self.on_fallback_ack is not None:
-                self._filler_playing = True
-                self._filler_done.clear()
                 try:
                     played = await self.on_fallback_ack(self.device_id)
                 except Exception:
                     played = False
-                finally:
-                    self._filler_playing = False
-                    self._filler_done.set()
                 if played:
                     self.router_stats["fallback_acks"] += 1
                 logger.warning(f"🔈 fallback acknowledgement {'fired' if played else 'wanted'} "
@@ -5550,8 +5524,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         meta = self._turn_meta()
         if player is None:
             return
-        self._filler_playing = True
-        self._filler_done.clear()
         ms = self._since_speech_end_ms()
         if self._op is op and self._gate == "pre" and not self._gate_blocked:
             # The clip is the acknowledgement. The voice's own "One moment."
@@ -5572,9 +5544,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except Exception as e:
             played = False
             logger.debug(f"fallback acknowledgement failed: {e!r}")
-        finally:
-            self._filler_playing = False
-            self._filler_done.set()
         if played:
             self.router_stats["fallback_acks"] += 1
             if self._turn_heard_mono is None:
@@ -5652,23 +5621,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._input_audio_ms_sent += ms
         return sent
 
-    def _note_audio_pushed(self, nbytes: int) -> None:
-        """Track when the audio sent so far finishes playing on the device. The
-        transport paces it at real time, so playout ends one buffer's length
-        after the later of now and the previous end."""
-        now = time.monotonic()
-        start = max(now, getattr(self, "_playout_end_mono", 0.0))
-        self._playout_end_mono = start + nbytes / (2.0 * LIVE_SAMPLE_RATE)
-
     def playout_remaining_s(self) -> float:
         """Seconds until the reply audio sent so far has finished playing on
         the device, including its jitter cushion. The session gate starts the
         follow-up window after this, and the device's own report that it
         finished playing restarts the window exactly."""
-        end = getattr(self, "_playout_end_mono", 0.0)
-        if not end:
-            return 0.0
-        return max(0.0, end + DEVICE_PLAYOUT_TAIL_S - time.monotonic())
+        owner = self.speaker_owner
+        remaining = owner.playout_remaining_s() if owner is not None else 0.0
+        return remaining + DEVICE_PLAYOUT_TAIL_S if remaining > 0.0 else 0.0
 
     def _add_wait(self, name: str, ms: float, first_only: bool = False) -> None:
         """Account a wait in this turn's breakdown (TurnTimeline.add_wait)."""

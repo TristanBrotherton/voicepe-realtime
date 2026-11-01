@@ -66,7 +66,7 @@ Two places hold configuration:
 | Option | Default | Purpose / when to change |
 |---|---|---|
 | `playback_prebuffer_ms` | `150` | How much of the answer to buffer before playing — absorbs Wi-Fi jitter (the start-of-reply crackle) at the cost of that much reply latency. Raise to ~250 if you hear crackle; `0` = play immediately. |
-| `output_lead_buffer_ms` | `0` | Holds the start of each reply in the add-on and sends it as one burst, giving the device a playback cushion. Helps if replies start with a click or stutter; costs about this much latency on the first word. `0` = off; try `400`. The latency sensor shows the effect. |
+| `output_lead_buffer_ms` | `0` | Realtime runtime only. Holds the start of each reply in the add-on and sends it as one burst, giving the device a playback cushion. Helps if replies start with a click or stutter; costs about this much latency on the first word. `0` = off; try `400`. The latency sensor shows the effect. |
 | `noise_reduction` | `off` | Extra input filtering before OpenAI. Usually leave `off` — the device's XMOS chip already filters. Try `near_field` (talking close) or `far_field` (across the room) if it mishears in noise. |
 
 ## 🏠 Home Assistant & speakers
@@ -269,12 +269,9 @@ An undocumented voice falls back to the server default with a warning.
 and the `transcription_*` options have no GPT-Live equivalent and are ignored
 (logged at startup).
 
-`output_lead_buffer_ms` behaves differently under `live`. GPT-Live delivers
-reply audio at about real time in 100 ms frames, so the device never builds a
-playback cushion of its own the way it does on Realtime (which bursts a whole
-reply much faster than real time). Leaving the option unset therefore gives
-`live` a 600 ms lead instead of `0`; set it explicitly to override, including
-to `0` to turn it off deliberately.
+`output_lead_buffer_ms` is ignored under `live`: reply audio goes to the device
+as soon as it exists (see [the device protocol](device-protocol.md)), and the
+device's start is tuned per device with `chain_prime_ms` and `utt_cushion_ms`.
 
 Two `live`-only behaviours have no option and are always on, because both exist
 to stop a reply or an action failing outright:

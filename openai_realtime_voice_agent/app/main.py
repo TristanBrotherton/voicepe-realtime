@@ -49,7 +49,6 @@ from app.tool_guards import GuardedToolsMixin
 from app.live_cost import USD_PER_SESSION_MINUTE
 from app.voice_runtime import (
     LIVE,
-    LIVE_OUTPUT_LEAD_MS,
     LiveConfig,
     check_live_deployable,
     live_voice_for,
@@ -801,24 +800,13 @@ class Application:
         #
         # Realtime: 0 = disabled, opt-in until runtime-validated per install.
         #
-        # GPT-Live: REQUIRED, so the default flips to LIVE_OUTPUT_LEAD_MS when
-        # the option is left unset. Realtime bursts a reply far faster than
-        # real time, so the device accumulates seconds of playout lead by
-        # itself. GPT-Live streams at ~1.0x real time in 100 ms frames
-        # (measured 1.02-1.11x during speech, inter-frame spikes to ~160 ms, on
-        # top of network jitter), so the device starts every reply with no lead
-        # at all and its I2S chain starves from the first word. An explicit
-        # operator value always wins, including 0 to turn it off deliberately.
-        output_lead_buffer_ms = resolve_output_lead_ms(
-            os.environ.get("OUTPUT_LEAD_BUFFER_MS"), voice_runtime
-        )
-        if voice_runtime == LIVE and output_lead_buffer_ms <= 0:
-            logger.warning(
-                "⚠️ output_lead_buffer_ms is 0 with voice_runtime=live. GPT-Live "
-                "delivers reply audio at about real time, so the device has no "
-                f"playout cushion and replies are likely to break up. "
-                f"{LIVE_OUTPUT_LEAD_MS} ms is the tested default."
-            )
+        # GPT-Live: not used. The speaker owner sends reply audio as soon as
+        # it exists and the device's cold-start prime is the only start
+        # latency (docs/device-protocol.md).
+        output_lead_buffer_ms = resolve_output_lead_ms(os.environ.get("OUTPUT_LEAD_BUFFER_MS"))
+        if voice_runtime == LIVE and output_lead_buffer_ms > 0:
+            logger.info("ℹ️ output_lead_buffer_ms is ignored with voice_runtime=live: "
+                        "the speaker owner sets the pace (chain_prime_ms tunes the device's start)")
 
         # Get session reuse timeout and initialize session manager
         session_reuse_timeout = float(os.environ.get("SESSION_REUSE_TIMEOUT_SECONDS", "300"))
@@ -1143,6 +1131,7 @@ class Application:
         self.model = openai_model
         self.voice = openai_voice
         self.voice_runtime = voice_runtime
+        self.websocket_handler.speaker_owner_enabled = voice_runtime == LIVE
         self.live_config = live_config
         # Must come after voice_runtime/live_config are set: it reads both to
         # decide whether this process needs an on-demand session gate and a
@@ -1285,7 +1274,7 @@ class Application:
                 await asyncio.sleep(60)
 
     def _speaker_owner_for(self, device_id):
-        """The device's speaker owner, or None (option off, or no device)."""
+        """The device's speaker owner, or None (the Realtime runtime, or no device)."""
         from app.speaker_owner import SpeakerOwner
         resolve = getattr(getattr(self, "websocket_handler", None), "resolve_device", None)
         if resolve is None:
@@ -1298,7 +1287,7 @@ class Application:
         return owner if isinstance(owner, SpeakerOwner) else None
 
     async def _play_owned(self, pcm: bytes, device_id, kind: str, **kwargs):
-        """Through the speaker owner: a bool, or None to use the old path."""
+        """Through the speaker owner: a bool, or None to use the transport's path."""
         play = getattr(self.websocket_handler, "play_owned", None)
         if play is None:
             return None

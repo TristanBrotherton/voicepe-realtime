@@ -1,5 +1,5 @@
 """End to end, in real time: the real GPT-Live service and pipeline as the
-handler builds them with `speaker_owner` on, the real serializer and client,
+handler builds them on GPT-Live, the real serializer and client,
 and the fake device (tests/fake_device.py) on the other end of the socket,
 its acks and interrupts going back through the serializer as JSON.
 
@@ -82,7 +82,8 @@ class Rig:
         self._patch.start()
         handler = self.handler = WebSocketHandler(output_lead_buffer_ms=600)
         handler.device_directory = DeviceDirectory.from_json(
-            json.dumps([{"name": "testdevice", "speaker_owner": True}]))
+            json.dumps([{"name": "testdevice"}]))
+        handler.speaker_owner_enabled = True
         self.serializer = RawAudioSerializer("testdevice")
         self.device = WiredDevice(self.mode, self.serializer)
         socket = WiredSocket(self.device)
