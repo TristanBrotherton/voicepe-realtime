@@ -98,6 +98,7 @@ from app.live_router import (
     clock_tool,
     is_non_speech,
     redact_for_log,
+    unclear_refusal,
 )
 from app.live_classifier import CHAT as CLASSIFIED_CHAT
 from app import live_tasks
@@ -1097,6 +1098,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.speaker_probe = None
         self.male_only_tools: set = set()
         self.action_gate = None
+        # Router calls the action gate must hold, by tool call id.
+        self._forced_confirmations: Dict[str, str] = {}
         self.spoken_prompts = None
         self.turn_liveness = None
         self.turn_timeline = None
@@ -3990,7 +3993,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 result = RouteResult(ROUTE_FAILED, "Today's voice usage limit has been reached.", "none")
             else:
                 result = await asyncio.wait_for(
-                    self.router.route(op.text, lambda name, args: self._router_execute(op, name, args)),
+                    self.router.route(op.text, lambda name, args, **kw: self._router_execute(op, name, args, **kw)),
                     ROUTE_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ router failed for {op.op_id}: no result within {ROUTE_TIMEOUT_S:.0f}s")
@@ -4033,11 +4036,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             logger.info(f"🎯 {name}: {note}")
         return resolved
 
-    async def _router_execute(self, op: RouterOp, name: str, arguments: dict):
+    async def _router_execute(self, op: RouterOp, name: str, arguments: dict,
+                              confirm: Optional[str] = None):
         """Run one tool for the router through the guarded handler path.
 
         Returns ``(result for the backend, ToolOutcome)``. The per-utterance
         repeat ledger answers an exact repeat without touching the house.
+        ``confirm`` is a question the router wants asked first: the action gate
+        holds this call for a spoken yes, whatever the tool is.
         """
         arguments, dropped = sanitize_tool_arguments(name, arguments, self._tool_schemas.get(name))
         arguments = self._resolve_ha_target(name, arguments)
@@ -4088,6 +4094,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self.calls.mark_result(call_id, now=time.monotonic(), submitted=True, continued=True,
                                    outcome="refused as a repeat")
             return refusal, outcome
+        if confirm:
+            gate = getattr(self, "action_gate", None)
+            if gate is None or not gate.enabled:
+                self.calls.mark_result(call_id, now=time.monotonic(), submitted=True, continued=True,
+                                       outcome="not run: not a clear command")
+                return unclear_refusal(confirm)
+            self._forced_confirmations[call_id] = confirm
         future = asyncio.get_running_loop().create_future()
         self._router_futures[call_id] = future
         shared = asyncio.get_running_loop().create_future()

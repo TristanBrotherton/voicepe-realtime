@@ -1235,11 +1235,14 @@ class TurnRouter:
                 return RouteResult(LOOKUP, text, "clock", [run], timings)
         t2 = time.monotonic()
         execute = _live_context_retry(execute)
+        held_for_yes: List[str] = []
         if is_state_question(user_text):
             # A state question never changes the house (v35 rig: "Is the test
             # light on?" ran HassLightSet). Household-control calls are
             # refused unrun; the backend answers from a read instead.
             execute = _read_only_execute(execute)
+        else:
+            execute = _clear_command_execute(execute, user_text, heard_info, held_for_yes)
         try:
             text, runs, steps, new_items = await self.backend.run(
                 self._input(user_text, self._heard_note(heard_info, refused)), execute)
@@ -1272,7 +1275,7 @@ class TurnRouter:
             return RouteResult(NOTHING, "", "backend", [], timings)
         if not runs and (upper == CHAT or not text):
             return RouteResult(CHAT_KIND, "", "backend", [], timings)
-        house = is_house_request(user_text, heard_info)
+        house = is_house_request(user_text, heard_info) and not is_misheard_question_shape(user_text, heard_info)
         if not runs:
             # A clarifying question, or a remark from the conversation so far.
             # With no tool behind it nothing happened, so it may not say that
@@ -1286,6 +1289,8 @@ class TurnRouter:
                 return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", [], timings)
             return RouteResult(REPLY, text, "backend", [], timings)
         if any(r.pending_confirmation for r in runs):
+            if held_for_yes:
+                text = f"Do you want me to {held_for_yes[0]}?"
             return RouteResult(CONFIRM, text, "backend", runs, timings)
         if any(r.pending for r in runs):
             # The work goes on elsewhere: the voice may promise a report,
@@ -1616,6 +1621,12 @@ class _Refused:
     kind: str = READ_ONLY_REFUSED
 
 
+def unclear_refusal(question: str) -> Tuple[dict, "_Refused"]:
+    """A wide tool on unclear words with no action gate to hold it: not run."""
+    return ({"error": f"Not run: this was not a clear command. Ask the user: do you want me to {question}? "
+                      "Do not say it was done."}, _Refused())
+
+
 def _read_only_execute(execute: ExecuteFn) -> ExecuteFn:
     async def guarded(name: str, arguments: dict):
         if _HOUSE_CONTROL_TOOL.search(name or ""):
@@ -1647,6 +1658,106 @@ def _live_context_retry(execute: ExecuteFn) -> ExecuteFn:
         again, again_outcome = await execute(name, wider, **kwargs)
         return (again, again_outcome) if getattr(again_outcome, "ok", False) else (result, outcome)
     return retrying
+
+
+# Tools that reach the whole house. Clear command, else confirm (Tristan's
+# decision on the "Testing the placement, one two three" announcement): a clear
+# command runs straight away, anything else gets a question first.
+_WIDE_TOOL = re.compile(r"(?:broadcast|announce|everywhere|whole_house|house_wide|all_lights|everything)", re.I)
+_TARGET_ARGUMENTS = ("name", "area", "floor")
+_BROADCASTS = re.compile(r"(?:broadcast|announce)", re.I)
+_PLAIN_VERB = {"HassTurnOn": "turn on", "HassTurnOff": "turn off"}
+_LEAD_IN = (r"^\W*(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh|well|now|please|just|go\s+ahead\s+and|"
+            r"(?:can|could|would|will)\s+you|i\s+(?:want|need)\s+you\s+to|i'd\s+like\s+you\s+to)\b[\s,]*)*")
+# The base form only: "Turned off the lights." is a statement.
+_IMPERATIVE = re.compile(
+    _LEAD_IN + r"(?:turn|switch|shut|set|dim|brighten|stop|start|pause|resume|play|mute|unmute|open|close|"
+    r"lock|unlock|kill|activate|deactivate|arm|disarm|run)\b", re.I)
+_ANNOUNCE_REQUEST = re.compile(
+    _LEAD_IN + r"(?:announce|broadcast|page\b|"
+    r"tell\s+(?:everyone|everybody|all\b|the\s+(?:whole\s+)?(?:house|family|kids))|"
+    r"let\s+(?:everyone|everybody|the\s+(?:whole\s+)?(?:house|family|kids))\s+know|"
+    r"say\b.*\b(?:everywhere|everyone|everybody|all\s+(?:the\s+)?speakers|every\s+room))", re.I)
+
+
+def is_wide_effect(name: str, arguments: dict) -> bool:
+    """Does this call reach the whole house? An announcement or a whole-house
+    tool, or a device command with no name, area or floor."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _WIDE_TOOL.search(bare):
+        return True
+    return (_HOUSE_CONTROL_TOOL.search(name or "") is not None and bare != "confirm_action"
+            and bare in LOCAL_INTENTS and "List" not in bare
+            and not any(_named((arguments or {}).get(k)) for k in _TARGET_ARGUMENTS))
+
+
+def _clauses(text: str) -> List[str]:
+    normalized = " ".join((text or "").replace("’", "'").split())
+    return [c.strip() for c in re.split(r"[.?!;,]+", normalized) if c.strip()]
+
+
+def is_clear_command(name: str, user_text: str, heard_info: Optional[Dict[str, Any]]) -> bool:
+    """Is this wide tool what the user plainly asked for? Home Assistant's
+    parser resolved that very command, or a sentence opens with the request."""
+    clean = _clean_parse_intent(heard_info)
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _BROADCASTS.search(bare):
+        return clean == "HassBroadcast" or any(_ANNOUNCE_REQUEST.match(c) for c in _clauses(user_text))
+    if clean and not _READ_INTENT.search(clean):
+        return True
+    return any(_IMPERATIVE.match(c) for c in _clauses(user_text))
+
+
+def is_misheard_question_shape(user_text: str, heard_info: Optional[Dict[str, Any]]) -> bool:
+    """"And just the voice PE test switch on" was "Is the ... test switch on?"
+    misheard. Home Assistant's template is "[turn] [the] {area} [the] {name}
+    on": it found the device, and the opening words are no room. No sentence
+    opens with a verb and nothing asks: the structure cannot say this is a
+    command. (Not "a household verb anywhere": the switch's name holds one.)"""
+    if not heard_info or heard_info.get("intent") not in _PLAIN_VERB:
+        return False
+    if "area" not in (heard_info.get("unmatched") or ()):
+        return False
+    return not any(_IMPERATIVE.match(c) for c in _clauses(user_text)) and not _REQUEST_FORM.search(user_text or "")
+
+
+def _confirm_question(name: str, arguments: dict) -> str:
+    """What the question asks ("Do you want me to ...?")."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _BROADCASTS.search(bare):
+        return "announce that"
+    arguments = arguments or {}
+    verb = _PLAIN_VERB.get(bare)
+    target = str(arguments.get("name") or "").strip()
+    if verb and target:
+        return f"{verb} {target}"
+    if not bare.startswith("Hass"):
+        return "run " + bare.replace("_", " ")
+    domain = arguments.get("domain")
+    domain = domain[0] if isinstance(domain, (list, tuple)) and domain else domain
+    what = f"every {str(domain).replace('_', ' ')}" if domain else "everything"
+    return f"{verb or 'change'} {what} in the house"
+
+
+def _clear_command_execute(execute: ExecuteFn, user_text: str, heard_info: Optional[Dict[str, Any]],
+                           held_for_yes: List[str]) -> ExecuteFn:
+    """Hold a wide tool, or a control call on words that may be a misheard
+    question, for a spoken yes through the action gate. A clear command is not
+    touched and adds no time."""
+    async def guarded(name: str, arguments: dict):
+        unclear = (is_wide_effect(name, arguments) and not is_clear_command(name, user_text, heard_info)) or (
+            _HOUSE_CONTROL_TOOL.search(name or "") is not None
+            and (name or "").rsplit("__", 1)[-1] != "confirm_action"
+            and is_misheard_question_shape(user_text, heard_info))
+        if not unclear:
+            return await execute(name, arguments)
+        question = _confirm_question(name, arguments)
+        logger.info(f"🔐 router: {name} needs a clear command; asking first")
+        result, outcome = await execute(name, arguments, confirm=question)
+        if getattr(outcome, "pending_confirmation", False):
+            held_for_yes.append(question)
+        return result, outcome
+    return guarded
 
 
 def _short(result: Any, limit: int = 300) -> str:

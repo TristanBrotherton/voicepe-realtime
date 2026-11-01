@@ -10,12 +10,12 @@ from app.action_gate import ActionGate, EntityDirectory
 from app.ha_household import parse_overview
 from app.ha_names import entities_from_overview, resolve_target
 from app.live_router import (
-    ACTION, LOOKUP, BackendRouter, HaIntentRecognizer, LocalMatch, TurnRouter, local_state_answer,
-    strip_lead_filler,
+    ACTION, CONFIRM, LOOKUP, REPLY, BackendRouter, HaIntentRecognizer, LocalMatch, TurnRouter,
+    is_clear_command, is_misheard_question_shape, is_wide_effect, local_state_answer, strip_lead_filler,
 )
 from app.tool_results import classify_result
 
-from tests.test_live_router import FakeBackend, call, message, response
+from tests.test_live_router import FakeBackend, Patched, RouterHarness, call, message, response
 
 TOOLS = [
     {"type": "function", "name": "intent__HassTurnOn", "description": "On.",
@@ -252,6 +252,197 @@ class ShortEntityNameDoesNotRewriteTheDomain(unittest.IsolatedAsyncioTestCase):
         gate = await self.gate(("lock.front", "Front Door"))
         decision = await gate.check("intent__HassTurnOff", {"name": "the front door lock please"})
         self.assertTrue(decision.requires_confirmation)
+
+
+BROADCAST = "assist_satellite__HassBroadcast"
+HELD = {"status": "confirmation_required", "confirm_id": "abc", "action": "x", "instructions": "ask"}
+CLEAN_BROADCAST = {"intent": "HassBroadcast", "slots": {"message": "dinner is ready"}, "targets": 0, "unmatched": []}
+
+
+class WideToolsClearCommandElseConfirm(unittest.IsolatedAsyncioTestCase):
+    def test_what_counts_as_wide(self):
+        for name, args in ((BROADCAST, {"message": "x"}), ("intent__HassBroadcast", {}),
+                           ("intent__HassTurnOff", {"domain": ["light"]}), ("intent__HassTurnOff", {}),
+                           ("script__whole_house_off", {}), ("script__announce_dinner", {})):
+            self.assertTrue(is_wide_effect(name, args), (name, args))
+        for name, args in (("intent__HassTurnOff", {"name": "lamp"}), ("intent__HassTurnOff", {"area": "Hall"}),
+                           ("intent__HassTurnOff", {"floor": "Upstairs", "domain": ["light"]}),
+                           ("homeassistant__GetLiveContext", {}), ("intent__HassListAddItem", {"item": "x"}),
+                           ("confirm_action", {"confirm_id": "x"}), ("web_search", {"query": "x"}),
+                           ("ask_openclaw", {"question": "x"})):
+            self.assertFalse(is_wide_effect(name, args), (name, args))
+
+    def test_clear_or_not(self):
+        for text in ("Announce dinner is ready", "announce that dinner is ready.", "Can you announce dinner's ready?",
+                     "Please broadcast that we're leaving", "Tell everyone dinner is ready",
+                     "Let the family know dinner is ready", "OK, announce it",
+                     "Say dinner is ready on all the speakers"):
+            self.assertTrue(is_clear_command(BROADCAST, text, None), text)
+        for text in ("Test the placement. One, two, three, four, five", "Testing the placement",
+                     "Dinner is ready", "What did the announcement say", "We should announce it sometime",
+                     "Tell me a joke", "Say that again"):
+            self.assertFalse(is_clear_command(BROADCAST, text, None), text)
+        self.assertTrue(is_clear_command(BROADCAST, "whatever it heard", CLEAN_BROADCAST))
+        self.assertFalse(is_clear_command(BROADCAST, "Test the placement",
+                                          {"intent": "HassBroadcast", "unmatched": ["message"]}))
+        off = "intent__HassTurnOff"
+        for text in ("Turn off all the lights", "Please turn everything off", "Could you shut everything off?"):
+            self.assertTrue(is_clear_command(off, text, None), text)
+        for text in ("Turned off the lights", "The lights are all on", "Everything off"):
+            self.assertFalse(is_clear_command(off, text, None), text)
+
+    async def route(self, text, *responses, heard=None, results=None):
+        backend = FakeBackend(*responses)
+        recognizer = Recognizer(heard=heard) if heard else None
+        execute, executed = running(results)
+        router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS + [
+            {"type": "function", "name": BROADCAST, "description": "Say.",
+             "parameters": {"type": "object", "properties": {"message": {"type": "string"}}}}], post=backend.post),
+            recognizer=recognizer)
+        return await router.route(text, execute), executed
+
+    async def test_a_clear_announcement_runs_straight_away(self):
+        result, executed = await self.route(
+            "Announce dinner is ready", response(call(BROADCAST, {"message": "dinner is ready"}, "c1")),
+            response(message("Announced.")), heard=CLEAN_BROADCAST)
+        self.assertEqual(executed, [(BROADCAST, {"message": "dinner is ready"}, {})])
+        self.assertEqual(result.kind, ACTION)
+
+    async def test_an_unclear_one_asks_first(self):
+        """The issue's case: a mistranscribed test phrase reached every speaker."""
+        result, executed = await self.route(
+            "Test the placement. One, two, three, four, five",
+            response(call(BROADCAST, {"message": "one two three"}, "c1")),
+            response(message("The placement test was broadcast.")), results={"HassBroadcast": HELD})
+        self.assertEqual(executed[0][2], {"confirm": "announce that"})
+        self.assertEqual((result.kind, result.text), (CONFIRM, "Do you want me to announce that?"))
+        self.assertIn("Nothing has been done yet", result.commentary())
+
+    async def test_a_state_question_cannot_reach_it_at_all(self):
+        result, executed = await self.route(
+            "Is the announcement on", response(call(BROADCAST, {"message": "x"}, "c1")),
+            response(message("No.")))
+        self.assertEqual(executed, [])
+
+    async def test_without_a_gate_it_is_refused_and_asked(self):
+        from app.live_router import READ_ONLY_REFUSED, unclear_refusal
+        raw, outcome = unclear_refusal("announce that")
+        self.assertIn("do you want me to announce that?", raw["error"])
+        self.assertEqual((outcome.ok, outcome.kind), (False, READ_ONLY_REFUSED))
+
+
+MISHEARD = {"intent": "HassTurnOn", "slots": {"name": "voice PE test switch"}, "targets": 0, "unmatched": ["area"]}
+
+
+class MisheardQuestionDoesNotSwitch(unittest.IsolatedAsyncioTestCase):
+    """"Is the Voice PE test switch on?" heard as "And just the voice PE test
+    switch on": Home Assistant found the device; the rest is no room."""
+
+    def test_the_shape(self):
+        self.assertTrue(is_misheard_question_shape("And just the voice PE test switch on", MISHEARD))
+        for text in ("Just turn the test switch on", "Please just the test switch on",
+                     "Can you just the test switch on"):
+            self.assertFalse(is_misheard_question_shape(text, MISHEARD), text)
+        self.assertFalse(is_misheard_question_shape("just the switch on", None))
+        self.assertFalse(is_misheard_question_shape("just the switch on", dict(MISHEARD, unmatched=["name"])))
+        self.assertFalse(is_misheard_question_shape("just the switch on", dict(MISHEARD, unmatched=[])))
+        self.assertFalse(is_misheard_question_shape("just the switch on", dict(MISHEARD, intent="HassGetState")))
+
+    async def test_the_control_call_is_held_for_a_yes(self):
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Voice PE Test Switch"}, "c1")),
+                              response(message("It's on.")))
+        execute, executed = running({"HassTurnOn": HELD})
+        result = await router_with(backend, Recognizer(heard=MISHEARD)).route(
+            "And just the voice PE test switch on", execute)
+        self.assertEqual(executed[0][2], {"confirm": "turn on Voice PE Test Switch"})
+        self.assertEqual((result.kind, result.text), (CONFIRM, "Do you want me to turn on Voice PE Test Switch?"))
+
+    async def test_a_read_passes(self):
+        backend = FakeBackend(response(call("homeassistant__GetLiveContext", {"area": "Lab"}, "c1")),
+                              response(message("It's on.")))
+        execute, executed = running({"GetLiveContext": {"result": "- names: Test Switch\n  state: 'on'"}})
+        result = await router_with(backend, Recognizer(heard=MISHEARD)).route("just the test switch on", execute)
+        self.assertEqual(executed[0][2], {})
+        self.assertEqual(result.kind, LOOKUP)
+
+    async def test_a_clear_command_with_a_wildcard_parse_is_untouched(self):
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Test Switch"}, "c1")),
+                              response(message("It's on.")))
+        execute, executed = running()
+        result = await router_with(backend, Recognizer(heard=MISHEARD)).route("Turn on the test switch in there", execute)
+        self.assertEqual(executed[0][2], {})
+        self.assertEqual(result.kind, ACTION)
+
+
+class HeldThroughTheRealGate(Patched):
+    """End to end: the guarded path holds it, a spoken yes runs it once."""
+
+    STATES = [{"entity_id": "light.atrium", "attributes": {"friendly_name": "Atrium Lamp"}}]
+
+    async def gate(self):
+        async def states():
+            return self.STATES
+        return ActionGate(directory=EntityDirectory(states))
+
+    async def test_nothing_runs_until_the_yes_then_once(self):
+        from app.main import Application
+
+        def confirm(body):
+            outputs = [json.loads(i["output"]) for i in body["input"] if i.get("type") == "function_call_output"]
+            confirm_id = next(o["confirm_id"] for o in outputs if "confirm_id" in o)
+            return response(call("confirm_action", {"confirm_id": confirm_id}, "c2"))
+
+        gate = await self.gate()
+        backend = FakeBackend(
+            response(call("intent__HassTurnOff", {"domain": ["light"]}, "c1")),
+            response(message("All the lights are off.")),  # the backend's words are not used
+            confirm, response(message("All the lights are off.")))
+        async with RouterHarness(self, backend, gate=gate) as h:
+            app = object.__new__(Application)
+            app.action_gate = gate
+            h.service.register_function("confirm_action", Application._create_confirm_handler(app, h.service))
+            await h.user_says("The lights are all on.")
+            sent = await h.wait_commentary()
+            self.assertEqual(h.executed, [], "held")
+            self.assertIn("Do you want me to turn off every light in the house?", sent[0]["content"])
+            self.assertEqual(h.service._forced_confirmations, {})
+            h.socket.push({"type": "session.commentary.appended"})
+            h.voice_says("Do you want me to turn off the lights everywhere?")
+            await asyncio.sleep(0.2)
+            await h.user_says("Yes.", start_ms=6000)
+            sent = await h.wait_commentary(count=2)
+            self.assertEqual(h.executed, [("intent__HassTurnOff", {"domain": ["light"]})], "ran once, after the yes")
+            self.assertIn("Verified result", sent[1]["content"])
+
+    async def test_a_clear_command_is_not_held(self):
+        gate = await self.gate()
+        backend = FakeBackend(response(call("intent__HassTurnOff", {"domain": ["light"]}, "c1")),
+                              response(message("All the lights are off.")))
+        async with RouterHarness(self, backend, gate=gate) as h:
+            await h.user_says("Turn off all the lights.")
+            await h.wait_commentary()
+            self.assertEqual(h.executed, [("intent__HassTurnOff", {"domain": ["light"]})])
+
+    async def test_a_lock_flow_is_unchanged(self):
+        async def states():
+            return [{"entity_id": "lock.front", "attributes": {"friendly_name": "Entry Lock"}}]
+        backend = FakeBackend(response(call("intent__HassTurnOff", {"name": "Entry Lock"}, "c1")),
+                              response(message("Do you want me to unlock the Entry Lock?")))
+        async with RouterHarness(self, backend, gate=ActionGate(directory=EntityDirectory(states))) as h:
+            await h.user_says("Unlock the Entry Lock.")
+            sent = await h.wait_commentary()
+            self.assertEqual(h.executed, [])
+            self.assertIn("Do you want me to unlock the Entry Lock?", sent[0]["content"])
+
+    async def test_without_a_gate_it_is_refused_unrun(self):
+        backend = FakeBackend(response(call("intent__HassTurnOff", {"domain": ["light"]}, "c1")),
+                              response(message("Do you want me to turn off every light?")))
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("The lights are all on.")
+            sent = await h.wait_commentary()
+            self.assertEqual(h.executed, [])
+            self.assertIn("Do you want me to turn off every light?", sent[0]["content"])
+            self.assertIn("nothing has been done", sent[0]["content"])
 
 
 if __name__ == "__main__":
