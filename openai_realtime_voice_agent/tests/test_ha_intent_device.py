@@ -69,23 +69,23 @@ def recognizer_for(sock):
 
 class DeviceIdInTheIntentRequest(unittest.IsolatedAsyncioTestCase):
     async def test_the_debug_request_carries_the_satellite_device_id(self):
-        sock = FakeSocket([matched({"area": "Atrium", "domain": "light"}, ["light.atrium"])])
+        sock = FakeSocket([matched({"area": "Foyer", "domain": "light"}, ["light.foyer"])])
         match = await recognizer_for(sock).recognize("Turn off the lights", device_id=DEVICE)
         self.assertEqual(sock.debug_requests()[0]["device_id"], DEVICE)
-        self.assertEqual(match.slots.get("area"), "Atrium", "room context fills the area slot")
+        self.assertEqual(match.slots.get("area"), "Foyer", "room context fills the area slot")
 
     async def test_an_older_core_without_device_context_is_asked_again_without_it(self):
         sock = FakeSocket([{"success": False, "error": {"code": "invalid_format", "message": "extra keys"}},
-                           matched({"name": "Atrium Lamp"}, ["light.atrium"]),
-                           matched({"name": "Atrium Lamp"}, ["light.atrium"])])
+                           matched({"name": "Foyer Lamp"}, ["light.foyer"]),
+                           matched({"name": "Foyer Lamp"}, ["light.foyer"])])
         rec = recognizer_for(sock)
-        self.assertIsNotNone(await rec.recognize("Turn off the Atrium Lamp", device_id=DEVICE))
-        await rec.recognize("Turn off the Atrium Lamp", device_id=DEVICE)
+        self.assertIsNotNone(await rec.recognize("Turn off the Foyer Lamp", device_id=DEVICE))
+        await rec.recognize("Turn off the Foyer Lamp", device_id=DEVICE)
         sent = sock.debug_requests()
         self.assertEqual([("device_id" in m) for m in sent], [True, False, False])
 
     async def test_the_router_sends_its_device_id_with_every_recognition(self):
-        rec = FakeRecognizer(LocalMatch("HassTurnOff", {"area": "Atrium", "domain": "light"}, ["light"], 2))
+        rec = FakeRecognizer(LocalMatch("HassTurnOff", {"area": "Foyer", "domain": "light"}, ["light"], 2))
         router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS,
                                           post=FakeBackend().post),
                             recognizer=rec, device_id=DEVICE)
@@ -97,7 +97,7 @@ class DeviceIdInTheIntentRequest(unittest.IsolatedAsyncioTestCase):
             return raw, classify_result(raw)
         result = await router.route("Turn off the lights.", execute)
         self.assertEqual(rec.device_ids, [DEVICE])
-        self.assertEqual(executed, [("intent__HassTurnOff", {"area": "Atrium", "domain": "light"})])
+        self.assertEqual(executed, [("intent__HassTurnOff", {"area": "Foyer", "domain": "light"})])
         self.assertEqual((result.kind, result.source), (ACTION, "ha_local"))
 
 
@@ -186,8 +186,8 @@ class ReadOnlyAnswers(unittest.IsolatedAsyncioTestCase):
 
     async def test_action_shaped_requests_keep_the_false_success_protection(self):
         for request, answer in (
-            ("Turn on the Atrium Lamp.", "Done, the lamp is on."),
-            ("Atrium lights off.", "Turned the atrium lights off."),
+            ("Turn on the Foyer Lamp.", "Done, the lamp is on."),
+            ("Foyer lights off.", "Turned the foyer lights off."),
             ("Can you lock the door?", "The door is locked."),
             ("Is the lamp on? Turn it off.", "The lamp is turned off."),
             ("Is the door locked and lock it", "The door is locked."),
@@ -290,7 +290,7 @@ class TheSocketLockNeverStaysTaken(unittest.IsolatedAsyncioTestCase):
     so every home command went the slow backend way."""
 
     def recognizer(self, n=1):
-        sock = FakeSocket([matched({"name": "Atrium Lamp"}, ["light.atrium"]) for _ in range(n)])
+        sock = FakeSocket([matched({"name": "Foyer Lamp"}, ["light.foyer"]) for _ in range(n)])
         r = recognizer_for(sock)
         r.timeout_s = 0.05
         return r
@@ -305,12 +305,12 @@ class TheSocketLockNeverStaysTaken(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.create_task(holder())
         await asyncio.sleep(0)
-        self.assertIsNone(await r.recognize("Turn off the atrium lamp"), "busy: no local match")
+        self.assertIsNone(await r.recognize("Turn off the foyer lamp"), "busy: no local match")
         release.set()
         await task
         await asyncio.sleep(0.01)
         self.assertFalse(r._lock.locked())
-        self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+        self.assertIsNotNone(await r.recognize("Turn off the foyer lamp"))
 
     async def test_a_late_acquire_after_the_timeout_is_released(self):
         r = self.recognizer()
@@ -328,7 +328,7 @@ class TheSocketLockNeverStaysTaken(unittest.IsolatedAsyncioTestCase):
         r = self.recognizer()
         await r._lock.acquire()  # leaked: nobody will release it
         with self.assertLogs("app.live_router", "WARNING") as logs:
-            self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+            self.assertIsNotNone(await r.recognize("Turn off the foyer lamp"))
         self.assertTrue(any("lock stuck" in m for m in logs.output))
 
     async def test_a_holder_stuck_past_the_bound_is_replaced(self):
@@ -337,12 +337,12 @@ class TheSocketLockNeverStaysTaken(unittest.IsolatedAsyncioTestCase):
         r = self.recognizer()
         await r._lock.acquire()
         r._held_since = time.monotonic() - live_router.HA_SOCKET_LOCK_STALE_S - 1
-        self.assertIsNotNone(await r.recognize("Turn off the atrium lamp"))
+        self.assertIsNotNone(await r.recognize("Turn off the foyer lamp"))
 
     async def test_a_current_holder_is_waited_for_not_replaced(self):
         r = self.recognizer()
         await r._lock.acquire()
         import time
         r._held_since = time.monotonic()
-        self.assertIsNone(await r.recognize("Turn off the atrium lamp"))
+        self.assertIsNone(await r.recognize("Turn off the foyer lamp"))
         self.assertTrue(r._lock.locked(), "the real holder keeps its lock")

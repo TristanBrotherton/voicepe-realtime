@@ -659,7 +659,7 @@ class FunctionCallRecord:
     # actually answered. Keys and a classification only — never values. Without
     # these two, a turn whose lifecycle counters all read "fine" gives no clue
     # why the house did not change; that is exactly how the second canary's
-    # Atrium Lamp failure looked in the log.
+    # Foyer Lamp failure looked in the log.
     dropped_keys: List[str] = field(default_factory=list)
     result: str = ""
 

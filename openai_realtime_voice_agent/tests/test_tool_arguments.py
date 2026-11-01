@@ -1,7 +1,7 @@
 """Placeholder arguments are removed; real values, including zero, are not.
 
 Driven by the verbatim payloads from the second canary's failed
-"turn on Atrium Lamp" (``tests/live_fixtures.py``) and by the set of argument
+"turn on Foyer Lamp" (``tests/live_fixtures.py``) and by the set of argument
 shapes this household's own Home Assistant was measured to reject
 (``fx.HA_REJECTED_SLOTS``). Both halves matter: dropping too little reproduces
 the canary, and dropping too much silently changes what the user asked for.
@@ -42,12 +42,12 @@ class TestArgumentsFitTheSchemaTypes(unittest.TestCase):
 
     def test_a_scalar_device_class_becomes_a_list(self):
         clean, _ = sanitize_tool_arguments("intent__HassTurnOn",
-                                           {"name": "Atrium Lamp", "device_class": "shade"}, HA_TURN_OFF)
+                                           {"name": "Foyer Lamp", "device_class": "shade"}, HA_TURN_OFF)
         self.assertEqual(clean["device_class"], ["shade"])
 
     def test_a_numeric_string_becomes_the_declared_integer(self):
         clean, _ = sanitize_tool_arguments("light__HassLightSet",
-                                           {"name": "Atrium Lamp", "brightness": "40"}, HA_LIGHT_SET)
+                                           {"name": "Foyer Lamp", "brightness": "40"}, HA_LIGHT_SET)
         self.assertEqual(clean["brightness"], 40)
 
     def test_a_shape_the_schema_already_allows_is_untouched(self):
@@ -60,10 +60,10 @@ class TestArgumentsFitTheSchemaTypes(unittest.TestCase):
 
     def test_a_huge_numeric_string_is_exact_and_never_crashes(self):
         clean, _ = sanitize_tool_arguments("light__HassLightSet",
-                                           {"name": "Atrium Lamp", "brightness": "9" * 400}, HA_LIGHT_SET)
+                                           {"name": "Foyer Lamp", "brightness": "9" * 400}, HA_LIGHT_SET)
         self.assertEqual(clean["brightness"], int("9" * 400))
         clean, _ = sanitize_tool_arguments("light__HassLightSet",
-                                           {"name": "Atrium Lamp", "brightness": "9007199254740993"},
+                                           {"name": "Foyer Lamp", "brightness": "9007199254740993"},
                                            HA_LIGHT_SET)
         self.assertEqual(clean["brightness"], 9007199254740993)
 
@@ -75,7 +75,7 @@ class TestArgumentsFitTheSchemaTypes(unittest.TestCase):
 
     def test_a_value_that_is_not_a_plain_form_is_left_for_the_server_to_reject(self):
         clean, _ = sanitize_tool_arguments("light__HassLightSet",
-                                           {"name": "Atrium Lamp", "brightness": "bright"}, HA_LIGHT_SET)
+                                           {"name": "Foyer Lamp", "brightness": "bright"}, HA_LIGHT_SET)
         self.assertEqual(clean["brightness"], "bright")
 
 
@@ -86,7 +86,7 @@ class TestTheCanaryPayloads(unittest.TestCase):
             fx.LIGHT_SET_TOOL,
         )
         self.assertEqual(clean, {
-            "name": "Atrium Lamp", "area": "Kitchen",
+            "name": "Foyer Lamp", "area": "Kitchen",
             "domain": ["light"], "brightness": 100,
         })
         self.assertEqual(sorted(removed), ["color", "floor", "temperature"])
@@ -96,7 +96,7 @@ class TestTheCanaryPayloads(unittest.TestCase):
             "intent__HassTurnOn", json.loads(fx.TURN_ON_ARGUMENTS), fx.TURN_ON_TOOL,
         )
         self.assertEqual(clean, {
-            "name": "Atrium Lamp", "area": "Kitchen", "domain": ["light"],
+            "name": "Foyer Lamp", "area": "Kitchen", "domain": ["light"],
         })
         self.assertEqual(sorted(removed), ["device_class", "floor"])
 
@@ -104,7 +104,7 @@ class TestTheCanaryPayloads(unittest.TestCase):
         """Every measured rejection, applied to the canary's own payloads."""
         for tool, parameter, value, message in fx.HA_REJECTED_SLOTS:
             with self.subTest(tool=tool, parameter=parameter, message=message):
-                arguments = {"name": "Atrium Lamp", parameter: value}
+                arguments = {"name": "Foyer Lamp", parameter: value}
                 clean, _removed = sanitize_tool_arguments(tool, arguments)
                 if parameter == "name":
                     # The only target, and it is empty. Removing it would widen
@@ -135,8 +135,8 @@ class TestNeverBroadenACall(unittest.TestCase):
         """The canary's case: floor="" with a real name and area."""
         clean, removed = sanitize_tool_arguments(
             "intent__HassTurnOn",
-            {"name": "Atrium Lamp", "area": "Kitchen", "floor": ""})
-        self.assertEqual(clean, {"name": "Atrium Lamp", "area": "Kitchen"})
+            {"name": "Foyer Lamp", "area": "Kitchen", "floor": ""})
+        self.assertEqual(clean, {"name": "Foyer Lamp", "area": "Kitchen"})
         self.assertEqual(removed, ["floor"])
 
     def test_an_area_only_call_keeps_its_area(self):
@@ -156,7 +156,7 @@ class TestNeverBroadenACall(unittest.TestCase):
             "light__HassLightSet", json.loads(fx.LIGHT_SET_ARGUMENTS),
             fx.LIGHT_SET_TOOL,
         )
-        self.assertEqual(clean["name"], "Atrium Lamp")
+        self.assertEqual(clean["name"], "Foyer Lamp")
         self.assertEqual(clean["area"], "Kitchen")
         self.assertEqual(clean["domain"], ["light"])
         self.assertEqual(clean["brightness"], 100)
@@ -204,7 +204,7 @@ class TestWhatIsKept(unittest.TestCase):
         self.assertEqual(removed, ["list"])
 
     def test_non_empty_values_are_passed_through_untouched(self):
-        arguments = {"name": "Atrium Lamp", "domain": ["light"], "brightness": 50,
+        arguments = {"name": "Foyer Lamp", "domain": ["light"], "brightness": 50,
                      "color": "warm white", "nested": {"a": 1}}
         clean, removed = sanitize_tool_arguments("light__HassLightSet", arguments)
         self.assertEqual(clean, arguments)

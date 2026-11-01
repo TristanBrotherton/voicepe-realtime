@@ -323,7 +323,7 @@ class NeverCancelled(Patched):
     async def test_a_new_utterance_during_a_tool_delivers_both_results_and_runs_each_once(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(NEW_UTTERANCE_S)
             # The user talks over the running tool: the clock answers locally.
@@ -357,7 +357,7 @@ class NeverCancelled(Patched):
                 announced.append(text)
                 return True
             h.service.on_task_announce = announce
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await self._stopped(h)
             await asyncio.sleep(0.6)  # past promote_s: a stopped request is never promoted
@@ -376,7 +376,7 @@ class NeverCancelled(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         backend.gate.clear()
         async with RouterHarness(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: backend.bodies)
             await self._stopped(h)
             backend.gate.set()
@@ -393,7 +393,7 @@ class NeverCancelled(Patched):
                 announced.append(text)
                 return True
             h.service.on_task_announce = announce
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await until(lambda: h.service.tasks_pending == 1, timeout=3.0)  # promoted: promised
             await self._stopped(h)
@@ -407,12 +407,12 @@ class NeverCancelled(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=30.0)
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await self._stopped(h)
             await h.open_session()
             await h.start_session("sess_2")
-            await h.user_says("Turn on the Atrium Lamp", start_ms=5000)
+            await h.user_says("Turn on the Foyer Lamp", start_ms=5000)
             await asyncio.sleep(0.3)
             self.assertEqual(h.service.router_stats["joined"], 1)
             h.release.set()
@@ -427,7 +427,7 @@ class NeverCancelled(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=30.0)
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await self._stopped(h)
             h.release.set()
@@ -436,7 +436,7 @@ class NeverCancelled(Patched):
             await h.start_session("sess_2")
             await asyncio.sleep(0.2)
             self.assertFalse(commentaries(h), "not spoken at the next wake")
-            await h.user_says("Turn on the Atrium Lamp", start_ms=5000)
+            await h.user_says("Turn on the Foyer Lamp", start_ms=5000)
             await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
             await asyncio.sleep(0.2)
             self.assertEqual(h.executed, [ON], "the action ran once")
@@ -447,7 +447,7 @@ class NeverCancelled(Patched):
         with patch.object(live_service_module, "TASK_JOIN_DONE_WINDOW_S", 0.2):
             async with FirstCallSlow(self, backend) as h:
                 h.service.task_policy = TaskPolicy(promote_s=30.0)
-                await h.user_says("Turn on the Atrium Lamp")
+                await h.user_says("Turn on the Foyer Lamp")
                 await until(lambda: h.executed)
                 await self._stopped(h)
                 h.release.set()
@@ -470,7 +470,7 @@ class NeverCancelled(Patched):
                     announced.append(text)
                     return True
                 h.service.on_task_announce = announce
-                await h.user_says("Turn on the Atrium Lamp")
+                await h.user_says("Turn on the Foyer Lamp")
                 await asyncio.sleep(0.1)
                 h.voice_says("Done, it's on.", ms=300)
                 await asyncio.sleep(0.05)
@@ -497,7 +497,7 @@ class NeverCancelled(Patched):
                 announced.append(text)
                 return True
             h.service.on_task_announce = announce
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await self._stopped(h)
             h.release.set()
@@ -517,7 +517,7 @@ class NeverCancelled(Patched):
                 announced.append(text)
                 return True
             h.service.on_task_announce = announce
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             op = h.service._op
             op.confirm_ids.add("k1")
@@ -541,7 +541,7 @@ class NeverCancelled(Patched):
                 announced.append(text)
                 return True
             h.service.on_task_announce = announce
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             op = h.service._op
             with patch.object(live_service_module, "EXTERNAL_TASK_MAX_S", 0.3):
@@ -558,7 +558,7 @@ class NeverCancelled(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=30.0)
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             op = h.service._op
             await self._stopped(h)
@@ -571,7 +571,7 @@ class NeverCancelled(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await until(lambda: h.service.tasks_pending == 1, timeout=3.0)
             task = next(iter(h.service._tasks.values()))
@@ -584,10 +584,10 @@ class NeverCancelled(Patched):
     async def test_an_impatient_repeat_joins_the_running_operation(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(0.5)
-            await h.user_says("Turn on the Atrium Lamp.", start_ms=5000)  # inside the fragment window
+            await h.user_says("Turn on the Foyer Lamp.", start_ms=5000)  # inside the fragment window
             await asyncio.sleep(0.3)
             self.assertEqual(h.executed, [ON], "the repeat ran nothing")
             self.assertEqual(h.service.router_stats["joined"], 1)
@@ -601,10 +601,10 @@ class NeverCancelled(Patched):
     async def test_a_later_repeat_also_joins(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(NEW_UTTERANCE_S)
-            await h.user_says("Turn on the Atrium Lamp please", start_ms=8000)
+            await h.user_says("Turn on the Foyer Lamp please", start_ms=8000)
             await asyncio.sleep(0.3)
             self.assertEqual(h.executed, [ON])
             self.assertEqual(h.service.router_stats["joined"], 1)
@@ -668,7 +668,7 @@ class PromotedToBackground(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=0.3)
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await asyncio.sleep(0.1)
             h.voice_says("Done, it's on.", ms=400)
             await h.wait_commentary(count=1, timeout=2.0)

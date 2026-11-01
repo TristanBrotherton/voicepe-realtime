@@ -136,7 +136,7 @@ class SpeculativeVerdict(Patched):
                 h.socket.push({"type": "session.input_transcript.delta", "delta": "Tell me about",
                                "start_ms": 1000, "end_ms": 1500})
                 await asyncio.sleep(0.25)
-                h.socket.push({"type": "session.input_transcript.delta", "delta": " turning off the Atrium Lamp.",
+                h.socket.push({"type": "session.input_transcript.delta", "delta": " turning off the Foyer Lamp.",
                                "start_ms": 1500, "end_ms": 2500})
                 await asyncio.sleep(0.9)
                 self.assertEqual([t for t, _ in clf.asked], ["Tell me about"],
@@ -201,13 +201,13 @@ class AMisreadRequestNeverOpensTheGate(Patched):
         self.assertEqual(h.service.router_stats["fast_chat"], 0)
 
     async def test_request_shaped_wording_is_never_sent_to_the_classifier(self):
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         async with RouterHarness(self, backend) as h:
             clf = FakeClassifier("CHAT", 0.01)
             h.service.chat_classifier = clf
-            await self._guess_stays_unheard(h, "Turn on the Atrium Lamp.")
+            await self._guess_stays_unheard(h, "Turn on the Foyer Lamp.")
             self.assertEqual(clf.asked, [], "no call: the wording already rules chat out")
             self.assertEqual(h.service._op.fast_veto, "request-shaped")
             backend.gate.set()
@@ -225,8 +225,8 @@ class AMisreadRequestNeverOpensTheGate(Patched):
             self.assertIsNone(live_service_module.chat_fast_path_text_veto(text, ["llm__GetDateTime"]), text)
 
     async def test_a_chat_verdict_after_a_tool_started_is_ignored(self):
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         async with SlowHouse(self, backend) as h:
             h.service.chat_classifier = FakeClassifier("CHAT", 0.3)
             await self._guess_stays_unheard(h, "Could you sort that out for me?")
@@ -418,11 +418,11 @@ class TimelineGate(Patched):
         h.socket.push({"type": "session.output_audio.delta", "delta": b64(fx.tone(ms))})
 
     async def test_words_after_an_acknowledgement_wait_for_their_transcript(self):
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         async with RouterHarness(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             await asyncio.sleep(0.12)
             base = h.service._session_output_audio_bytes // BYTES_PER_MS
             self.say(h, "Sure, one sec.", base + 500)
@@ -444,12 +444,12 @@ class TimelineGate(Patched):
                           "the voice is told its dropped words were not heard")
 
     async def test_unheard_lag_at_the_result_is_dropped_not_played_as_ack(self):
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         with patch.object(live_service_module, "ACK_LAG_S", 1.0):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.12)
                 base = h.service._session_output_audio_bytes // BYTES_PER_MS
                 self.say(h, "Sure, one sec.", base + 300)
@@ -491,7 +491,7 @@ class HeldSpeechSamples(Patched):
         try:
             self.assertEqual(redact_for_log("Let me take a look at that for you, Robin."),
                              "Let me take a look at that for you, <name>.")
-            self.assertEqual(redact_for_log("Sure. The Atrium Lamp is at 40 percent."),
+            self.assertEqual(redact_for_log("Sure. The Foyer Lamp is at 40 percent."),
                              "Sure. The <Name> <Name> is at <n> percent.")
             self.assertEqual(redact_for_log("I'll check Robin's calendar."), "I'll check <name>'s calendar.")
             self.assertTrue(redact_for_log("one " * 40).endswith("(+26 words)"))
@@ -501,14 +501,14 @@ class HeldSpeechSamples(Patched):
     async def test_the_dropped_sample_is_logged_redacted(self):
         from app.live_router import set_known_names
         set_known_names(["Robin"])
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         try:
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.12)
-                h.voice_says("Let me take a look at that, Robin. Atrium Lamp is on.", ms=300)
+                h.voice_says("Let me take a look at that, Robin. Foyer Lamp is on.", ms=300)
                 await asyncio.sleep(0.2)
                 with self.assertLogs("app.live_service", level="INFO") as logs:
                     backend.gate.set()
@@ -518,7 +518,7 @@ class HeldSpeechSamples(Patched):
                 self.assertIn('"outcome":"dropped"', lines[0])
                 self.assertIn("Let me take a look at that, <name>. <Name> <Name> is on.", lines[0])
                 self.assertNotIn("Robin", lines[0])
-                self.assertNotIn("Atrium Lamp", lines[0])
+                self.assertNotIn("Foyer Lamp", lines[0])
         finally:
             set_known_names([])
 

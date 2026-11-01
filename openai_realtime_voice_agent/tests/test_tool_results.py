@@ -1,7 +1,7 @@
 """Tool outcomes are read, explained, and not repeated without end.
 
 The second canary's log showed every lifecycle counter healthy — observed 4,
-dispatched 4, submitted 4, continued 4, abandoned 0 — while Atrium Lamp stayed
+dispatched 4, submitted 4, continued 4, abandoned 0 — while Foyer Lamp stayed
 off, because nothing ever looked at what the tools *answered*. These tests pin
 the three parts that now do: classification, the advice handed back to the
 model, and the per-utterance limit on repeats.
@@ -19,7 +19,7 @@ from app.tool_results import (
 
 from tests import live_fixtures as fx
 
-ARGS = {"name": "Atrium Lamp", "area": "Kitchen", "domain": ["light"]}
+ARGS = {"name": "Foyer Lamp", "area": "Kitchen", "domain": ["light"]}
 
 
 class TestClassification(unittest.TestCase):
@@ -94,26 +94,26 @@ class TestHomeAssistantRejections(unittest.TestCase):
 
     def test_an_action_where_every_target_failed_is_a_failure(self):
         outcome = classify_result('{"speech": {}, "response_type": "action_done", "data": '
-                                  '{"success": [], "failed": [{"name": "Atrium Lamp", "type": "entity", '
-                                  '"id": "light.atrium"}]}}')
+                                  '{"success": [], "failed": [{"name": "Foyer Lamp", "type": "entity", '
+                                  '"id": "light.foyer"}]}}')
         self.assertFalse(outcome.ok)
 
     def test_an_action_with_one_target_done_is_a_success(self):
         outcome = classify_result({"response_type": "action_done", "data": {
-            "success": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium"}],
-            "failed": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium_2"}]}})
+            "success": [{"name": "Foyer Lamp", "type": "entity", "id": "light.foyer"}],
+            "failed": [{"name": "Foyer Lamp", "type": "entity", "id": "light.foyer_2"}]}})
         self.assertTrue(outcome.ok)
 
     def test_an_error_response_is_a_failure_of_its_known_kind_with_its_words(self):
         outcome = classify_result({"response_type": "error", "data": {"code": "no_valid_targets"},
-                                   "speech": {"plain": {"speech": "No device named Atrium Lamp"}}})
+                                   "speech": {"plain": {"speech": "No device named Foyer Lamp"}}})
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.kind, "no-matching-entity")
-        self.assertIn("Atrium Lamp", outcome.detail)
+        self.assertIn("Foyer Lamp", outcome.detail)
 
     def test_the_voice_is_told_every_target_failed_not_given_action_done(self):
         raw = ('{"speech": {}, "response_type": "action_done", "data": {"success": [], '
-               '"failed": [{"name": "Atrium Lamp", "type": "entity", "id": "light.atrium"}]}}')
+               '"failed": [{"name": "Foyer Lamp", "type": "entity", "id": "light.foyer"}]}}')
         told = explain_for_model("intent__HassTurnOff", raw)
         self.assertIsInstance(told, dict)
         self.assertIn("do not say it was done", told["what_to_do"])
@@ -234,11 +234,11 @@ class TestActionLedger(unittest.TestCase):
 
     def test_the_targeting_key_ignores_case_order_and_padding(self):
         self.ledger.record("light__HassLightSet",
-                           {"name": " Atrium Lamp ", "area": "KITCHEN",
+                           {"name": " Foyer Lamp ", "area": "KITCHEN",
                             "domain": ["light"]},
                            ToolOutcome(ok=False, kind="invalid-arguments"))
         self.ledger.record("intent__HassTurnOn",
-                           {"name": "atrium lamp", "area": "kitchen",
+                           {"name": "foyer lamp", "area": "kitchen",
                             "domain": ["light"]},
                            ToolOutcome(ok=False, kind="invalid-arguments"))
         self.assertIsNotNone(self.ledger.check("intent__HassTurnOn", ARGS))

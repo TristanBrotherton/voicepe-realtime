@@ -225,26 +225,26 @@ UNLOCK_ARGUMENTS = '{"name":"entry lock","domain":["lock"]}'
 # The identifiers and entity names below are synthetic. Both action calls
 # preserve the observed protocol shape and completed their whole
 # lifecycle — observed, dispatched, submitted, continued, 0 abandoned — and
-# Atrium Lamp stayed off, because GPT-Live's delegated backend fills every
+# Foyer Lamp stayed off, because GPT-Live's delegated backend fills every
 # optional parameter with a placeholder and Home Assistant's intent slot
 # schema rejects an empty string.
 CONTEXT_CALL_ID = "call_fixture_context"
-CONTEXT_ARGUMENTS = '{"name":"atrium lamp","domain":"light","area":"kitchen"}'
+CONTEXT_ARGUMENTS = '{"name":"foyer lamp","domain":"light","area":"kitchen"}'
 CONTEXT_RESULT = {
     "success": True,
     "result": ("Live Context: An overview of the areas and the devices in this "
-               "smart home:\n- names: Atrium Lamp\n  domain: light\n  "
+               "smart home:\n- names: Foyer Lamp\n  domain: light\n  "
                "state: 'off'\n  areas: Kitchen\n"),
 }
 
 LIGHT_SET_CALL_ID = "call_fixture_light_set"
 LIGHT_SET_ARGUMENTS = (
-    '{"name":"Atrium Lamp","area":"Kitchen","floor":"","domain":["light"],'
+    '{"name":"Foyer Lamp","area":"Kitchen","floor":"","domain":["light"],'
     '"color":"","temperature":0,"brightness":100}'
 )
 TURN_ON_CALL_ID = "call_fixture_turn_on"
 TURN_ON_ARGUMENTS = (
-    '{"name":"Atrium Lamp","area":"Kitchen","floor":"","domain":["light"],'
+    '{"name":"Foyer Lamp","area":"Kitchen","floor":"","domain":["light"],'
     '"device_class":[]}'
 )
 

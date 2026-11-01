@@ -3,7 +3,7 @@
 The synthetic fixture preserves the protocol and result shapes that matter. In
 the reproduced turn
 the whole tool lifecycle completed — ``observed 4, dispatched 4, submitted 4,
-continued 4, abandoned 0`` — Atrium Lamp stayed off, and the assistant told the
+continued 4, abandoned 0`` — Foyer Lamp stayed off, and the assistant told the
 user control had failed. Two separate defects produced that:
 
 1. GPT-Live's delegated backend filled every optional parameter with a
@@ -32,7 +32,7 @@ from tests import live_fixtures as fx
 from tests.live_harness import LiveHarness
 
 STATES = [
-    {"entity_id": "light.kitchen_main", "attributes": {"friendly_name": "Atrium Lamp"}},
+    {"entity_id": "light.kitchen_main", "attributes": {"friendly_name": "Foyer Lamp"}},
     {"entity_id": "lock.kitchen_door", "attributes": {"friendly_name": "Entry Lock"}},
 ]
 
@@ -96,7 +96,7 @@ class TestArgumentsReachHomeAssistantClean(unittest.IsolatedAsyncioTestCase):
             await h.call(fx.LIGHT_SET_CALL_ID, "light__HassLightSet",
                          fx.LIGHT_SET_ARGUMENTS, "d1")
             self.assertEqual(h.executed, [("light__HassLightSet", {
-                "name": "Atrium Lamp", "area": "Kitchen",
+                "name": "Foyer Lamp", "area": "Kitchen",
                 "domain": ["light"], "brightness": 100,
             })], "floor='', color='' and temperature=0 made this call fail in the house")
 
@@ -105,7 +105,7 @@ class TestArgumentsReachHomeAssistantClean(unittest.IsolatedAsyncioTestCase):
             await h.call(fx.TURN_ON_CALL_ID, "intent__HassTurnOn",
                          fx.TURN_ON_ARGUMENTS, "d1")
             self.assertEqual(h.executed, [("intent__HassTurnOn", {
-                "name": "Atrium Lamp", "area": "Kitchen", "domain": ["light"],
+                "name": "Foyer Lamp", "area": "Kitchen", "domain": ["light"],
             })])
 
     async def test_the_dropped_keys_are_recorded_without_their_values(self):
@@ -115,7 +115,7 @@ class TestArgumentsReachHomeAssistantClean(unittest.IsolatedAsyncioTestCase):
             line = h.service.calls.snapshot()["recent"][-1]
             self.assertIn("dropped color,floor,temperature", line)
             self.assertIn("-> ok", line)
-            self.assertNotIn("Atrium Lamp", line, "argument values are never logged")
+            self.assertNotIn("Foyer Lamp", line, "argument values are never logged")
 
     async def test_a_consequential_action_still_waits_for_confirmation(self):
         """Sanitizing must not let a gated action through."""
@@ -183,7 +183,7 @@ class TestTheFallbackChainStops(unittest.IsolatedAsyncioTestCase):
                          fx.TURN_ON_ARGUMENTS, "d2")
             self.assertEqual(len(h.executed), 2, "both real attempts were made")
             await h.call("call_third", "intent__HassTurnOn",
-                         '{"name":"Atrium Lamp","area":"Kitchen","domain":["light"]}',
+                         '{"name":"Foyer Lamp","area":"Kitchen","domain":["light"]}',
                          "d3")
             self.assertEqual(len(h.executed), 2,
                              "the third attempt must not be sent to Home Assistant")

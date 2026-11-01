@@ -379,7 +379,7 @@ class MisheardQuestionDoesNotSwitch(unittest.IsolatedAsyncioTestCase):
 class HeldThroughTheRealGate(Patched):
     """End to end: the guarded path holds it, a spoken yes runs it once."""
 
-    STATES = [{"entity_id": "light.atrium", "attributes": {"friendly_name": "Atrium Lamp"}}]
+    STATES = [{"entity_id": "light.foyer", "attributes": {"friendly_name": "Foyer Lamp"}}]
 
     async def gate(self):
         async def states():
@@ -453,11 +453,11 @@ class GuessAfterACompleteAcknowledgement(Patched):
     result went in, so what the voice said next played as the answer."""
 
     def route_a_command(self):
-        return FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                           response(message("The Atrium Lamp is on.")))
+        return FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                           response(message("The Foyer Lamp is on.")))
 
     async def result_is_in(self, h, ack="On it.", ms=100):
-        await h.user_says("Turn on the atrium lamp.")
+        await h.user_says("Turn on the foyer lamp.")
         await asyncio.sleep(0.1)
         h.voice_says(ack, ms=ms)
         await asyncio.sleep(0.15)

@@ -40,7 +40,7 @@ from tests.live_harness import LiveHarness
 
 STATES = [
     {"entity_id": "lock.kitchen_door", "attributes": {"friendly_name": "Entry Lock"}},
-    {"entity_id": "light.kitchen_main", "attributes": {"friendly_name": "Atrium Lamp"}},
+    {"entity_id": "light.kitchen_main", "attributes": {"friendly_name": "Foyer Lamp"}},
 ]
 
 
@@ -560,7 +560,7 @@ class TestConfirmationGate(unittest.IsolatedAsyncioTestCase):
         async with LiveTools(self) as h:
             h.socket.push_all(fx.function_call_sequence(
                 fx.TURN_OFF_CALL_ID, "HassTurnOff",
-                json.dumps({"name": "Atrium Lamp", "domain": ["light"]})))
+                json.dumps({"name": "Foyer Lamp", "domain": ["light"]})))
             await h.socket.wait_for_sent("response.create")
             self.assertEqual(len(h.executed), 1)
             self.assertEqual(json.loads(h.results()[0]["output"])["status"], "done")
@@ -575,7 +575,7 @@ class TestSpeakerGate(unittest.IsolatedAsyncioTestCase):
             h.service.male_only_tools = {"HassTurnOff"}
             h.socket.push_all(fx.function_call_sequence(
                 fx.TURN_OFF_CALL_ID, "HassTurnOff",
-                json.dumps({"name": "Atrium Lamp", "domain": ["light"]})))
+                json.dumps({"name": "Foyer Lamp", "domain": ["light"]})))
             await h.socket.wait_for_sent("response.item.create")
             self.assertEqual(h.executed, [])
             self.assertIn("error", json.loads(h.results()[0]["output"]))
