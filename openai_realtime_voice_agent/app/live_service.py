@@ -5208,7 +5208,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if probe is None:
             return ""
         try:
-            name = probe.name_for(probe.gate_speaker())
+            name = probe.verdict_name()
         except Exception:
             return ""
         return str(name or "").strip().split(" ")[0] if name else ""

@@ -1553,7 +1553,7 @@ class Application:
     def _speaker_name(self, connection) -> Optional[str]:
         """Return the current speaker name for one connection."""
         probe = getattr(connection, "speaker_probe", None)
-        return probe.name_for(probe.gate_speaker()) if probe else None
+        return probe.verdict_name() if probe else None
     
     async def create_openai_service(self, connection):
         """Create the model session for ONE device, in the configured runtime.
@@ -2037,7 +2037,12 @@ class Application:
                 "confirm_action", self._create_confirm_handler(service)
             )
         register_timer_tools(service, self.timer_registry, connection.device_id)
-        register_memory_tools(service, _current_speaker_name)
+
+        def _memory_author():
+            probe = getattr(connection, "speaker_probe", None)
+            return probe.memory_author() if probe else None
+
+        register_memory_tools(service, _memory_author)
         if openclaw_url():
             register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
             logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
