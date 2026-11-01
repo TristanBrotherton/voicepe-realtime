@@ -5,6 +5,7 @@ the test device; the home here is fictional.
 import asyncio
 import json
 import unittest
+import unittest.mock
 
 from app.action_gate import ActionGate, EntityDirectory
 from app.ha_household import parse_overview
@@ -443,6 +444,73 @@ class HeldThroughTheRealGate(Patched):
             self.assertEqual(h.executed, [])
             self.assertIn("Do you want me to turn off every light?", sent[0]["content"])
             self.assertIn("nothing has been done", sent[0]["content"])
+
+
+class GuessAfterACompleteAcknowledgement(Patched):
+    """Seen on a test device: "On it. But they're off." for a command that
+    turned them on. The gate had seen a complete acknowledgement when the
+    result went in, so what the voice said next played as the answer."""
+
+    def route_a_command(self):
+        return FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+                           response(message("The Atrium Lamp is on.")))
+
+    async def result_is_in(self, h, ack="On it.", ms=100):
+        await h.user_says("Turn on the atrium lamp.")
+        await asyncio.sleep(0.1)
+        h.voice_says(ack, ms=ms)
+        await asyncio.sleep(0.15)
+        h.backend.gate.set()
+        await h.wait_commentary()
+        await asyncio.sleep(0.02)
+
+    async def test_the_guess_is_dropped_and_the_answer_plays(self):
+        backend = self.route_a_command()
+        backend.gate.clear()
+        async with RouterHarness(self, backend) as h:
+            await self.result_is_in(h)
+            before = len(h.heard())
+            self.assertGreater(before, 0, "the acknowledgement was heard")
+            h.voice_says(" But they're off.", ms=300)
+            await asyncio.sleep(0.15)
+            self.assertEqual(len(h.heard()), before, "the guess is not heard")
+            h.socket.push({"type": "session.commentary.appended"})
+            await asyncio.sleep(0.02)
+            h.voice_says("It's on.", ms=300)
+            await asyncio.sleep(0.15)
+            self.assertGreater(len(h.heard()), before, "the answer is heard")
+            self.assertEqual(h.service._post_text, "It's on.", "the guess does not count as the answer")
+
+    async def test_the_acknowledgements_own_tail_still_plays(self):
+        from app import live_router
+        backend = self.route_a_command()
+        backend.gate.clear()
+        with unittest.mock.patch.object(live_router, "KNOWN_NAMES", {"sam"}):
+            async with RouterHarness(self, backend) as h:
+                await self.result_is_in(h, "One moment")
+                before = len(h.heard())
+                h.voice_says(", Sam.", ms=200)
+                await asyncio.sleep(0.15)
+                self.assertGreater(len(h.heard()), before, "the rest of the phrase is not cut")
+                self.assertFalse(h.service._gate_drop_until_ack)
+
+    async def test_a_delegation_during_the_send_does_not_repeat_the_answer(self):
+        backend = FakeBackend(response(message("It is noon.")))
+        async with RouterHarness(self, backend) as h:
+            sends = []
+            real = h.service._send_commentary
+
+            async def slow_send(text, did):
+                sends.append(text)
+                if len(sends) == 1:
+                    await h.service._router_on_delegation("d1", "client")
+                await real(text, did)
+            h.service._send_commentary = slow_send
+            await h.user_says("Could you tell me the plan?")
+            await h.wait_commentary(count=2)
+            self.assertIn("It is noon.", sends[0])
+            self.assertIn("already been answered", sends[1])
+            self.assertNotIn("It is noon.", sends[1])
 
 
 if __name__ == "__main__":

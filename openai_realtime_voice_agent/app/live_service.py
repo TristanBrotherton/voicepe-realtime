@@ -1009,6 +1009,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # result went in. While it is only an acknowledgement ("One moment,
         # <name>."), the answer is still owed (answer_owed).
         self._post_text = ""
+        # The complete acknowledgement the voice was saying when the result
+        # went in, while the commentary is not acknowledged yet.
+        self._post_ack_text = ""
         self._result_acked_mono: Optional[float] = None
         # Speaker owner: the model's last output delta of any kind (silence
         # included), a pending split at a new model response (its first
@@ -2862,6 +2865,19 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if role == "assistant" and self.router is not None:
             self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
+            if self._post_ack_text and self._gate == "post" and not self._result_acked:
+                self._post_ack_text += delta
+                if acknowledgement_state(self._post_ack_text) == NOT_ACK:
+                    # "On it. But they're off.": the voice ran on from its
+                    # acknowledgement into a guess, after the gate had seen a
+                    # complete one. Nothing of the answer plays before the
+                    # commentary's acknowledgement (its words may come first,
+                    # its audio does not), so this audio is the guess.
+                    logger.info("⏹️ live speech past the acknowledgement before the result landed: dropped")
+                    self._post_ack_text = ""
+                    self._gate_drop_until_ack = True
+                    self._post_guess_dropped = True
+                    self._need_segment_start = True
             if self._gate_drop_until_ack and (self._gate == "open" or self._post_guess_dropped):
                 pass  # the words of a dropped guess never count as the answer
             elif self._gate == "post":
@@ -3754,6 +3770,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._result_acked = False
         self._result_acked_mono = None
         self._post_text = ""
+        self._post_ack_text = ""
         self._guess_outlasted_wait = False
         self._post_guess_dropped = False
         self._result_heard = False
@@ -4339,8 +4356,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 # The voice believes it said what was dropped; tell it the
                 # user did not hear it, in the same append (improvement 5).
                 text = DROPPED_SPEECH_NOTE + " " + text
-            await self._send_commentary(text, did)
+            # Stamped first: a delegation landing during the send is told this
+            # was answered. Answered with the result again, the voice said the
+            # answer twice.
             op.result_sent_mono = time.monotonic()
+            await self._send_commentary(text, did)
         self._log_route(op, now)
         self._task_flush_soon("result delivered")
 
@@ -4662,6 +4682,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         Returns the number of chunks dropped."""
         held_as_claim = self._gate_blocked
         ack_tail = self._gate_ack_until is not None
+        said = self._gate_text
         # Only a complete acknowledgement still in the lag may play; a phrase
         # that never completed ("Absolutely.") is dropped with the guesses.
         if not self._gate_blocked and acknowledgement_state(self._gate_text) != ACK:
@@ -4703,6 +4724,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._log_held_sample("dropped" if held else "ack played")
         self._gate_reset("post")
         self._gate_drop_until_ack = blocked
+        self._post_ack_text = "" if blocked else said
         for chunk in ack:
             self._enqueue_audio(chunk)
         if held:

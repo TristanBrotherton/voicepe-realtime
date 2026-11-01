@@ -411,7 +411,7 @@ class RouteResult:
         text = (self.text or "").strip()
         if self.kind in (ACTION, LOOKUP):
             return ("Verified result from the home system: " + text +
-                    " Tell the user this briefly in your own words and add nothing that is not stated here.")
+                    " Tell the user this once, briefly, in your own words and add nothing that is not stated here.")
         if self.kind == CONFIRM:
             return ("Nothing has been done yet: a spoken yes is required first. Ask the user this yes/no "
                     "question and nothing else: " + text)
