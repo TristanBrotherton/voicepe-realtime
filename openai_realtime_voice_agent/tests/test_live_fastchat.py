@@ -577,6 +577,66 @@ class IntentEngineVetoesChat(Patched):
             backend.gate.set()
 
 
+class WildcardParseIsNotACommand(Patched):
+    """Home Assistant's parser matches any "tell me ..." as HassGetState with
+    the rest as an unmatched name. It must not veto the classifier's CHAT."""
+
+    STORY = "Tell me a short story about a robot in about six sentences"
+
+    def recognizer(self, heard):
+        recognizer = FakeRecognizer(None)
+        recognizer.last_heard = heard
+        return recognizer
+
+    async def test_the_voices_own_story_plays_at_once(self):
+        backend = FakeBackend(response(message("NO_REQUEST")))
+        backend.gate.clear()  # the full route never answers in this test
+        recognizer = self.recognizer({"intent": "HassGetState", "slots": {"name": "a short story"},
+                                      "targets": 0, "unmatched": ["name"]})
+        async with RouterHarness(self, backend, recognizer=recognizer) as h:
+            h.service.chat_classifier = FakeClassifier("CHAT", 0.01)
+            await h.user_says(self.STORY)
+            await asyncio.sleep(0.2)
+            h.voice_says("A little robot woke each dawn.", ms=400)
+            heard = await heard_within(h, 1.0)
+            self.assertTrue(heard, "the story is not held for the backend")
+            self.assertEqual(h.service.router_stats["fast_chat"], 1)
+            self.assertIsNone(h.service._op.fast_veto)
+            backend.gate.set()
+
+    async def test_a_clean_parse_that_found_no_target_still_vetoes(self):
+        backend = FakeBackend(response(message("Which one?")))
+        backend.gate.clear()
+        recognizer = self.recognizer({"intent": "HassTurnOn", "slots": {"name": "x"}, "targets": 0, "unmatched": []})
+        async with RouterHarness(self, backend, recognizer=recognizer) as h:
+            h.service.chat_classifier = FakeClassifier("CHAT", 0.01)
+            await h.user_says("Could you sort that out for me?")
+            await asyncio.sleep(0.8)
+            self.assertEqual(h.service.router_stats["fast_chat"], 0)
+            self.assertEqual(h.service._op.fast_veto, "the home's intent engine matched")
+            backend.gate.set()
+            await h.wait_commentary()
+
+    async def test_backend_no_request_for_a_wildcard_guess_is_not_a_failure(self):
+        from app.live_router import FAILED, NOTHING, BackendRouter, TurnRouter
+
+        async def route(text, heard):
+            backend = FakeBackend(response(message("NO_REQUEST")))
+            router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=[], post=backend.post),
+                                recognizer=self.recognizer(heard))
+
+            async def execute(name, args):  # pragma: no cover - nothing runs
+                raise AssertionError(name)
+            return (await router.route(text, execute)).kind
+
+        guess = {"intent": "HassGetState", "slots": {}, "targets": 0, "unmatched": ["name"]}
+        self.assertEqual(await route("Tell me a story", guess), NOTHING)
+        self.assertEqual(await route("Turn on the kitchen lights",
+                                     {"intent": "HassTurnOn", "slots": {}, "targets": 0, "unmatched": ["name"]}), FAILED)
+        self.assertEqual(await route("Test lamp on", {"intent": "HassTurnOn", "slots": {"name": "test lamp"},
+                                                      "targets": 1, "unmatched": []}), FAILED)
+
+
 class MoreDeviceWordsVeto(unittest.TestCase):
     def test_security_scenes_modes_climate_and_repeats(self):
         for text in ("Arm the security system please", "Disarm it for me now", "Close the gate for me",

@@ -90,7 +90,7 @@ Carry the request out with the tools, or look it up with them:
 
 Answer formats:
 - Not addressed to the assistant (background speech, television, a cut-off fragment with no request): reply exactly NO_REQUEST. A question cut short but still clear (for example "what time") is a request.
-- Needs no tool (greeting, small talk, general knowledge you can answer without looking anything up): reply exactly CHAT.
+- Needs no tool (greeting, small talk, a story, a joke, ideas, general knowledge you can answer without looking anything up): reply exactly CHAT.
 - Otherwise: one or two short sentences for speech stating the verified result. No lists, URLs or markdown. Use ordinary names, never entity ids."""
 
 # Appended to the backend instructions when discussions are enabled.
@@ -1153,10 +1153,14 @@ class TurnRouter:
                 heard_info = getattr(self.recognizer, "last_heard", None)
                 if heard_info and is_state_question(user_text):
                     heard_info = dict(heard_info, question=True)
-                # Any recognised intent (also one refused locally below) means
-                # a command: the fast chat path is vetoed (v35 merge).
+                # A recognised intent (also one refused locally below) means a
+                # command: the fast chat path is vetoed (v35 merge). A wildcard
+                # parse with a slot unmatched is not one: for any sentence the
+                # parser returns a guess ("Tell me a short story" is HassGetState
+                # with name "a short story"), and the veto dropped the voice's
+                # own story and left about 20 s of silence.
                 rec[2]["intent"] = (getattr(match, "intent", None) if match is not None
-                                    else (heard_info or {}).get("intent"))
+                                    else _clean_parse_intent(heard_info))
             finally:
                 rec[1].set()
             match = await self._own_room(spoken, match, timings)
@@ -1256,10 +1260,12 @@ class TurnRouter:
         self._remember(user_text, new_items)
         upper = text.strip().upper().rstrip(".")
         if not runs and upper == NO_REQUEST:
-            if heard_info and len(user_text.split()) <= COMMAND_MAX_WORDS:
+            if (heard_info and len(user_text.split()) <= COMMAND_MAX_WORDS
+                    and (_clean_parse_intent(heard_info) or is_house_request(user_text, heard_info))):
                 # Home Assistant parsed a command, so it was one (16:22: a
                 # clean "Turn on the kitchen lights" was judged NO_REQUEST and
-                # the user heard 20 s of nothing). Say it was not done.
+                # the user heard 20 s of nothing). Say it was not done. A
+                # wildcard guess with no household verb proves nothing.
                 timings["no_request_vetoed"] = heard_info.get("intent")
                 logger.warning("⛔ router: backend said NO_REQUEST for a parsed command; telling the user")
                 return RouteResult(FAILED, UNCLEAR_TARGET_TEXT, "backend", [], timings)
@@ -1554,6 +1560,14 @@ _READ_INTENT = re.compile(r"Get|Status|LastItems|Nevermind|Respond", re.I)
 # What a failed house request tells the voice (FAILED commentary adds "do
 # not say it was done").
 NOTHING_CHANGED_TEXT = "Nothing was changed: no action ran for this request."
+
+
+def _clean_parse_intent(heard_info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The intent Home Assistant's parser resolved, or None for no parse or a
+    wildcard guess with a slot unmatched."""
+    if not heard_info or heard_info.get("unmatched"):
+        return None
+    return heard_info.get("intent") or None
 
 
 def is_house_request(user_text: str, heard_info: Optional[Dict[str, Any]] = None) -> bool:
