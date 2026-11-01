@@ -1923,7 +1923,9 @@ class Application:
                             context=lambda: router_context() + _speaker_note() + snapshot.block(),
                             device_id=connection.device_id or None, household=household,
                             satellite_ip=getattr(getattr(getattr(connection, "websocket", None),
-                                                         "client", None), "host", None))
+                                                         "client", None), "host", None),
+                            local_state_reads=not any(t.rsplit("__", 1)[-1] == "GetLiveContext"
+                                                      for t in self.male_only_tools))
         shared = lambda: self.instructions + memory_instructions()  # noqa: E731
         service = OpenAILiveLLMService(
             api_key=self.openai_api_key,

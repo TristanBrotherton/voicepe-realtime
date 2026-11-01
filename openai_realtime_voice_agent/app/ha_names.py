@@ -147,6 +147,19 @@ def _area_request(spoken: List[str], area_names: Iterable[str]) -> bool:
     return bool(rest) and any(rest == words(a) for a in area_names)
 
 
+def _device_inside_room_name(spoken: List[str], entities: List[Entity]) -> Optional[Entity]:
+    """"Voice PE Test Light" with an area called "Voice PE Test" reads as that
+    room's lights, but one device in that room holds every word said: it is
+    that device. Anything else, and any plural, stays a room request for Home
+    Assistant."""
+    if any(w in KIND_WORDS and _stem(w) != w for w in spoken):
+        return None
+    room = [w for w in spoken if w not in KIND_WORDS]
+    found = [e for e in entities if any(words(a) == room for a in e.areas)
+             and any(_holds(spoken, n) for n in e.names)]
+    return found[0] if len(found) == 1 else None
+
+
 def best_entity(spoken_name: str, entities: List[Entity], domains: List[str] = (),
                 areas: List[str] = (), area_names: Iterable[str] = ()
                 ) -> Optional[Tuple[Entity, float, bool]]:
@@ -166,7 +179,8 @@ def best_entity(spoken_name: str, entities: List[Entity], domains: List[str] = (
             return exact[0], 1.0, True
         return None
     if _area_request(spoken, area_names):
-        return None
+        only = _device_inside_room_name(spoken, entities)
+        return (only, 1.0, False) if only is not None else None
     holders = [e for e in entities if any(_holds(spoken, n) for n in e.names)]
     sole = holders[0] if len(holders) == 1 else None
     ranked = []

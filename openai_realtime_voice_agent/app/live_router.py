@@ -445,6 +445,10 @@ class LocalMatch:
     slots: Dict[str, Any]
     domains: List[str]
     targets: int
+    # With a state slot and one target ("Is the test light on?"): does the
+    # target's state equal the slot right now? Home Assistant's debug reply
+    # says so per target. None otherwise.
+    state_matches: Optional[bool] = None
 
 
 class HaIntentRecognizer:
@@ -692,8 +696,12 @@ class HaIntentRecognizer:
                 slots[str(key)] = value
         targets = res.get("targets") or {}
         domains = sorted({str(entity).split(".", 1)[0] for entity in targets})
+        state_matches = None
+        if len(targets) == 1 and isinstance(next(iter(targets.values())), dict):
+            matched = next(iter(targets.values())).get("matched")
+            state_matches = matched if isinstance(matched, bool) else None
         return LocalMatch(intent=str((res.get("intent") or {}).get("name") or ""), slots=slots,
-                          domains=domains, targets=len(targets))
+                          domains=domains, targets=len(targets), state_matches=state_matches)
 
 
 # Why a local match was refused. A refusal never acts: the request goes to
@@ -753,6 +761,22 @@ def local_tool_call(match: Optional[LocalMatch], tool_names: List[str]) -> Optio
     if match.intent in NO_TARGET_INTENTS:
         return tool, {}
     return tool, dict(match.slots)
+
+
+def local_state_answer(match: Optional[LocalMatch]) -> str:
+    """The answer to a yes/no state question Home Assistant resolved to one
+    entity ("Is the test light on?": HassGetState, name and state slots, one
+    target), or "". Home Assistant has compared the state itself, so this
+    needs no backend call. A mismatch is "not on", never "off": the debug
+    reply does not say what the state is (it may be unavailable)."""
+    if (match is None or match.intent != "HassGetState" or match.targets != 1
+            or match.state_matches is None or not _named(match.slots.get("name"))
+            or not _named(match.slots.get("state"))):
+        return ""
+    name, state = str(match.slots["name"]).strip(), str(match.slots["state"]).strip()
+    article = "" if name.lower().startswith(("the ", "my ", "our ")) else "The "
+    text = f"{article}{name} is {'' if match.state_matches else 'not '}{state}."
+    return text[0].upper() + text[1:]
 
 
 def describe_local(intent: str, slots: Dict[str, Any]) -> str:
@@ -957,8 +981,11 @@ class TurnRouter:
                  context: Optional[Callable[[], str]] = None,
                  history_turns: int = ROUTER_HISTORY_TURNS,
                  device_id: Optional[str] = None, household=None,
-                 satellite_ip: Optional[str] = None):
+                 satellite_ip: Optional[str] = None, local_state_reads: bool = True):
         self.backend = backend
+        # False when reading state is reserved for one speaker (the guards
+        # only see tool calls, and a local state answer is not one).
+        self.local_state_reads = local_state_reads
         self.recognizer = recognizer
         self.context = context
         # The satellite this router serves (its address). Its room comes from
@@ -1114,12 +1141,15 @@ class TurnRouter:
         user_text = (user_text or "").strip()
         refused: Optional[str] = None
         heard_info: Optional[Dict[str, Any]] = None
+        # Home Assistant's templates start at the verb: "And turn off the test
+        # light" is no match at all. The connective is for the listener.
+        spoken = strip_lead_filler(user_text)
         if self.recognizer is not None and self.recognizer.available:
             t0 = time.monotonic()
             rec = (user_text, asyncio.Event(), {"intent": None})
             self._recognition = rec
             try:
-                match = await self.recognizer.recognize(user_text, device_id=self._ha_device_id())
+                match = await self.recognizer.recognize(spoken, device_id=self._ha_device_id())
                 heard_info = getattr(self.recognizer, "last_heard", None)
                 if heard_info and is_state_question(user_text):
                     heard_info = dict(heard_info, question=True)
@@ -1129,8 +1159,15 @@ class TurnRouter:
                                     else (heard_info or {}).get("intent"))
             finally:
                 rec[1].set()
-            match = await self._own_room(user_text, match, timings)
+            match = await self._own_room(spoken, match, timings)
             timings["ha_intent_ms"] = int((time.monotonic() - t0) * 1000)
+            answer = local_state_answer(match) if self.local_state_reads else ""
+            if answer:
+                timings["local_intent"] = match.intent
+                self._remember(user_text, [{"role": "assistant", "content": answer}])
+                timings["route_ms"] = int((time.monotonic() - started) * 1000)
+                return RouteResult(LOOKUP, answer, "ha_local",
+                                   [ToolRun(name=match.intent, ok=True, kind="ok")], timings)
             refused = local_refusal(match, self.backend.tool_names)
             if refused not in (None, REFUSED_NO_MATCH):
                 # Recognised but not safe to run locally: nothing runs here;
@@ -1193,6 +1230,7 @@ class TurnRouter:
                 timings["route_ms"] = int((time.monotonic() - started) * 1000)
                 return RouteResult(LOOKUP, text, "clock", [run], timings)
         t2 = time.monotonic()
+        execute = _live_context_retry(execute)
         if is_state_question(user_text):
             # A state question never changes the house (v35 rig: "Is the test
             # light on?" ran HassLightSet). Household-control calls are
@@ -1281,6 +1319,17 @@ class TurnRouter:
             return
         self._history.append([{"role": "user", "content": user_text}] + list(items))
         del self._history[:-self.history_turns]
+
+
+_LEAD_FILLER = re.compile(
+    r"^\W*(?:(?:and|also|then|plus|so|now|ok|okay|oh|um|uh|well)\b[\s,.]*)+", re.I)
+
+
+def strip_lead_filler(text: str) -> str:
+    """The sentence without its leading connective ("And", "Also", "Then",
+    "OK so"); unchanged if nothing else would be left."""
+    text = (text or "").strip()
+    return _LEAD_FILLER.sub("", text).strip() or text
 
 
 _CLOCK = re.compile(
@@ -1412,7 +1461,7 @@ def claims_own_action(text: str) -> bool:
 # A question about state. "did/have/has" are not leads: "Did you turn off
 # the lights?" asks about an action and stays protected.
 _QUESTION_LEAD = re.compile(
-    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|oh)\b[\s,]*)*"
+    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh)\b[\s,]*)*"
     r"(?:what|what's|whats|where|where's|when|when's|which|who|who's|how|how's|is|isn't|are|aren't|"
     r"was|were|does|doesn't)\b", re.I)
 _REQUEST_FORM = re.compile(
@@ -1479,10 +1528,10 @@ def is_state_question(text: str) -> bool:
 
 # A yes/no state question: "is/are/was/were ... ?" (not "is it possible to").
 _BE_QUESTION = re.compile(
-    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|oh)\b[\s,]*)*(?:is|isn't|are|aren't|was|were)\b(?!\s+you\b)", re.I)
+    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh)\b[\s,]*)*(?:is|isn't|are|aren't|was|were)\b(?!\s+you\b)", re.I)
 
 
-_FILLER = re.compile(r"(?:(?:hey|hi|ok|okay|so|um|uh|oh|and|also|well)\s*)+", re.I)
+_FILLER = re.compile(r"(?:(?:hey|hi|ok|okay|so|um|uh|oh|and|also|then|well)\s*)+", re.I)
 
 
 def is_action_shaped(text: str) -> bool:
@@ -1561,6 +1610,29 @@ def _read_only_execute(execute: ExecuteFn) -> ExecuteFn:
                               "Answer from a read tool (GetLiveContext) instead."}, _Refused())
         return await execute(name, arguments)
     return guarded
+
+
+def _live_context_retry(execute: ExecuteFn) -> ExecuteFn:
+    """A read filtered by a spoken name that matched nothing is asked again
+    without the name, so the backend reads the area (or domain) and matches the
+    name itself. Home Assistant's name filter is exact: "Voice PE Test Light"
+    missed "Voice PE Live Test Light", and the voice said the light was not
+    exposed. Without an area or domain to fall back on the miss stands: an
+    unfiltered read is every exposed entity."""
+    async def retrying(name: str, arguments: dict, **kwargs):
+        result, outcome = await execute(name, arguments, **kwargs)
+        if (name.rsplit("__", 1)[-1] != "GetLiveContext" or getattr(outcome, "ok", True)
+                or getattr(outcome, "kind", "") != "no-matching-entity"
+                or not isinstance(arguments, dict) or not arguments.get("name")):
+            return result, outcome
+        wider = {k: v for k, v in arguments.items() if k not in ("name", "domain")} if arguments.get("area") \
+            else {k: v for k, v in arguments.items() if k != "name"}
+        if not (wider.get("area") or wider.get("domain")):
+            return result, outcome
+        logger.info("🔁 router: GetLiveContext matched no name; reading again without the name filter")
+        again, again_outcome = await execute(name, wider, **kwargs)
+        return (again, again_outcome) if getattr(again_outcome, "ok", False) else (result, outcome)
+    return retrying
 
 
 def _short(result: Any, limit: int = 300) -> str:
