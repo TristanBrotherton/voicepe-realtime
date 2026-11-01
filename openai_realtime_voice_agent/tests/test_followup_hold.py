@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 from pipecat.processors.frame_processor import FrameProcessor
 
+import app.followup_hold as followup_hold
 import app.live_session_gate as gate_module
 from app.followup_hold import (
     BLOCK_MS,
@@ -571,13 +572,25 @@ class WakeWatchCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.5)
         self.assertEqual(self.not_transcribed, 0)
 
-    async def test_a_reply_without_a_transcript_is_reported_at_once(self):
-        self.hold.note_wake()
-        self.hold.feed(SPEECH)
-        self.hold.note_reply_without_transcript()
-        await asyncio.sleep(0.05)
-        self.assertEqual(self.not_transcribed, 1)
-        self.assertFalse(self.hold.wake_watch)
+    async def test_a_reply_without_a_transcript_is_reported_after_a_grace(self):
+        with patch.object(followup_hold, "REPLY_WITHOUT_TRANSCRIPT_WAIT_S", 0.1):
+            self.hold.note_wake()
+            self.hold.feed(SPEECH)
+            self.hold.note_reply_without_transcript()
+            await asyncio.sleep(0.02)
+            self.assertEqual(self.not_transcribed, 0, "its transcript can still come")
+            await asyncio.sleep(0.15)
+            self.assertEqual(self.not_transcribed, 1)
+            self.assertFalse(self.hold.wake_watch)
+
+    async def test_a_transcript_during_the_grace_means_it_was_caught(self):
+        with patch.object(followup_hold, "REPLY_WITHOUT_TRANSCRIPT_WAIT_S", 0.1):
+            self.hold.note_wake()
+            self.hold.feed(SPEECH)
+            self.hold.note_reply_without_transcript()
+            self.hold.note_phase("thinking")
+            await asyncio.sleep(0.15)
+            self.assertEqual(self.not_transcribed, 0)
 
     async def test_a_reply_without_a_transcript_and_no_speech_heard_is_left_to_the_gate(self):
         self.hold.note_wake()
