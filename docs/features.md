@@ -242,8 +242,9 @@ Expiry is polite, in three stages:
 1. **One personal spoken announcement** — *"Alex, your pasta timer is done"* —
    addressed to whoever set it (via [speaker recognition](#speaker-recognition--voice-enrollment)).
    No nagging repeats.
-2. **A 60-second grace period.** A wake, the button or "stop" on the device that set the timer (from the start of the announcement) counts as
-   acknowledgement — no bell.
+2. **A 60-second grace period.** A wake or the button on the device that set the timer (from the start of the announcement) counts as
+   acknowledgement — no bell. So does "stop" with current firmware, which listens for it
+   during the announcement (after its first second, which is the device's own echo) and for 60 seconds after it.
 3. **A gentle two-tone bell** only if unacknowledged, auto-stopping after
    2 minutes. Silence it anytime with the **center button** or **"stop"**.
 

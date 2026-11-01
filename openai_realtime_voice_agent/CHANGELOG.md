@@ -204,9 +204,12 @@ All notable changes to this add-on. Newest first.
   into the line, the cut walked back across both, and the name was heard
   twice. The walk back now stops where the discarded words end.
 - A heard timer no longer rings. The bell after the announcement is for a
-  timer nobody heard: a wake, the button or "stop" on that device from the
-  start of the announcement acknowledges it (a "stop" said during the line
-  used to be missed), and the wait before the bell is 60 s instead of 20 s.
+  timer nobody heard: a wake or the button on that device from the start of
+  the announcement acknowledges it, and the wait before the bell is 60 s
+  instead of 20 s. (Correction: this entry also said "stop" did, but firmware
+  of this version only listened for "stop" during a reply or while the bell
+  rang and never sent it to the add-on, so the bell still rang. A "stop" counts
+  from the firmware that arms it during the announcement and for 60 s after.)
 
 ## 0.20.2 (fork)
 

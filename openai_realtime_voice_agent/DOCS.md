@@ -139,8 +139,9 @@ answer back.
 ## 6. Voice timers
 
 Set, cancel and list timers by voice. On expiry: one personal spoken announcement
-(addressed to whoever set the timer), a 60-second grace window (a wake, the button or "stop" counts as
-acknowledged), then a gentle bell only if unacknowledged — silenced by the center
+(addressed to whoever set the timer), a 60-second grace window (a wake or the button counts as
+acknowledged, and so does "stop" with current firmware, which listens for it during the announcement and
+for 60 seconds after it), then a gentle bell only if unacknowledged — silenced by the center
 button or "stop".
 
 Setup: set **`timer_ring_entity`** to your device's exposed
