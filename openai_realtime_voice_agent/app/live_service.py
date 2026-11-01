@@ -1057,6 +1057,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_held: list = []
         self._guess_tail_open = False
         self._last_commentary: Optional[tuple] = None
+        self._voice_words_this_gate = ""
         self._answer_nudged = False
         # The start of the answer, in before the acknowledgement (ANSWER_EARLIEST_S).
         self._gate_answer_head: List = []
@@ -2942,6 +2943,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     self._gate_drop_until_ack = True
                     self._post_guess_dropped = True
                     self._need_segment_start = True
+            self._voice_words_this_gate = (self._voice_words_this_gate + delta)[-2000:]
             if (self._guess_tail_since is not None
                     and time.monotonic() - (self._gate_dropped_last or 0.0) >= GUESS_TAIL_GAP_S):
                 # The guess's audio has paused: these words are what follows it.
@@ -3856,6 +3858,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._guess_tail_held = []
         self._guess_tail_open = False
         self._answer_nudged = False
+        self._voice_words_this_gate = ""
         self._gate_answer_head = []
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
@@ -4669,6 +4672,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         await asyncio.sleep(ANSWER_OWED_NUDGE_S)
         if (self._result_acked_mono == acked and not self._answer_nudged and not self._guess_tail_open
                 and self.answer_owed):
+            # "One moment. It's off." in one breath: its words past the
+            # acknowledgement were not counted as the answer, but they played.
+            if self._result_heard and acknowledgement_state(self._voice_words_this_gate) == NOT_ACK:
+                return
             await self._ask_for_the_result("the voice has only acknowledged the result")
 
     async def _ask_for_the_result(self, why: str) -> None:
