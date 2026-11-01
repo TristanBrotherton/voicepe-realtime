@@ -340,6 +340,9 @@ DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Sp
 # device). The wait therefore covers a whole spoken guess, not just its tail:
 # while it lasts the device shows `thinking` and the session stays open.
 GUESS_QUIET_S = 0.6
+# A locally answered question goes to the voice no sooner than this after routing
+# began (its guess started 0.6-1.1 s after that on test devices).
+LOCAL_ANSWER_MIN_WAIT_S = 1.3
 GUESS_WAIT_MAX_S = 20.0
 # The answer's audio starts at least ANSWER_EARLIEST_S after the commentary is
 # sent (402 ms at the least over 178 results on test devices, 770 ms typically).
@@ -4404,6 +4407,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._turn_heard_mono is None:
                 self._arm_router_silent_close()
         else:
+            if result.kind == ROUTE_LOOKUP and result.source == "ha_local":
+                # Answered so fast that the voice's own guess has not started,
+                # and it can start before the commentary reaches the model: it
+                # would then pass for the answer ("Yes, it's on." with the light
+                # off). Hold the result until a guess would have shown itself.
+                await asyncio.sleep(max(0.0, op.started_mono + LOCAL_ANSWER_MIN_WAIT_S - time.monotonic()))
+                if op.stopped:
+                    if not op.background:
+                        self._task_detach(op, "stopped")
+                    await self._task_complete(op)
+                    return
             # A guess is in flight when its words were held, even if none of
             # its audio has arrived yet (it is then still to stream).
             guess = self._gate_blocked and bool(self._gate_text.strip())
