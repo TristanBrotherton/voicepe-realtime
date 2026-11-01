@@ -548,6 +548,22 @@ class VerifiedOnlySpeech(Patched):
                 await asyncio.sleep(0.5)
                 self.assertEqual(len(h.socket.of("session.commentary.append")), before, "not asked again")
 
+    async def test_a_short_answer_that_starts_like_an_acknowledgement_is_not_asked_for_again(self):
+        """Seen on a device: "On." answered "Turn on the test light", counted
+        as the start of "On it.", and the re-prompt said "On." a second time."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        with patch.object(live_service_module, "ANSWER_OWED_NUDGE_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                h.voice_says("On.", ms=100)
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before, "not asked again")
+
     async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
         """The bound: an answer the voice runs into with no gap at all must not
         be lost for good."""

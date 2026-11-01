@@ -4676,6 +4676,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # acknowledgement were not counted as the answer, but they played.
             if self._result_heard and acknowledgement_state(self._voice_words_this_gate) == NOT_ACK:
                 return
+            # "On." is the start of an acknowledgement ("On it.") to the owed
+            # check, and the whole answer to "Turn on the test light": said
+            # again, the user heard it twice. Only silence or a complete
+            # acknowledgement ("One moment.") still owes the answer.
+            said = self._post_text.strip()
+            if said and acknowledgement_state(said) != ACK:
+                return
             await self._ask_for_the_result("the voice has only acknowledged the result")
 
     async def _ask_for_the_result(self, why: str) -> None:
