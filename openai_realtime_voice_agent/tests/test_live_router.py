@@ -482,6 +482,35 @@ class VerifiedOnlySpeech(Patched):
                 self.assertLess(len(heard), len(speech), "from the acknowledgement on, not the guess's start")
                 self.assertFalse(h.service.answer_owed)
 
+    async def test_a_guess_that_was_all_the_voice_said_is_asked_for_again(self):
+        """Seen on a device: "Done." was the guess and all the voice said; it
+        was dropped, and the turn was silent. Asked once to say the result."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(self._stream(h, fx.tone(800, freq=330.0), words=" on"))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(0.25)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(live_service_module.GUESS_TAIL_ANSWER_WAIT_S + 0.2)
+                self.assertEqual(h.heard(), b"", "not a fragment of the guess")
+                self.assertGreater(len(h.socket.of("session.commentary.append")), before, "asked again")
+                answer = fx.tone(300)
+                h.socket.push({"type": "session.commentary.appended"})
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "It's on."})
+                h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer)
+
     async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
         """The bound: an answer the voice runs into with no gap at all must not
         be lost for good."""

@@ -366,8 +366,10 @@ GUESS_TAIL_MAX_S = 6.0
 # wish. It's off."): the tail then holds the answer. The tail is kept, and if
 # nothing audible follows it this long (longer than the answer ever took after
 # the commentary, 1492 ms), it is played: a guess's last words before the answer
-# beat no answer at all.
+# beat no answer at all. A tail too short to be an answer: the guess was all the
+# voice said ("Done."), and it was dropped, so it is asked once to say the result.
 GUESS_TAIL_ANSWER_WAIT_S = 1.6
+GUESS_TAIL_MIN_ANSWER_S = 0.6
 # After a verified result is acknowledged, speech that is only an
 # acknowledgement ("One moment, <name>.") does not answer it: the reply stays
 # under way (no utterance end, no idle) until the answer is spoken, at most
@@ -1046,6 +1048,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_dropped_streak = 0
         self._guess_tail_since: Optional[float] = None
         self._guess_tail_held: list = []
+        self._guess_tail_open = False
+        self._last_commentary: Optional[tuple] = None
         # The start of the answer, in before the acknowledgement (ANSWER_EARLIEST_S).
         self._gate_answer_head: List = []
         # What the voice has said (heard, not dropped) since the verified
@@ -1616,6 +1620,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         all of it: RouterOp.stopped. A result already promised for later
         (promoted) or already gone in is left alone."""
         self._guess_tail_held = []
+        self._guess_tail_open = False
         for task in [t for t in self._tasks.values() if t.session_sent_mono is not None]:
             # A task's result going into the session the stop is closing,
             # none of it played yet: not handed back for the next wake.
@@ -3840,6 +3845,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_dropped_streak = 0
         self._guess_tail_since = None
         self._guess_tail_held = []
+        self._guess_tail_open = False
         self._gate_answer_head = []
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
@@ -4552,6 +4558,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
     async def _send_commentary(self, text: str, delegation_id: Optional[str]) -> None:
         # Stamped first: its acknowledgement is judged against this.
         self._commentary_sent_mono = time.monotonic()
+        self._last_commentary = (text, delegation_id)
         for chunk in chunk_text(text):
             payload = context_append("commentary", chunk, delegation_id)
             self._pending_appends[payload["event_id"]] = time.monotonic()
@@ -4584,6 +4591,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._gate_drop_until_ack and self._guess_streaming():
                 self._guess_tail_since = time.monotonic()
                 self._guess_tail_held = []
+                self._guess_tail_open = True
                 self._spawn(self._guess_tail_watch(), "live-guess-tail")
                 self._post_guess_dropped = True
                 logger.info("⏹️ a dropped guess is still streaming at the acknowledgement: "
@@ -4650,30 +4658,41 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         logger.info(f"▶️ the dropped guess's tail ended: {why}; the voice is heard from here")
         self._guess_tail_since = None
         self._guess_tail_held = []
+        self._guess_tail_open = False
         self._post_guess_dropped = False
         return False
 
     async def _guess_tail_watch(self) -> None:
-        """Nothing audible after the tail: the answer was in it. Play it."""
+        """Nothing audible after the tail: the answer was in it, or never came."""
         await asyncio.sleep(GUESS_TAIL_ANSWER_WAIT_S)
-        while self._guess_tail_held:
+        while self._guess_tail_open:
             wait = (self._gate_dropped_last or 0.0) + GUESS_TAIL_ANSWER_WAIT_S - time.monotonic()
             if wait <= 0:
                 break
             await asyncio.sleep(wait)
+        if not self._guess_tail_open:
+            return
+        self._guess_tail_open = False
         held, self._guess_tail_held = self._guess_tail_held, []
         while held and not held[-1].audible:
             held.pop()
-        if not held or self._gate not in ("post", "open"):
+        if self._gate not in ("post", "open"):
             return
-        logger.info(f"▶️ the voice ran from its guess into the answer with no gap: {len(held)} held chunks played")
         self._guess_tail_since = None
         self._post_guess_dropped = False
-        self._gate_dropped -= len(held)
-        for chunk in held:
-            self._enqueue_audio(chunk)
-        # The answer is no longer owed; these words were not counted while dropped.
-        self._post_text = (self._post_text + " (ran on from the guess)")[-2000:]
+        audible_s = sum(len(c.pcm) for c in held if c.audible) / (2 * 24000)
+        if audible_s >= GUESS_TAIL_MIN_ANSWER_S:
+            logger.info(f"▶️ the voice ran from its guess into the answer with no gap: {len(held)} held "
+                        "chunks played")
+            self._gate_dropped -= len(held)
+            for chunk in held:
+                self._enqueue_audio(chunk)
+            # The answer is no longer owed; these words were not counted while dropped.
+            self._post_text = (self._post_text + " (ran on from the guess)")[-2000:]
+        elif self._last_commentary is not None:
+            logger.info("🔁 the voice's guess was all it said, and it was dropped: asking it to say the result")
+            text, delegation_id = self._last_commentary
+            await self._send_commentary("You have not said this out loud yet. Say it now. " + text, delegation_id)
 
     def _gate_push(self, chunk, end_ms: Optional[float] = None) -> None:
         if self._gate == "idle":
@@ -4721,6 +4740,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return
         if chunk.audible:
             self._guess_tail_held = []   # the voice goes on: the tail was only the guess
+            self._guess_tail_open = False
         self._enqueue_audio(chunk, end_ms)
 
     async def _gate_release(self) -> None:
