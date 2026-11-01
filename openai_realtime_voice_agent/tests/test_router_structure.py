@@ -270,6 +270,7 @@ class WideToolsClearCommandElseConfirm(unittest.IsolatedAsyncioTestCase):
                            ("intent__HassTurnOff", {"floor": "Upstairs", "domain": ["light"]}),
                            ("homeassistant__GetLiveContext", {}), ("intent__HassListAddItem", {"item": "x"}),
                            ("confirm_action", {"confirm_id": "x"}), ("web_search", {"query": "x"}),
+                           ("intent__HassMediaNext", {}), ("intent__HassVacuumStart", {}),
                            ("ask_openclaw", {"question": "x"})):
             self.assertFalse(is_wide_effect(name, args), (name, args))
 
@@ -511,6 +512,183 @@ class GuessAfterACompleteAcknowledgement(Patched):
             self.assertIn("It is noon.", sends[0])
             self.assertIn("already been answered", sends[1])
             self.assertNotIn("It is noon.", sends[1])
+
+
+def report(*success, failed=()):
+    return json.dumps({"speech": {}, "response_type": "action_done",
+                       "data": {"success": list(success), "failed": list(failed)}})
+
+
+def entity(name, entity_id):
+    return {"name": name, "type": "entity", "id": entity_id}
+
+
+class RepliesComeFromWhatRan(unittest.IsolatedAsyncioTestCase):
+    """"Turn on the test switch in the test room", heard as "and the test
+    room": the switch turned on and the reply doubted it, or named the room as
+    a second device."""
+
+    SWITCH = report(entity("Lab Test Switch", "input_boolean.lab_test_switch"))
+
+    def test_the_fact(self):
+        from app.live_router import action_fact
+        self.assertEqual(action_fact("intent__HassTurnOn", self.SWITCH), "Turned on Lab Test Switch.")
+        self.assertEqual(action_fact("HassTurnOff", json.loads(self.SWITCH)), "Turned off Lab Test Switch.")
+        lamps = [entity("A", "light.a"), entity("B", "light.b")]
+        self.assertEqual(action_fact("intent__HassTurnOff", report(*lamps)), "Turned off A and B.")
+        self.assertEqual(action_fact("intent__HassTurnOff", report({"name": "Hall", "type": "area", "id": "hall"}, *lamps)),
+                         "Turned off 2 devices in Hall.")
+
+    def test_no_fact_when_it_does_not_say_or_reads_wrong(self):
+        from app.live_router import action_fact
+        for name, result in (
+            ("intent__HassTurnOn", {"success": True}),
+            ("intent__HassTurnOn", "not json"),
+            ("intent__HassTurnOn", report()),
+            ("intent__HassTurnOn", report(entity("A", "light.a"), failed=[entity("B", "light.b")])),
+            ("intent__HassTurnOn", report(entity("Gate", "cover.gate"))),
+            ("intent__HassTurnOff", report(entity("Door", "lock.door"))),
+            ("intent__HassLightSet", self.SWITCH),
+            ("homeassistant__GetLiveContext", self.SWITCH),
+        ):
+            self.assertEqual(action_fact(name, result), "", result)
+
+    async def route(self, text, *responses, results=None):
+        router = router_with(FakeBackend(*responses))
+        execute, _ = running(results or {"HassTurnOn": self.SWITCH, "HassTurnOff": self.SWITCH})
+        return await router.route(text, execute), router
+
+    async def test_a_doubting_reply_does_not_undo_what_ran(self):
+        result, router = await self.route(
+            "Turn on the test switch and the test room",
+            response(call("intent__HassTurnOn", {"name": "test switch"}, "c1")),
+            response(message("I'm not sure which switch you mean.")))
+        self.assertEqual((result.kind, result.text), (ACTION, "Turned on Lab Test Switch."))
+        self.assertIn("Turned on Lab Test Switch.", result.commentary())
+        self.assertEqual(router.last_assistant(), "Turned on Lab Test Switch.")
+
+    async def test_a_garbled_reply_is_replaced_too(self):
+        result, _ = await self.route(
+            "Turn off the test light and the test room",
+            response(call("intent__HassTurnOff", {"name": "test light"}, "c1")),
+            response(message("The test light and the test room are off.")))
+        self.assertEqual(result.text, "Turned off Lab Test Switch.")
+
+    async def test_a_read_in_the_mix_keeps_the_backends_answer(self):
+        result, _ = await self.route(
+            "Turn off the lamp and is the door locked",
+            response(call("intent__HassTurnOff", {"name": "lamp"}, "c1"),
+                     call("homeassistant__GetLiveContext", {"name": "door"}, "c2")),
+            response(message("The lamp is off and the door is locked.")),
+            results={"HassTurnOff": self.SWITCH, "GetLiveContext": {"result": "locked"}})
+        self.assertEqual(result.text, "The lamp is off and the door is locked.")
+
+    async def test_a_report_with_no_data_keeps_the_backends_answer(self):
+        result, _ = await self.route("Turn on the lamp", response(call("intent__HassTurnOn", {"name": "lamp"}, "c1")),
+                                     response(message("The lamp is on.")), results={"HassTurnOn": {"success": True}})
+        self.assertEqual(result.text, "The lamp is on.")
+
+
+class FakeHousehold:
+    class Room:
+        def __init__(self, name):
+            self.name = name
+
+    def __init__(self, *rooms):
+        self.rooms = [self.Room(r) for r in rooms]
+
+    def spoken_room(self, text):
+        from app.ha_household import mentions
+        return next((r for r in self.rooms if mentions(text, r.name)), None)
+
+    def room_of(self, ip):
+        return None
+
+    def device_id_of(self, ip):
+        return None
+
+    def resolve_target(self, name, args):
+        return args, None
+
+
+class AndTheRoom(unittest.IsolatedAsyncioTestCase):
+    MATCH = LocalMatch("HassTurnOn", {"name": "test switch", "area": "test room"}, ["input_boolean"], 1)
+
+    async def route(self, text, *matches, backend=None):
+        recognizer = Recognizer(*matches)
+        backend = backend or FakeBackend(response(message("OK?")))
+        router = router_with(backend, recognizer, household=FakeHousehold("Test Room", "Hall"))
+        execute, executed = running()
+        return await router.route(text, execute), recognizer, executed
+
+    async def test_heard_as_and_it_runs_locally(self):
+        result, recognizer, executed = await self.route("Turn on the test switch and the test room", None, self.MATCH)
+        self.assertEqual(recognizer.sentences, ["Turn on the test switch and the test room",
+                                                "Turn on the test switch in the test room"])
+        self.assertEqual(result.source, "ha_local")
+        self.assertEqual(executed[0][1], {"name": "test switch", "area": "test room"})
+
+    async def test_two_real_requests_are_not_merged_into_a_wrong_target(self):
+        result, recognizer, executed = await self.route("Turn on the lamp and the hall", None, None)
+        self.assertEqual(len(recognizer.sentences), 2)
+        self.assertEqual(result.source, "backend")
+        self.assertEqual(executed, [])
+
+    async def test_not_a_room_is_not_asked_again(self):
+        _, recognizer, _ = await self.route("Turn on the lamp and the fan", None)
+        self.assertEqual(len(recognizer.sentences), 1)
+
+
+class SelfCorrectionInAListRequest(unittest.IsolatedAsyncioTestCase):
+    """What Home Assistant really parsed: the item is everything up to the last
+    "to the ... list", the list is the corrected one."""
+
+    TOOLS = TOOLS + [{"type": "function", "name": "todo__HassListAddItem", "description": "Add.",
+                      "parameters": {"type": "object", "properties": {"item": {"type": "string"}}}}]
+    GARBLED = LocalMatch("HassListAddItem", {"item": "oat bites to the shopping list Sorry add it", "name": "Hardware"},
+                         ["todo"], 1)
+
+    def router(self, backend, recognizer=None):
+        return TurnRouter(BackendRouter("k", model="m", instructions="i", tools=self.TOOLS, post=backend.post),
+                          recognizer=recognizer)
+
+    def test_garbled_or_not(self):
+        from app.live_router import is_garbled_item
+        for item in ("oat bites to the shopping list Sorry add it", "milk to the test list actually add it",
+                     "milk sorry eggs", "milk I mean eggs", "eggs no wait"):
+            self.assertTrue(is_garbled_item(item), item)
+        for item in ("milk", "oat bites", "mac and cheese", "Sorrel", "waiter's friend", "bread", ""):
+            self.assertFalse(is_garbled_item(item), item)
+
+    async def test_it_does_not_run_locally_and_the_backend_carries_the_correction(self):
+        backend = FakeBackend(
+            response(call("todo__HassListAddItem", {"item": "Oat bites", "name": "Hardware"}, "c1")),
+            response(message("Oat bites is on the hardware list.")))
+        execute, executed = running()
+        result = await self.router(backend, Recognizer(self.GARBLED)).route(
+            "Add oat bites to the shopping list. Sorry, add it to the hardware list", execute)
+        self.assertEqual(result.source, "backend")
+        self.assertEqual(result.timings["local_refused"], "self_correction_in_item")
+        self.assertEqual([e[1] for e in executed], [{"item": "Oat bites", "name": "Hardware"}])
+
+    async def test_the_backend_is_told_and_cannot_add_it_garbled_either(self):
+        from app.live_router import ROUTER_BACKEND_INSTRUCTIONS
+        self.assertIn("corrects themselves", ROUTER_BACKEND_INSTRUCTIONS)
+        backend = FakeBackend(
+            response(call("todo__HassListAddItem", {"item": "oat bites to the shopping list sorry", "name": "Hardware"}, "c1")),
+            response(call("todo__HassListAddItem", {"item": "Oat bites", "name": "Hardware"}, "c2")),
+            response(message("Added.")))
+        execute, executed = running()
+        result = await self.router(backend).route("Add oat bites, sorry, to Hardware", execute)
+        self.assertEqual([e[1]["item"] for e in executed], ["Oat bites"])
+        self.assertEqual(result.kind, ACTION)
+
+    async def test_a_plain_item_still_runs_locally(self):
+        match = LocalMatch("HassListAddItem", {"item": "bread", "name": "test list"}, ["todo"], 1)
+        execute, executed = running()
+        result = await self.router(FakeBackend(), Recognizer(match)).route("Add bread to the test list", execute)
+        self.assertEqual(result.source, "ha_local")
+        self.assertEqual(executed[0][1]["item"], "bread")
 
 
 if __name__ == "__main__":

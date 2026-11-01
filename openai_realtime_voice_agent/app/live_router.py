@@ -86,6 +86,7 @@ Carry the request out with the tools, or look it up with them:
 - A request to be told when something happens ("tell me when X leaves") is done once the watch tool has run: say the user will be told, nothing more.
 - Never claim an action succeeded unless its tool result confirms it. If a tool fails, say what failed.
 - If an action returns confirmation_required, do not act: reply with one short yes/no question. Call confirm_action with that confirm_id only after the user clearly says yes in a later message.
+- If the user corrects themselves ("sorry", "I mean", "actually", "no, the other one"), carry out only the corrected request, once. A list item is just the thing meant, never a list name or the correction's words: "Add oat bites to the shopping list. Sorry, add it to the hardware list" adds "Oat bites" to the hardware list.
 - If the request is ambiguous, reply with one short clarifying question.
 
 Answer formats:
@@ -343,6 +344,8 @@ class ToolRun:
     task_id: str = ""
     deferred: bool = False
     explain: bool = False
+    # What Home Assistant reports this call did, as a sentence (action_fact).
+    fact: str = ""
 
 
 def tool_run(name: str, outcome: Any) -> ToolRun:
@@ -713,6 +716,7 @@ REFUSED_UNSAFE_DOMAIN = "unsafe_domain"
 REFUSED_UNNAMED = "unnamed_target"
 REFUSED_TOO_MANY = "too_many_targets"
 REFUSED_NO_TOOL = "tool_not_offered"
+REFUSED_CORRECTED_ITEM = "self_correction_in_item"
 # Refusals about WHICH device was meant: if the backend is unreachable too,
 # the user hears that, never a generic failure and never an action.
 TARGET_REFUSALS = frozenset({REFUSED_UNRESOLVED, REFUSED_UNNAMED, REFUSED_TOO_MANY})
@@ -722,6 +726,19 @@ UNCLEAR_TARGET_TEXT = "I couldn't tell which device you meant."
 # an intent out of it (Kitchen 2026-10-26: a family conversation parsed as
 # HassLightSet got "I couldn't tell which device you meant", twice).
 COMMAND_MAX_WORDS = 12
+
+
+# A list item Home Assistant cut out of a self-correction: its template is "add
+# {item} to [the] {name} [list]", so "Add oat bites to the shopping list. Sorry,
+# add it to the hardware list" has the item "oat bites to the shopping list Sorry
+# add it". A real item holds no correction, and no second list.
+_GARBLED_ITEM = re.compile(
+    r"\b(?:sorry|i\s+mean|i\s+meant|no\s+wait|scratch\s+that|make\s+that|oops|actually|"
+    r"add\s+it|put\s+it)\b|\b(?:to|on|onto)\s+(?:the|my|our)\s+(?:\w+\s+){0,3}?list\b", re.I)
+
+
+def is_garbled_item(item: Any) -> bool:
+    return bool(_GARBLED_ITEM.search(str(item or "")))
 
 
 def _named(value: Any) -> bool:
@@ -747,6 +764,8 @@ def local_refusal(match: Optional[LocalMatch], tool_names: List[str]) -> Optiona
             return REFUSED_UNNAMED
         if match.targets > LOCAL_MAX_TARGETS:
             return REFUSED_TOO_MANY
+        if match.intent in ("HassListAddItem", "HassListCompleteItem") and is_garbled_item(match.slots.get("item")):
+            return REFUSED_CORRECTED_ITEM
     if not any(n.rsplit("__", 1)[-1] == bare for n in tool_names):
         return REFUSED_NO_TOOL
     return None
@@ -777,6 +796,41 @@ def local_state_answer(match: Optional[LocalMatch]) -> str:
     article = "" if name.lower().startswith(("the ", "my ", "our ")) else "The "
     text = f"{article}{name} is {'' if match.state_matches else 'not '}{state}."
     return text[0].upper() + text[1:]
+
+
+def action_fact(name: str, result: Any) -> str:
+    """What a plain on/off call did, from Home Assistant's own report of which
+    entities it changed, or "" when it does not say. The transcript is not in
+    it: "in the test room" heard as "and the test room" made the backend say
+    "The test light and the test room are off", or doubt a switch that had
+    turned on ("I'm not sure which switch you mean")."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if bare not in ("HassTurnOn", "HassTurnOff"):
+        return ""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return ""
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, dict) or data.get("failed") or not isinstance(data.get("success"), list):
+        return ""
+    entries = [e for e in data["success"] if isinstance(e, dict)]
+    entities = [e for e in entries if e.get("type") == "entity" and str(e.get("name") or "").strip()]
+    # "Turned on" reads wrong for a door or a lock: the backend's words stand.
+    if not entities or any(str(e.get("id") or "").split(".", 1)[0] not in SAFE_LOCAL_DOMAINS for e in entities):
+        return ""
+    areas = [str(e["name"]) for e in entries if e.get("type") == "area" and e.get("name")]
+    names = [str(e["name"]).strip() for e in entities]
+    if len(names) == 1:
+        target = names[0]
+    elif len(areas) == 1:
+        target = f"{len(names)} devices in {areas[0]}"
+    elif len(names) <= 3:
+        target = ", ".join(names[:-1]) + " and " + names[-1]
+    else:
+        target = f"{len(names)} devices"
+    return f"{_PAST[bare].capitalize()} {target}."
 
 
 def describe_local(intent: str, slots: Dict[str, Any]) -> str:
@@ -963,7 +1017,10 @@ class BackendRouter:
                 result, outcome = task.result()
             if key not in seen:
                 seen.add(key)
-                runs.append(tool_run(str(call.get("name")), outcome))
+                run = tool_run(str(call.get("name")), outcome)
+                if run.ok:
+                    run.fact = action_fact(run.name, result)
+                runs.append(run)
             outputs.append({"type": "function_call_output", "call_id": call.get("call_id"),
                             "output": result if isinstance(result, str)
                             else json.dumps(result, ensure_ascii=False, default=str)})
@@ -1121,6 +1178,16 @@ class TurnRouter:
             return again
         return None
 
+    def _and_the_room(self, spoken: str) -> Optional[str]:
+        """The sentence with its final "and the <room>" as "in the <room>", or None."""
+        found = _AND_THE_ROOM.match(spoken or "")
+        if found is None or self.household is None:
+            return None
+        room = self.household.spoken_room(found.group("room"))
+        if room is None or fold(room.name) != fold(found.group("room")):
+            return None
+        return f"{found.group('head')} in the {found.group('room')}"
+
     def _heard_note(self, heard_info: Optional[Dict[str, Any]], refused: Optional[str]) -> str:
         """Tell the backend what Home Assistant's own parser heard."""
         if not heard_info or heard_info.get("question"):
@@ -1151,6 +1218,16 @@ class TurnRouter:
             try:
                 match = await self.recognizer.recognize(spoken, device_id=self._ha_device_id())
                 heard_info = getattr(self.recognizer, "last_heard", None)
+                room_fixed = self._and_the_room(spoken) if match is None else None
+                if room_fixed:
+                    # "in the test room" heard as "and the test room". Used only
+                    # if Home Assistant then resolves it to a device.
+                    again = await self.recognizer.recognize(room_fixed, device_id=self._ha_device_id())
+                    if again is not None and again.targets:
+                        match, spoken = again, room_fixed
+                        heard_info = getattr(self.recognizer, "last_heard", None)
+                    else:
+                        self.recognizer.last_heard = heard_info
                 if heard_info and is_state_question(user_text):
                     heard_info = dict(heard_info, question=True)
                 # A recognised intent (also one refused locally below) means a
@@ -1323,6 +1400,13 @@ class TurnRouter:
             logger.warning("⛔ router: a house request ran no action (only reads); not spoken as done")
             return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", runs, timings)
         actionish = any(_is_action_tool(r.name) for r in runs)
+        if actionish and all(r.fact for r in runs):
+            # Every call was on or off and Home Assistant says what changed:
+            # that is the result, whatever the backend made of the transcript.
+            # With a read in the mix the backend's text may answer more.
+            text = " ".join(dict.fromkeys(r.fact for r in runs))
+            if new_items and new_items[-1].get("role") == "assistant":
+                new_items[-1]["content"] = text
         return RouteResult(ACTION if actionish else LOOKUP, text, "backend", runs, timings)
 
     def _remember(self, user_text: str, items: List[dict]) -> None:
@@ -1332,6 +1416,7 @@ class TurnRouter:
         del self._history[:-self.history_turns]
 
 
+_AND_THE_ROOM = re.compile(r"^(?P<head>.+?)\s+and\s+the\s+(?P<room>[^,.?!]+?)[\s.?!]*$", re.I)
 _LEAD_FILLER = re.compile(
     r"^\W*(?:(?:and|also|then|plus|so|now|ok|okay|oh|um|uh|well)\b[\s,.]*)+", re.I)
 
@@ -1671,7 +1756,7 @@ _LEAD_IN = (r"^\W*(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh|well|now|please
             r"(?:can|could|would|will)\s+you|i\s+(?:want|need)\s+you\s+to|i'd\s+like\s+you\s+to)\b[\s,]*)*")
 # The base form only: "Turned off the lights." is a statement.
 _IMPERATIVE = re.compile(
-    _LEAD_IN + r"(?:turn|switch|shut|set|dim|brighten|stop|start|pause|resume|play|mute|unmute|open|close|"
+    _LEAD_IN + r"(?:turn|switch|shut|set|dim|brighten|make|stop|start|pause|resume|play|mute|unmute|open|close|"
     r"lock|unlock|kill|activate|deactivate|arm|disarm|run)\b", re.I)
 _ANNOUNCE_REQUEST = re.compile(
     _LEAD_IN + r"(?:announce|broadcast|page\b|"
@@ -1686,8 +1771,9 @@ def is_wide_effect(name: str, arguments: dict) -> bool:
     bare = (name or "").rsplit("__", 1)[-1]
     if _WIDE_TOOL.search(bare):
         return True
-    return (_HOUSE_CONTROL_TOOL.search(name or "") is not None and bare != "confirm_action"
-            and bare in LOCAL_INTENTS and "List" not in bare
+    # Lights and switches fan out. Media and the like with no target ("Next
+    # song") mean what is playing here.
+    return (bare in ("HassTurnOn", "HassTurnOff", "HassLightSet")
             and not any(_named((arguments or {}).get(k)) for k in _TARGET_ARGUMENTS))
 
 
@@ -1745,6 +1831,12 @@ def _clear_command_execute(execute: ExecuteFn, user_text: str, heard_info: Optio
     question, for a spoken yes through the action gate. A clear command is not
     touched and adds no time."""
     async def guarded(name: str, arguments: dict):
+        if (name or "").rsplit("__", 1)[-1] in ("HassListAddItem", "HassListCompleteItem") and is_garbled_item(
+                (arguments or {}).get("item")):
+            # The last line of defence for the case above: never on the list.
+            logger.info(f"⛔ router: {name} refused: the item holds a self-correction")
+            return ({"error": "Not run: the item holds the user's self-correction. Call it again with only "
+                              "the item they meant, on the list they settled on."}, _Refused())
         unclear = (is_wide_effect(name, arguments) and not is_clear_command(name, user_text, heard_info)) or (
             _HOUSE_CONTROL_TOOL.search(name or "") is not None
             and (name or "").rsplit("__", 1)[-1] != "confirm_action"
