@@ -171,6 +171,22 @@ def _ha_failure(mapping: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def broadcast_reached_nothing(name: str, result: Any) -> Optional[dict]:
+    """The error a broadcast should have been when it reached no device, else
+    None. With no satellite to speak on, Home Assistant still answers
+    ``action_done`` with empty lists, and "I've announced that" was said with
+    nothing played."""
+    if (name or "").rsplit("__", 1)[-1] != "HassBroadcast":
+        return None
+    mapping = _as_mapping(result)
+    data = mapping.get("data") if mapping is not None else None
+    if (mapping is None or mapping.get("response_type") != "action_done" or not isinstance(data, Mapping)
+            or data.get("success")):
+        return None
+    return {"error": "No device in this house can announce it, so nothing was announced. "
+                     "Say you couldn't announce it."}
+
+
 def classify_result(result: Any) -> ToolOutcome:
     """Decide whether a tool result reports success, and what kind of failure.
 
