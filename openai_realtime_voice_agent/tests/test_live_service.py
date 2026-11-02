@@ -549,7 +549,7 @@ class TestReconnect(unittest.IsolatedAsyncioTestCase):
 
             h.service.register_function("HassTurnOn", action)
             h.socket.push_all(fx.function_call_sequence(
-                "call_action", "HassTurnOn", '{"name":"Atrium Lamp"}'
+                "call_action", "HassTurnOn", '{"name":"Foyer Lamp"}'
             ))
             await done.wait()
             self.assertTrue(h.service.unsafe_to_replay_input)

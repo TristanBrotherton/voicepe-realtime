@@ -413,7 +413,7 @@ class ExplainFlow(Patched):
                                            "mode": "explain"}, "c1")),
             response(message("Hold on. It's going to take me a moment.")))
         async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
-            h.service.speaker_probe = SimpleNamespace(gate_speaker=lambda: "male", name_for=lambda label: "Sam")
+            h.service.speaker_probe = SimpleNamespace(verdict_name=lambda: "Sam")
             await h.user_says("Can you explain how OpenClaw supports remote access?")
             await h.wait_commentary(count=1, timeout=3.0)
             ack = commentaries(h)[0]
@@ -510,7 +510,7 @@ class ExplainFlow(Patched):
             response(call("deliver_by_text", {}, "c2")),
             response(message("Okay, I'll text it to you.")))
         async with ExplainHarness(self, backend, EXPLAIN_REPLY) as h:
-            h.service.speaker_probe = SimpleNamespace(gate_speaker=lambda: "male", name_for=lambda label: "Sam")
+            h.service.speaker_probe = SimpleNamespace(verdict_name=lambda: "Sam")
             await h.user_says("Can you explain how OpenClaw supports remote access?")
             await h.wait_commentary(count=1, timeout=3.0)
             await acked(h)

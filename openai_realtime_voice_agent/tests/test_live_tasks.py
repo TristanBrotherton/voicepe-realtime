@@ -306,13 +306,24 @@ async def acked(h):
     await asyncio.sleep(0.05)
 
 
+class FirstCallFails(FirstCallSlow):
+    """The first house call is slow, then fails."""
+
+    def _record(self, name):
+        async def handler(params):
+            self.executed.append((name, dict(params.arguments or {})))
+            await self.release.wait()
+            await params.result_callback({"error": "Received invalid slot info"})
+        return handler
+
+
 class NeverCancelled(Patched):
     """A tool that has started finishes, and its result is spoken."""
 
     async def test_a_new_utterance_during_a_tool_delivers_both_results_and_runs_each_once(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(NEW_UTTERANCE_S)
             # The user talks over the running tool: the clock answers locally.
@@ -325,13 +336,258 @@ class NeverCancelled(Patched):
             await heard(h)
             self.assertEqual(h.service.tasks_pending, 0)
 
+    async def _stopped(self, h):
+        """What the device's stop word does: the handler marks the request,
+        then the session closes."""
+        h.service.note_device_stop()
+        await asyncio.wait_for(h.service.close_session("device stop"), 10)
+
+    async def test_a_stopped_turns_result_is_never_spoken_later(self):
+        """A device stop ends the request it interrupted. A tool already running
+        finishes (it may have acted), but nothing about it is spoken: no
+        progress line, no result in the closing session, no announcement, and
+        nothing at the next wake (a stopped lookup's "Yes, it is." answered the
+        next, unrelated request)."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await self._stopped(h)
+            await asyncio.sleep(0.6)  # past promote_s: a stopped request is never promoted
+            self.assertFalse(h.service._task_holds_session(), "a stopped request holds no session")
+            h.release.set()
+            await until(lambda: h.service.tasks_pending == 0, timeout=5.0)
+            await asyncio.sleep(0.3)
+            self.assertEqual(h.executed, [ON], "the running tool still ran, once")
+            self.assertEqual(announced, [])
+            await h.open_session()
+            await h.start_session("sess_2")
+            await asyncio.sleep(0.5)
+            self.assertFalse(any("lamp" in c.lower() for c in commentaries(h)), commentaries(h))
+
+    async def test_a_stop_before_any_tool_ran_cancels_the_request(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        backend.gate.clear()
+        async with RouterHarness(self, backend) as h:
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: backend.bodies)
+            await self._stopped(h)
+            backend.gate.set()
+            await asyncio.sleep(0.5)
+            self.assertEqual(h.executed, [], "nothing acts on the house after the stop")
+
+    async def test_a_result_already_promised_for_later_is_still_delivered_after_a_stop(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await until(lambda: h.service.tasks_pending == 1, timeout=3.0)  # promoted: promised
+            await self._stopped(h)
+            h.release.set()
+            await until(lambda: announced, timeout=5.0)
+            self.assertIn("lamp is on", announced[0])
+
+    async def test_a_repeat_after_a_stop_joins_it_and_is_answered_once(self):
+        """Asked again after a stop: nothing runs twice, and the answer the
+        user asked for again is spoken."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0)
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await self._stopped(h)
+            await h.open_session()
+            await h.start_session("sess_2")
+            await h.user_says("Turn on the Foyer Lamp", start_ms=5000)
+            await asyncio.sleep(0.3)
+            self.assertEqual(h.service.router_stats["joined"], 1)
+            h.release.set()
+            await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
+            await asyncio.sleep(0.3)
+            self.assertEqual(h.executed, [ON], "the action ran once")
+            self.assertEqual(sum("lamp is on" in c for c in commentaries(h)), 1)
+
+    async def test_a_repeat_after_a_stopped_op_finished_still_joins_it(self):
+        """Review finding: a stopped op that had finished was forgotten, so a
+        repeat ran the action a second time."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0)
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await self._stopped(h)
+            h.release.set()
+            await until(lambda: h.service.tasks_pending == 0, timeout=5.0)
+            await h.open_session()
+            await h.start_session("sess_2")
+            await asyncio.sleep(0.2)
+            self.assertFalse(commentaries(h), "not spoken at the next wake")
+            await h.user_says("Turn on the Foyer Lamp", start_ms=5000)
+            await until(lambda: any("lamp is on" in c for c in commentaries(h)), timeout=5.0)
+            await asyncio.sleep(0.2)
+            self.assertEqual(h.executed, [ON], "the action ran once")
+            self.assertEqual(h.service.router_stats["joined"], 1)
+
+    async def test_a_stopped_finished_op_is_forgotten_after_the_join_window(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        with patch.object(live_service_module, "TASK_JOIN_DONE_WINDOW_S", 0.2):
+            async with FirstCallSlow(self, backend) as h:
+                h.service.task_policy = TaskPolicy(promote_s=30.0)
+                await h.user_says("Turn on the Foyer Lamp")
+                await until(lambda: h.executed)
+                await self._stopped(h)
+                h.release.set()
+                await until(lambda: h.service.tasks_pending == 0, timeout=5.0)
+                self.assertTrue(h.service._tasks)
+                await until(lambda: not h.service._tasks, timeout=3.0)
+
+    async def test_a_stop_after_the_route_finished_before_the_result_went_in(self):
+        """Review finding: the route was done and the result was waiting for a
+        dropped guess to end when the stop came. It was detached at the wait's
+        end and spoken at the next wake."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.4):
+            async with RouterHarness(self, backend) as h:
+                h.service.task_policy = TaskPolicy(order=(ANNOUNCE,))
+                announced = []
+
+                async def announce(text, device_id):
+                    announced.append(text)
+                    return True
+                h.service.on_task_announce = announce
+                await h.user_says("Turn on the Foyer Lamp")
+                await asyncio.sleep(0.1)
+                h.voice_says("Done, it's on.", ms=300)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await until(lambda: h.service._op is not None and h.service._op.result_holding)
+                await self._stopped(h)
+                await asyncio.sleep(0.8)
+                self.assertEqual(h.executed, [ON])
+                self.assertEqual(announced, [])
+                self.assertFalse(any("lamp" in c.lower() for c in commentaries(h)), commentaries(h))
+                await h.open_session()
+                await h.start_session("sess_2")
+                await asyncio.sleep(0.5)
+                self.assertFalse(any("lamp" in c.lower() for c in commentaries(h)), commentaries(h))
+
+    async def test_a_failure_after_a_stop_is_still_told(self):
+        """A false stop must never leave the user believing a command worked."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp could not be turned on.")))
+        async with FirstCallFails(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await self._stopped(h)
+            h.release.set()
+            await until(lambda: announced, timeout=5.0)
+            self.assertIn("could not", announced[0])
+
+    async def test_a_withdrawn_confirmation_after_a_stop_is_not_told_as_a_failure(self):
+        """Review finding: a question withdrawn because the request left the
+        foreground becomes FAILED ("needed a spoken yes"), and told after the
+        user had stopped it. Nothing ran; there is nothing to tell."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("Should I?")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            op = h.service._op
+            op.confirm_ids.add("k1")
+            await self._stopped(h)
+            self.assertTrue(op.confirm_withdrawn)
+            h.release.set()
+            await until(lambda: op.done, timeout=5.0)
+            await asyncio.sleep(0.3)
+            self.assertEqual(announced, [])
+            self.assertNotIn(op.op_id, h.service._tasks, "and it is not joinable")
+
+    async def test_a_stopped_hand_off_keeps_its_timeout_and_inherits_the_stop(self):
+        """Review finding: cancelling the watch of a stopped hand-off also lost
+        its timeout, so it stayed in the list for good."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0, order=(ANNOUNCE,))
+            announced = []
+
+            async def announce(text, device_id):
+                announced.append(text)
+                return True
+            h.service.on_task_announce = announce
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            op = h.service._op
+            with patch.object(live_service_module, "EXTERNAL_TASK_MAX_S", 0.3):
+                h.service._register_external_task(op, "ask_openclaw", "task-7")
+                ext = h.service._tasks[f"{op.op_id}-ext"]
+                self.assertFalse(ext.stopped)
+                await self._stopped(h)
+                self.assertTrue(ext.stopped, "a hand-off inherits the stop")
+                self.assertFalse(h.service._task_holds_session())
+                await until(lambda: ext.op_id not in h.service._tasks, timeout=5.0)
+            self.assertEqual(announced, [], "and is forgotten without a word")
+
+    async def test_a_hand_off_registered_after_the_stop_inherits_it(self):
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=30.0)
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            op = h.service._op
+            await self._stopped(h)
+            h.service._register_external_task(op, "ask_openclaw", "task-8")
+            self.assertTrue(h.service._tasks[f"{op.op_id}-ext"].stopped)
+
+    async def test_a_task_result_going_in_when_the_stop_comes_is_not_handed_back(self):
+        """A result from the task list going into the session the stop closes,
+        none of it played yet, is not handed back for the next wake."""
+        backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
+        async with FirstCallSlow(self, backend) as h:
+            h.service.task_policy = TaskPolicy(promote_s=0.3, order=(ANNOUNCE,))
+            await h.user_says("Turn on the Foyer Lamp")
+            await until(lambda: h.executed)
+            await until(lambda: h.service.tasks_pending == 1, timeout=3.0)
+            task = next(iter(h.service._tasks.values()))
+            h.release.set()
+            await until(lambda: task.session_sent_mono is not None, timeout=5.0)
+            await self._stopped(h)
+            self.assertTrue(task.delivered)
+            self.assertFalse(h.service._tasks)
+
     async def test_an_impatient_repeat_joins_the_running_operation(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(0.5)
-            await h.user_says("Turn on the Atrium Lamp.", start_ms=5000)  # inside the fragment window
+            await h.user_says("Turn on the Foyer Lamp.", start_ms=5000)  # inside the fragment window
             await asyncio.sleep(0.3)
             self.assertEqual(h.executed, [ON], "the repeat ran nothing")
             self.assertEqual(h.service.router_stats["joined"], 1)
@@ -345,10 +601,10 @@ class NeverCancelled(Patched):
     async def test_a_later_repeat_also_joins(self):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await until(lambda: h.executed)
             await asyncio.sleep(NEW_UTTERANCE_S)
-            await h.user_says("Turn on the Atrium Lamp please", start_ms=8000)
+            await h.user_says("Turn on the Foyer Lamp please", start_ms=8000)
             await asyncio.sleep(0.3)
             self.assertEqual(h.executed, [ON])
             self.assertEqual(h.service.router_stats["joined"], 1)
@@ -412,7 +668,7 @@ class PromotedToBackground(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")))
         async with FirstCallSlow(self, backend) as h:
             h.service.task_policy = TaskPolicy(promote_s=0.3)
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             await asyncio.sleep(0.1)
             h.voice_says("Done, it's on.", ms=400)
             await h.wait_commentary(count=1, timeout=2.0)

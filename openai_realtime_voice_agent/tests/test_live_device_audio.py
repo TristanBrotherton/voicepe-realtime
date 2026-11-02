@@ -37,10 +37,14 @@ from app.output_lead_buffer import OutputLeadBuffer
 from app.phase_emitter import TurnLiveness
 from app.raw_audio_serializer import RawAudioSerializer
 from app.turn_timeline import TurnTimeline
-from app.voice_runtime import LIVE_OUTPUT_LEAD_MS, LiveConfig
+from app.voice_runtime import LiveConfig
 from app.websocket_handler import PIPELINE_SAMPLE_RATE
 
 from tests import live_fixtures as fx
+
+# The lead this measures on the output transport (GPT-Live itself no longer
+# uses it: the speaker owner takes its audio ahead of the transport).
+LIVE_OUTPUT_LEAD_MS = 600
 
 
 class DeviceSocket:
@@ -378,11 +382,6 @@ class TestPlayoutLead(unittest.IsolatedAsyncioTestCase):
             # One 100 ms delta is two full 40 ms writes plus a 20 ms remainder
             # the transport holds: no cushion, it goes out as it arrives.
             self.assertEqual(len(path.device.pcm), 2 * CHUNK_BYTES)
-
-    async def test_the_live_default_lead_is_configured(self):
-        self.assertEqual(LIVE_OUTPUT_LEAD_MS, 600)
-        self.assertGreater(LIVE_OUTPUT_LEAD_MS, 380,
-                           "the worst inter-delta gap measured on the real endpoint")
 
 
 class TestNegotiatedFormat(unittest.IsolatedAsyncioTestCase):

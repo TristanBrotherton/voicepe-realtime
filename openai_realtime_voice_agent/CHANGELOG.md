@@ -2,6 +2,68 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.21.0 (fork)
+
+Needs firmware with the same release for "stop" after a timer and for less
+self-waking; older firmware keeps working without those two.
+
+### Fixed: wrong answers
+
+- A yes/no state question Home Assistant resolves to one device is answered
+  locally, without the backend.
+- "And/also/then ..." commands run locally. The backend finds a device whose
+  name contains its room's name. A device whose short name is part of a spoken
+  name no longer rewrites the domain. A live-context read that misses on a name
+  retries without it.
+- Stories and jokes play at once in the voice's own words: a wildcard parse no
+  longer vetoes chat.
+- Clear command, else confirm: announcements and whole-house commands need a
+  clear request or a spoken yes. A misheard state question with no verb asks
+  before switching anything.
+- A broadcast that reached no device is reported as not announced.
+- On/off results come from Home Assistant's report of what changed. "and the
+  <room>" is understood as "in the <room>".
+- A self-correction in a list request no longer ends up in the item.
+- A local answer waits for the voice's guess to show itself (about a second), so
+  a guess can't pass as the answer.
+
+### Fixed: replies cut off or lost
+
+- Speech after an acknowledgement and before the result is dropped, and the
+  answer is not repeated for a late delegation.
+- The tail of a guess still streaming when the result is acknowledged is no
+  longer heard; a real answer that follows it still plays.
+- An answer's first words are no longer lost when the acknowledgement comes late.
+- When a guess or an acknowledgement was all the voice said, it is asked once
+  for the result.
+- A wake during a reply or during a session close keeps its mic and its request.
+- A false "I didn't catch that" no longer comes before the answer: the
+  transcript gets 7 s.
+- A result left over after the stop word is no longer spoken at the next wake
+  (needs firmware that sends the interrupt reason). A failure is still told, and
+  asking again joins the running request.
+
+### Fixed: pitch alone no longer names the wrong person
+
+- With voice prints enrolled, pitch names someone only when an uncertain voice
+  print points to the same person. Otherwise the assistant stays neutral, in the
+  voice, the router note, the explain acknowledgement, timers and the enrollment
+  default. Pitch names nobody within 15 Hz of the male/female gap. Memory notes
+  still work, "from a household member".
+
+### Changed
+
+- On GPT-Live everything goes through the speaker owner, and the `speaker_owner`
+  option is gone (an old value is ignored). Older firmware gets the same queue
+  with plain audio. `output_lead_buffer_ms` is now Realtime only.
+- `chain_prime_ms` and `utt_cushion_ms` are sent to every GPT-Live device, per
+  device, without a rebuild. Default 200 and 0.
+
+### Docs
+
+- "Stop" acknowledging a timer needs the new firmware. The 0.20.3 entry
+  over-claimed it.
+
 ## 0.20.12 (fork)
 
 ### Fixed: a news answer replaced by "nothing was changed"
@@ -204,9 +266,12 @@ All notable changes to this add-on. Newest first.
   into the line, the cut walked back across both, and the name was heard
   twice. The walk back now stops where the discarded words end.
 - A heard timer no longer rings. The bell after the announcement is for a
-  timer nobody heard: a wake, the button or "stop" on that device from the
-  start of the announcement acknowledges it (a "stop" said during the line
-  used to be missed), and the wait before the bell is 60 s instead of 20 s.
+  timer nobody heard: a wake or the button on that device from the start of
+  the announcement acknowledges it, and the wait before the bell is 60 s
+  instead of 20 s. (Correction: this entry also said "stop" did, but firmware
+  of this version only listened for "stop" during a reply or while the bell
+  rang and never sent it to the add-on, so the bell still rang. A "stop" counts
+  from the firmware that arms it during the announcement and for 60 s after.)
 
 ## 0.20.2 (fork)
 

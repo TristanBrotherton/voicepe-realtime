@@ -42,9 +42,9 @@ So the canary's energy gate was wrong in method, and the pacing — not the gate
 — is the dominant defect. A 1.0× source gives the device no playout lead to
 start a reply with and only ~20–80 ms of lead per second afterwards, while
 inter-frame jitter already reaches ~160 ms: the I2S chain starves from the
-first word. The relay must supply the lead (see ``OutputLeadBuffer`` and the
-Live default for ``output_lead_buffer_ms``); this module must not corrupt the
-waveform on the way there. So it:
+first word. The relay and the device must supply the lead (the speaker owner
+sends audio as soon as it exists, and the device primes a cold start); this
+module must not corrupt the waveform on the way there. So it:
 
 * decodes strictly and keeps byte alignment across deltas (a stray odd byte is
   carried, never dropped, so a 16-bit sample is never split);

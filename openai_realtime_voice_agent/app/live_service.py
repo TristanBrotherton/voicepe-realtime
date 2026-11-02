@@ -98,6 +98,7 @@ from app.live_router import (
     clock_tool,
     is_non_speech,
     redact_for_log,
+    unclear_refusal,
 )
 from app.live_classifier import CHAT as CLASSIFIED_CHAT
 from app import live_tasks
@@ -137,7 +138,7 @@ from app.live_protocol import (
 )
 from app.tool_arguments import sanitize_tool_arguments, tool_schema_index
 from app.tool_guards import GuardedToolsMixin
-from app.tool_results import ActionLedger, classify_result, explain_for_model
+from app.tool_results import ActionLedger, broadcast_reached_nothing, classify_result, explain_for_model
 from app.voice_runtime import LiveConfig
 
 logger = logging.getLogger(__name__)
@@ -339,12 +340,48 @@ DROPPED_SPEECH_NOTE = ("The user did not hear what you said just before this. Sp
 # device). The wait therefore covers a whole spoken guess, not just its tail:
 # while it lasts the device shows `thinking` and the session stays open.
 GUESS_QUIET_S = 0.6
+# A locally answered question goes to the voice no sooner than this after routing
+# began (its guess started 0.6-1.1 s after that on test devices).
+LOCAL_ANSWER_MIN_WAIT_S = 1.3
 GUESS_WAIT_MAX_S = 20.0
+# The answer's audio starts at least ANSWER_EARLIEST_S after the commentary is
+# sent (402 ms at the least over 178 results on test devices, 770 ms typically).
+# The commentary's acknowledgement is not tied to it (174 to 1006 ms), so with a
+# guess dropped until the acknowledgement, a late one cost the answer its first
+# words. Audio that starts this long after the commentary, with the guess quiet
+# when it went in, is the answer: it is held until the acknowledgement and played.
+ANSWER_EARLIEST_S = 0.35
+GATE_ANSWER_HEAD_MAX_CHUNKS = 40   # 4 s
+# A guess can still be streaming when the commentary's acknowledgement lands
+# (it outlasted the wait, or the voice ran on from an acknowledgement): its tail
+# must not play as the answer. It is recognised by its audio alone, not its
+# transcript turn (cutting at transcript turns lost real answers): at least
+# GUESS_TAIL_MIN_CHUNKS of audible audio that began before the answer could have
+# and was still coming after the commentary went in, dropped right up to the
+# acknowledgement. It keeps being dropped until its first gap of GUESS_TAIL_GAP_S
+# (longer than the stream's own stalls, up to 380 ms), and the speech after that
+# is heard. Bounded by GUESS_TAIL_MAX_S from the acknowledgement: a voice that
+# never pauses is heard in the end, rather than an answer behind it being lost.
+GUESS_TAIL_MIN_CHUNKS = 2
+GUESS_TAIL_GAP_S = 0.45
+GUESS_TAIL_MAX_S = 6.0
+# The voice can also run from the guess into the answer with no gap ("As you
+# wish. It's off."): the tail then holds the answer. The tail is kept, and if
+# nothing audible follows it this long (longer than the answer ever took after
+# the commentary, 1492 ms), it is played: a guess's last words before the answer
+# beat no answer at all. A tail too short to be an answer: the guess was all the
+# voice said ("Done."), and it was dropped, so it is asked once to say the result.
+GUESS_TAIL_ANSWER_WAIT_S = 1.6
+GUESS_TAIL_MIN_ANSWER_S = 0.6
 # After a verified result is acknowledged, speech that is only an
 # acknowledgement ("One moment, <name>.") does not answer it: the reply stays
 # under way (no utterance end, no idle) until the answer is spoken, at most
 # this long after the acknowledgement.
 ANSWER_OWED_MAX_S = 10.0
+# Said nothing, or only an acknowledgement, this long after a verified result's
+# acknowledgement: asked once to say it (the action ran and the user heard only
+# "One moment."). Past the 3.4 s the answer has been seen to take.
+ANSWER_OWED_NUDGE_S = 4.5
 # Spoken when the router finds no request after the user already heard an
 # acknowledgement (they did ask something; it was not caught).
 # Tools that take long by nature (an agent, a web search); only these make a
@@ -523,6 +560,13 @@ class RouterOp:
     key: str = ""                 # normalised request text: the join key for a repeat
     background: bool = False
     abandoned: bool = False
+    # A device "stop" (interrupt reason `stop`) interrupted the request before
+    # its result went in or was promised for later (note_device_stop). With no
+    # tool started it is cancelled like any superseded op. Once a tool ran it
+    # finishes and stays joinable for TASK_JOIN_DONE_WINDOW_S (a repeat never
+    # runs it twice, and un-stops it), but it is never promoted or narrated,
+    # holds no session, and its answer is not spoken unless it really failed.
+    stopped: bool = False
     promoted_mono: Optional[float] = None
     result_ready_mono: Optional[float] = None
     delivered: bool = False
@@ -630,7 +674,7 @@ class FunctionCallRecord:
     # actually answered. Keys and a classification only — never values. Without
     # these two, a turn whose lifecycle counters all read "fine" gives no clue
     # why the house did not change; that is exactly how the second canary's
-    # Atrium Lamp failure looked in the log.
+    # Foyer Lamp failure looked in the log.
     dropped_keys: List[str] = field(default_factory=list)
     result: str = ""
 
@@ -831,6 +875,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._last_input_mono = 0.0
         self._input_audio_ms_sent = 0.0
         self._prestart_audio = bytearray()
+        self._hold_input = False
+        self._held_input = bytearray()
         self._input_audio_lock = asyncio.Lock()
         # True from open_session() until session.started (or the socket is
         # dropped): the only window in which device audio is worth holding.
@@ -1004,10 +1050,26 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # guess's rather than the answer.
         self._guess_outlasted_wait = False
         self._post_guess_dropped = False
+        # The stretch of audible audio dropped until the acknowledgement, and
+        # the tail of it past the acknowledgement (GUESS_TAIL_*).
+        self._gate_dropped_since: Optional[float] = None
+        self._gate_dropped_last: Optional[float] = None
+        self._gate_dropped_streak = 0
+        self._guess_tail_since: Optional[float] = None
+        self._guess_tail_held: list = []
+        self._guess_tail_open = False
+        self._last_commentary: Optional[tuple] = None
+        self._voice_words_this_gate = ""
+        self._answer_nudged = False
+        # The start of the answer, in before the acknowledgement (ANSWER_EARLIEST_S).
+        self._gate_answer_head: List = []
         # What the voice has said (heard, not dropped) since the verified
         # result went in. While it is only an acknowledgement ("One moment,
         # <name>."), the answer is still owed (answer_owed).
         self._post_text = ""
+        # The complete acknowledgement the voice was saying when the result
+        # went in, while the commentary is not acknowledged yet.
+        self._post_ack_text = ""
         self._result_acked_mono: Optional[float] = None
         # Speaker owner: the model's last output delta of any kind (silence
         # included), a pending split at a new model response (its first
@@ -1021,9 +1083,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_dropped = 0
         self._fallback_task: Optional[asyncio.Task] = None
         self._progress_task: Optional[asyncio.Task] = None
-        self._filler_playing = False
-        self._filler_done = asyncio.Event()
-        self._filler_done.set()
         self._speech_end_mono: Optional[float] = None
         self._last_user_delta_mono: Optional[float] = None
         self._turn_heard_mono: Optional[float] = None
@@ -1097,11 +1156,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.speaker_probe = None
         self.male_only_tools: set = set()
         self.action_gate = None
+        # Router calls the action gate must hold, by tool call id.
+        self._forced_confirmations: Dict[str, str] = {}
         self.spoken_prompts = None
         self.turn_liveness = None
         self.turn_timeline = None
-        # The device's speaker owner (app/speaker_owner.py) when its
-        # `speaker_owner` option is on: model audio is then labelled with
+        # The device's speaker owner (app/speaker_owner.py), attached by the
+        # pipeline: model audio is labelled with
         # what it is (ack, reply, result, prompt) and the owner delivers it.
         # None keeps every old path exactly as it was.
         self.speaker_owner = None
@@ -1293,6 +1354,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._idle_input_dropped = 0
             self._idle_input_dropped_ms = 0.0
             self._prestart_audio.clear()
+            if self._hold_input:
+                # Said since a wake that landed while the last session closed.
+                self._prestart_audio.extend(self._held_input)
+                self._held_input = bytearray()
+                self._hold_input = False
             self._session_opening = True
             self.input_gain.reset_stats()
             self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
@@ -1303,6 +1369,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except BaseException:
             self._session_opening = False
             raise
+
+    def hold_input_for_next_session(self) -> None:
+        """A wake landed with no session able to hear it yet (the last one is
+        closing, which takes seconds). The mic audio from now on is the request:
+        kept for the next session, not sent to the closing one or dropped."""
+        self._held_input = bytearray()
+        self._hold_input = True
 
     def _forget_stale_conversation(self) -> None:
         """Drop the conversation (not the system prompt) after a long gap."""
@@ -1425,8 +1498,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     @property
     def tasks_pending(self) -> int:
-        """Background tasks running or awaiting delivery (telemetry)."""
-        return len(self._tasks)
+        """Background tasks running or awaiting delivery (telemetry). A stopped
+        task that finished is only kept so a repeat can join it."""
+        return sum(1 for t in self._tasks.values() if not (t.stopped and t.done))
 
     def _task_holds_session(self) -> bool:
         """COST RULE, refined (owner, 2026-10-12): a slow lookup inside an
@@ -1447,8 +1521,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         bound = self.task_policy.hold_session_s
         if bound <= 0:
             return False
-        return any(not t.deferred and not t.explain and not t.delivered and now - t.started_mono < bound
-                   for t in self._tasks.values())
+        return any(not t.deferred and not t.explain and not t.delivered and not t.stopped
+                   and now - t.started_mono < bound for t in self._tasks.values())
 
     @property
     def backend_work_in_flight(self) -> bool:
@@ -1559,6 +1633,30 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._send(context_append("thinking", STOP_CONTEXT, None))
             logger.info(f"🛑 live: stop context sent ({reason})")
         return True
+
+    def note_device_stop(self) -> None:
+        """The device's stop word (interrupt reason `stop`, never a barge-in
+        wake, the no-speech watchdog, mute or the button) interrupted the
+        current request. A stopped lookup used to finish in the background and
+        be spoken at the next wake, as the answer to an unrelated request
+        ("Yes, it is." answering "Add bread to the test list"). One gate for
+        all of it: RouterOp.stopped. A result already promised for later
+        (promoted) or already gone in is left alone."""
+        self._guess_tail_held = []
+        self._guess_tail_open = False
+        self._answer_nudged = True
+        for task in [t for t in self._tasks.values() if t.session_sent_mono is not None]:
+            # A task's result going into the session the stop is closing,
+            # none of it played yet: not handed back for the next wake.
+            logger.info(f"🛑 task {task.op_id}: stopped before its result was heard; not spoken again")
+            self._finish_task(task, SESSION)
+        op = self._op
+        if (op is None or op.stopped or op.background or op.promoted_mono is not None
+                or op.result_sent_mono is not None):
+            return
+        for each in [op] + [t for t in self._tasks.values() if t.op_id == f"{op.op_id}-ext"]:
+            each.stopped = True
+        logger.info(f"🛑 router: {op.op_id} was stopped by the device; its result will not be spoken")
 
     async def inject_context(self, text: str) -> None:
         for chunk in chunk_text(text):
@@ -2113,6 +2211,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if not audio:
             return  # a partial block, carried into the next frame
         async with self._input_audio_lock:
+            if self._hold_input:
+                self._held_input.extend(audio)
+                limit = LIVE_SAMPLE_RATE * 2 * PRESTART_AUDIO_MAX_S
+                if len(self._held_input) > limit:
+                    del self._held_input[: len(self._held_input) - limit]
+                return
             if not self._session_started:
                 if not self._session_opening and self._websocket is None:
                     # No session and none opening: the device is streaming
@@ -2539,15 +2643,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 owned = None
                 if isinstance(chunk, _OwnedChunk):
                     owned, chunk = chunk, chunk.chunk
-                # With a speaker owner, queue order replaces this wait.
-                if self._filler_playing and owned is None:
-                    # Never on top of the fallback clip: the voice waits for it.
-                    waited_from = time.monotonic()
-                    try:
-                        await asyncio.wait_for(self._filler_done.wait(), 4.0)
-                    except asyncio.TimeoutError:
-                        pass
-                    self._add_wait("clip", (time.monotonic() - waited_from) * 1000)
                 if chunk.started_segment:
                     await self._speech_segment_started()
                     # A response-start observer can synchronously cancel the
@@ -2575,7 +2670,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     # output-audio-done event, so counting every forwarded frame
                     # would let an idle model hold the session open indefinitely.
                     self._note(self.on_audible_output)
-                self._note_audio_pushed(len(chunk.pcm))
                 frame = TTSAudioRawFrame(
                     audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
                 )
@@ -2652,7 +2746,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             pending["pcm_bytes"] += len(chunk.pcm)
             if chunk.audible:
                 self._note(self.on_audible_output)
-            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -2668,7 +2761,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         pending["pcm_bytes"] += len(event.chunk.pcm)
         if event.chunk.audible:
             self._note(self.on_audible_output)
-        self._note_audio_pushed(len(event.chunk.pcm))
         await self.push_frame(TTSAudioRawFrame(
             audio=event.chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
         ))
@@ -2751,7 +2843,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 return
             if chunk.audible:
                 self._note(self.on_audible_output)
-            self._note_audio_pushed(len(chunk.pcm))
             await self.push_frame(TTSAudioRawFrame(
                 audio=chunk.pcm, sample_rate=LIVE_SAMPLE_RATE, num_channels=1
             ))
@@ -2859,7 +2950,27 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if role == "assistant" and self.router is not None:
             self._voice_words_mono = time.monotonic()
             self._gate_note_transcript(delta, evt.get("end_ms"))
-            if self._gate_drop_until_ack and (self._gate == "open" or self._post_guess_dropped):
+            if self._post_ack_text and self._gate == "post" and not self._result_acked:
+                self._post_ack_text += delta
+                if acknowledgement_state(self._post_ack_text) == NOT_ACK:
+                    # "On it. But they're off.": the voice ran on from its
+                    # acknowledgement into a guess, after the gate had seen a
+                    # complete one. Nothing of the answer plays before the
+                    # commentary's acknowledgement (its words may come first,
+                    # its audio does not), so this audio is the guess.
+                    logger.info("⏹️ live speech past the acknowledgement before the result landed: dropped")
+                    self._post_ack_text = ""
+                    self._gate_drop_until_ack = True
+                    self._post_guess_dropped = True
+                    self._need_segment_start = True
+            self._voice_words_this_gate = (self._voice_words_this_gate + delta)[-2000:]
+            if (self._guess_tail_since is not None
+                    and time.monotonic() - (self._gate_dropped_last or 0.0) >= GUESS_TAIL_GAP_S):
+                # The guess's audio has paused: these words are what follows it.
+                self._guess_tail_since = None
+                self._post_guess_dropped = False
+            if ((self._gate_drop_until_ack or self._guess_tail_since is not None)
+                    and (self._gate == "open" or self._post_guess_dropped)):
                 pass  # the words of a dropped guess never count as the answer
             elif self._gate == "post":
                 # The answer's words: often in before the commentary's
@@ -3751,6 +3862,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._result_acked = False
         self._result_acked_mono = None
         self._post_text = ""
+        self._post_ack_text = ""
         self._guess_outlasted_wait = False
         self._post_guess_dropped = False
         self._result_heard = False
@@ -3759,6 +3871,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._gate_text = ""
         self._gate_blocked = False
         self._gate_drop_until_ack = False
+        self._gate_dropped_since = None
+        self._gate_dropped_last = None
+        self._gate_dropped_streak = 0
+        self._guess_tail_since = None
+        self._guess_tail_held = []
+        self._guess_tail_open = False
+        self._answer_nudged = False
+        self._voice_words_this_gate = ""
+        self._gate_answer_head = []
         self._gate_ack_end_ms = None
         self._gate_timeline_seen = False
         self._gate_ack_until = None
@@ -3990,7 +4111,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 result = RouteResult(ROUTE_FAILED, "Today's voice usage limit has been reached.", "none")
             else:
                 result = await asyncio.wait_for(
-                    self.router.route(op.text, lambda name, args: self._router_execute(op, name, args)),
+                    self.router.route(op.text, lambda name, args, **kw: self._router_execute(op, name, args, **kw)),
                     ROUTE_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ router failed for {op.op_id}: no result within {ROUTE_TIMEOUT_S:.0f}s")
@@ -4010,9 +4131,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         op.done = True
         op.result_ready_mono = time.monotonic()
         self.router_stats["local" if result.source == "ha_local" else "backend"] += 1
-        if op.background or self._op is not op:
+        if op.background or self._op is not op or op.stopped:
             if not op.background:
-                self._task_detach(op, "overtaken by newer speech")
+                self._task_detach(op, "stopped" if op.stopped else "overtaken by newer speech")
             await self._task_complete(op)
             return
         self._note(self.on_backend_activity)
@@ -4033,11 +4154,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             logger.info(f"🎯 {name}: {note}")
         return resolved
 
-    async def _router_execute(self, op: RouterOp, name: str, arguments: dict):
+    async def _router_execute(self, op: RouterOp, name: str, arguments: dict,
+                              confirm: Optional[str] = None):
         """Run one tool for the router through the guarded handler path.
 
         Returns ``(result for the backend, ToolOutcome)``. The per-utterance
         repeat ledger answers an exact repeat without touching the house.
+        ``confirm`` is a question the router wants asked first: the action gate
+        holds this call for a spoken yes, whatever the tool is.
         """
         arguments, dropped = sanitize_tool_arguments(name, arguments, self._tool_schemas.get(name))
         arguments = self._resolve_ha_target(name, arguments)
@@ -4088,6 +4212,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self.calls.mark_result(call_id, now=time.monotonic(), submitted=True, continued=True,
                                    outcome="refused as a repeat")
             return refusal, outcome
+        if confirm:
+            gate = getattr(self, "action_gate", None)
+            if gate is None or not gate.enabled:
+                self.calls.mark_result(call_id, now=time.monotonic(), submitted=True, continued=True,
+                                       outcome="not run: not a clear command")
+                return unclear_refusal(confirm)
+            self._forced_confirmations[call_id] = confirm
         future = asyncio.get_running_loop().create_future()
         self._router_futures[call_id] = future
         shared = asyncio.get_running_loop().create_future()
@@ -4121,6 +4252,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             raise
         self._router_futures.pop(call_id, None)
         self._in_flight.pop(call_id, None)
+        raw = broadcast_reached_nothing(name, raw) or raw
         outcome = classify_result(raw)
         self.actions.record(name, arguments, outcome)
         if not shared.done():
@@ -4209,6 +4341,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._task_flush_soon("unheard confirmation withdrawn")
 
     async def _router_deliver(self, op: RouterOp) -> None:
+        if op.stopped:
+            if not op.background:
+                self._task_detach(op, "stopped")
+            await self._task_complete(op)
+            return
         result = op.result
         if self._user_turn.open:
             # The user has started speaking again (a continuation within the
@@ -4294,6 +4431,17 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._turn_heard_mono is None:
                 self._arm_router_silent_close()
         else:
+            if result.kind == ROUTE_LOOKUP and result.source == "ha_local":
+                # Answered so fast that the voice's own guess has not started,
+                # and it can start before the commentary reaches the model: it
+                # would then pass for the answer ("Yes, it's on." with the light
+                # off). Hold the result until a guess would have shown itself.
+                await asyncio.sleep(max(0.0, op.started_mono + LOCAL_ANSWER_MIN_WAIT_S - time.monotonic()))
+                if op.stopped:
+                    if not op.background:
+                        self._task_detach(op, "stopped")
+                    await self._task_complete(op)
+                    return
             # A guess is in flight when its words were held, even if none of
             # its audio has arrived yet (it is then still to stream).
             guess = self._gate_blocked and bool(self._gate_text.strip())
@@ -4308,6 +4456,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 # Words from here on are the answer, unless the guess is
                 # still streaming (it outlasted the wait).
                 self._post_guess_dropped = self._guess_outlasted_wait
+                if op.stopped:
+                    self._task_detach(op, "stopped")
+                    await self._task_complete(op)
+                    return
                 if self._user_turn.open or self._op is not op:
                     # The user spoke again during the wait: as at the top of
                     # this method, the result waits for the new words' verdict
@@ -4326,8 +4478,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 # The voice believes it said what was dropped; tell it the
                 # user did not hear it, in the same append (improvement 5).
                 text = DROPPED_SPEECH_NOTE + " " + text
-            await self._send_commentary(text, did)
+            # Stamped first: a delegation landing during the send is told this
+            # was answered. Answered with the result again, the voice said the
+            # answer twice.
             op.result_sent_mono = time.monotonic()
+            await self._send_commentary(text, did)
         self._log_route(op, now)
         self._task_flush_soon("result delivered")
 
@@ -4446,13 +4601,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await self._send_commentary(text, did)
 
     async def _send_commentary(self, text: str, delegation_id: Optional[str]) -> None:
+        # Stamped first: its acknowledgement is judged against this.
+        self._commentary_sent_mono = time.monotonic()
+        self._last_commentary = (text, delegation_id)
         for chunk in chunk_text(text):
             payload = context_append("commentary", chunk, delegation_id)
             self._pending_appends[payload["event_id"]] = time.monotonic()
             while len(self._pending_appends) > IN_FLIGHT_LIMIT:
                 self._pending_appends.pop(next(iter(self._pending_appends)))
             await self._send_or_queue(payload)
-        self._commentary_sent_mono = time.monotonic()
         logger.info(f"🗣️ router commentary sent ({len(text)} chars"
                     + (f", delegation {delegation_id}" if delegation_id else ", session-wide") + ")")
 
@@ -4474,13 +4631,139 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if self._gate == "post":
                 self._result_acked = True
                 self._result_acked_mono = time.monotonic()
-            # Whatever non-acknowledgement speech was still streaming when the
-            # result went in has ended its claim on the speaker.
+                if not self._answer_nudged:
+                    self._spawn(self._answer_owed_watch(self._result_acked_mono), "live-answer-owed")
+            # Non-acknowledgement speech still streaming when the result went
+            # in ends its claim on the speaker at its first gap (GUESS_TAIL_*).
+            if self._gate_drop_until_ack and self._guess_streaming():
+                self._guess_tail_since = time.monotonic()
+                self._guess_tail_held = []
+                self._guess_tail_open = True
+                self._spawn(self._guess_tail_watch(), "live-guess-tail")
+                self._post_guess_dropped = True
+                logger.info("⏹️ a dropped guess is still streaming at the acknowledgement: "
+                            "its tail stays dropped until its first gap")
+                self._gate_answer_head = []
             self._gate_drop_until_ack = False
+            head, self._gate_answer_head = self._gate_answer_head, []
+            if head:
+                logger.info(f"▶️ the answer's first {len(head)} chunks came before the commentary's "
+                            "acknowledgement: played, not dropped")
+                self._gate_dropped -= len(head)
+                for chunk in head:
+                    self._enqueue_audio(chunk)
         else:
             logger.debug(f"live: ack {kind}")
 
     # -- the pre-result gate -------------------------------------------------
+
+    def _guess_streaming(self) -> bool:
+        """Audible audio has been dropped right up to now, and it began too
+        early to be the answer."""
+        since, last = self._gate_dropped_since, self._gate_dropped_last
+        if (since is None or last is None or self._gate_dropped_streak < GUESS_TAIL_MIN_CHUNKS
+                or time.monotonic() - last >= GUESS_TAIL_GAP_S):
+            return False
+        sent = self._commentary_sent_mono
+        return sent is None or (last >= sent and since < sent + ANSWER_EARLIEST_S)
+
+    def _hold_answer_head(self, chunk) -> None:
+        """Audio dropped until the acknowledgement that can only be the answer."""
+        sent = self._commentary_sent_mono
+        op = self._op
+        if (self._gate != "post" or self._post_guess_dropped or sent is None or op is None
+                or op.result_sent_mono is None or self._guess_streaming()
+                or time.monotonic() - sent < ANSWER_EARLIEST_S
+                or len(self._gate_answer_head) >= GATE_ANSWER_HEAD_MAX_CHUNKS):
+            return
+        if self._gate_answer_head or chunk.audible:
+            self._gate_answer_head.append(chunk)
+
+    def _note_dropped_audio(self, chunk) -> None:
+        if not chunk.audible:
+            return
+        now = time.monotonic()
+        if self._gate_dropped_last is None or now - self._gate_dropped_last >= GUESS_TAIL_GAP_S:
+            self._gate_dropped_since = now
+            self._gate_dropped_streak = 0
+        self._gate_dropped_last = now
+        self._gate_dropped_streak += 1
+
+    async def _answer_owed_watch(self, acked: float) -> None:
+        await asyncio.sleep(ANSWER_OWED_NUDGE_S)
+        if (self._result_acked_mono == acked and not self._answer_nudged and not self._guess_tail_open
+                and self.answer_owed):
+            # "One moment. It's off." in one breath: its words past the
+            # acknowledgement were not counted as the answer, but they played.
+            if self._result_heard and acknowledgement_state(self._voice_words_this_gate) == NOT_ACK:
+                return
+            # "On." is the start of an acknowledgement ("On it.") to the owed
+            # check, and the whole answer to "Turn on the test light": said
+            # again, the user heard it twice. Only silence or a complete
+            # acknowledgement ("One moment.") still owes the answer.
+            said = self._post_text.strip()
+            if said and acknowledgement_state(said) != ACK:
+                return
+            await self._ask_for_the_result("the voice has only acknowledged the result")
+
+    async def _ask_for_the_result(self, why: str) -> None:
+        """Once per result: the commentary again, to be said now."""
+        if self._answer_nudged or self._last_commentary is None or "Say nothing" in self._last_commentary[0]:
+            return
+        self._answer_nudged = True
+        logger.info(f"🔁 {why}: asking it to say the result")
+        text, delegation_id = self._last_commentary
+        await self._send_commentary("You have not said this out loud yet. Say it now. " + text, delegation_id)
+
+    def _guess_tail_continues(self, chunk) -> bool:
+        """Is this chunk still the tail of the dropped guess?"""
+        now = time.monotonic()
+        last = self._gate_dropped_last or 0.0
+        if not chunk.audible:
+            return True   # a pause inside the tail: the clock keeps running
+        if now - (self._guess_tail_since or now) >= GUESS_TAIL_MAX_S:
+            why = f"it ran past {GUESS_TAIL_MAX_S:.0f} s"
+        elif now - last >= GUESS_TAIL_GAP_S:
+            why = f"it paused for {int((now - last) * 1000)} ms"
+        else:
+            self._gate_dropped_last = now
+            return True
+        logger.info(f"▶️ the dropped guess's tail ended: {why}; the voice is heard from here")
+        self._guess_tail_since = None
+        self._guess_tail_held = []
+        self._guess_tail_open = False
+        self._post_guess_dropped = False
+        return False
+
+    async def _guess_tail_watch(self) -> None:
+        """Nothing audible after the tail: the answer was in it, or never came."""
+        await asyncio.sleep(GUESS_TAIL_ANSWER_WAIT_S)
+        while self._guess_tail_open:
+            wait = (self._gate_dropped_last or 0.0) + GUESS_TAIL_ANSWER_WAIT_S - time.monotonic()
+            if wait <= 0:
+                break
+            await asyncio.sleep(wait)
+        if not self._guess_tail_open:
+            return
+        self._guess_tail_open = False
+        held, self._guess_tail_held = self._guess_tail_held, []
+        while held and not held[-1].audible:
+            held.pop()
+        if self._gate not in ("post", "open"):
+            return
+        self._guess_tail_since = None
+        self._post_guess_dropped = False
+        audible_s = sum(len(c.pcm) for c in held if c.audible) / (2 * 24000)
+        if audible_s >= GUESS_TAIL_MIN_ANSWER_S:
+            logger.info(f"▶️ the voice ran from its guess into the answer with no gap: {len(held)} held "
+                        "chunks played")
+            self._gate_dropped -= len(held)
+            for chunk in held:
+                self._enqueue_audio(chunk)
+            # The answer is no longer owed; these words were not counted while dropped.
+            self._post_text = (self._post_text + " (ran on from the guess)")[-2000:]
+        else:
+            await self._ask_for_the_result("the voice's guess was all it said, and it was dropped")
 
     def _gate_push(self, chunk, end_ms: Optional[float] = None) -> None:
         if self._gate == "idle":
@@ -4517,7 +4800,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._gate in ("post", "open") and self._gate_drop_until_ack:
             self._gate_dropped += 1
             self._need_segment_start = True
+            self._note_dropped_audio(chunk)
+            self._hold_answer_head(chunk)
             return
+        if (self._gate in ("post", "open") and self._guess_tail_since is not None
+                and self._guess_tail_continues(chunk)):
+            self._gate_dropped += 1
+            self._need_segment_start = True
+            self._guess_tail_held.append(chunk)
+            return
+        if chunk.audible:
+            self._guess_tail_held = []   # the voice goes on: the tail was only the guess
+            self._guess_tail_open = False
         self._enqueue_audio(chunk, end_ms)
 
     async def _gate_release(self) -> None:
@@ -4563,6 +4857,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._gate != "pre":
             self._gate_lag.clear()
             self._gate_held.clear()
+            self._gate_answer_head = []
         self._gate = "pre"
 
     def _gate_lag_is_ack(self, arrived: float, end_ms: Optional[float]) -> bool:
@@ -4649,6 +4944,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         Returns the number of chunks dropped."""
         held_as_claim = self._gate_blocked
         ack_tail = self._gate_ack_until is not None
+        said = self._gate_text
         # Only a complete acknowledgement still in the lag may play; a phrase
         # that never completed ("Absolutely.") is dropped with the guesses.
         if not self._gate_blocked and acknowledgement_state(self._gate_text) != ACK:
@@ -4690,6 +4986,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._log_held_sample("dropped" if held else "ack played")
         self._gate_reset("post")
         self._gate_drop_until_ack = blocked
+        self._post_ack_text = "" if blocked else said
         for chunk in ack:
             self._enqueue_audio(chunk)
         if held:
@@ -4766,7 +5063,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self.router_stats["promoted"] += 1
         self._tasks[op.op_id] = op
         logger.info(f"🧺 router: {op.op_id} continues in the background ({reason}); "
-                    "its result will be delivered")
+                    f"its result will {'not be spoken (stopped)' if op.stopped else 'be delivered'}")
         if op.watch is None or op.watch.done():
             op.watch = self._spawn(self._task_progress_watch(op), f"live-task-progress-{op.op_id}")
 
@@ -4787,6 +5084,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     async def _task_join(self, op: RouterOp, seq: int, text: str) -> None:
         """An exact repeat of a pending request joins it: nothing runs again."""
+        if op.stopped:
+            # Asked again after a stop: the answer is wanted after all.
+            op.stopped = False
+            for ext in self._tasks.values():
+                if ext.op_id == f"{op.op_id}-ext":
+                    ext.stopped = False
         op.joins += 1
         self.router_stats["joined"] += 1
         meta = self._turn_meta()
@@ -4829,7 +5132,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             await asyncio.sleep(0.1)
         if op.done or op.abandoned:
             return
-        if not op.background and self._op is op:
+        if not op.background and self._op is op and not op.stopped:
             await self._task_promote(op)
         await self._task_progress_watch(op)
         self._task_flush_soon("hold expired")
@@ -4871,15 +5174,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # promotion line moves _last_audible_mono, so it counts as heard.
         if self._last_audible_mono == heard_before and not self._device_audio_active() \
                 and self.on_fallback_ack is not None:
-            self._filler_playing = True
-            self._filler_done.clear()
             try:
                 played = await self.on_fallback_ack(self.device_id)
             except Exception:
                 played = False
-            finally:
-                self._filler_playing = False
-                self._filler_done.set()
             if played:
                 self.router_stats["fallback_acks"] += 1
             logger.warning(f"🔈 fallback acknowledgement {'fired' if played else 'wanted'} "
@@ -4967,13 +5265,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         closed as failed after EXTERNAL_TASK_MAX_S."""
         policy = self.task_policy
         while (not op.deferred and not op.explain and not op.done and not op.abandoned
-               and op.progress_count < policy.progress_max):
+               and not op.stopped and op.progress_count < policy.progress_max):
             await asyncio.sleep(policy.progress_every_s)
             deadline = time.monotonic() + policy.progress_every_s
             while (time.monotonic() < deadline and not op.done and not op.abandoned
-                   and not self._task_quiet_moment()):
+                   and not op.stopped and not self._task_quiet_moment()):
                 await asyncio.sleep(0.5)
-            if op.done or op.abandoned or not self._task_quiet_moment():
+            if op.done or op.abandoned or op.stopped or not self._task_quiet_moment():
                 continue
             op.progress_count += 1
             logger.info(f"⏳ task {op.op_id} still running after {time.monotonic() - op.started_mono:.0f}s; "
@@ -4986,9 +5284,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             if remaining > 0:
                 await asyncio.sleep(remaining)
             if not op.done and not op.abandoned:
-                if op.deferred:
-                    logger.info(f"🧺 task {op.op_id} ({op.external_id}): the watch never fired within "
-                                f"{bound:.0f}s; forgotten")
+                if op.deferred or op.stopped:
+                    logger.info(f"🧺 task {op.op_id} ({op.external_id}): "
+                                f"{'stopped, and it ' if op.stopped else 'the watch '}never reported "
+                                f"back within {bound:.0f}s; forgotten")
                     op.abandoned = True
                     self._tasks.pop(op.op_id, None)
                     return
@@ -5008,7 +5307,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                        started_mono=op.started_mono, tools_started=True, background=True,
                        external_id=task_id, tool_name=name, deferred=deferred, explain=explain,
                        text_requested=explain and wants_text(op.text),
-                       speaker=op.speaker or (self._speaker_first_name() if explain else ""))
+                       speaker=op.speaker or (self._speaker_first_name() if explain else ""),
+                       stopped=op.stopped)
         self._tasks[ext.op_id] = ext
         ext.watch = self._spawn(self._task_progress_watch(ext), f"live-task-progress-{ext.op_id}")
         logger.info(f"🧺 router {op.op_id}: {name} continues elsewhere as "
@@ -5023,7 +5323,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if self._text_route() is None:
             return ""
         for op in reversed(list(self._tasks.values())):
-            if op.explain and not op.delivered and not op.abandoned:
+            if op.explain and not op.delivered and not op.abandoned and not op.stopped:
                 op.text_requested = True
                 logger.info(f"💬 task {op.op_id}: the user asked for the explanation by text")
                 return op.text
@@ -5036,7 +5336,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if probe is None:
             return ""
         try:
-            name = probe.name_for(probe.gate_speaker())
+            name = probe.verdict_name()
         except Exception:
             return ""
         return str(name or "").strip().split(" ")[0] if name else ""
@@ -5083,10 +5383,38 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if op.watch is not None and op.watch is not asyncio.current_task():
             await self._cancel(op.watch)
             op.watch = None
+        if op.stopped:
+            real_failure = (op.result is not None and op.result.kind == ROUTE_FAILED
+                            and not op.confirm_withdrawn)
+            if not real_failure:
+                self._task_stopped_finished(op)
+                return
+            # A failure is still told: a false stop must never leave the user
+            # believing a command worked. (A withdrawn question is no failure:
+            # the user stopped before the yes, and nothing ran.)
+            op.stopped = False
+            logger.info(f"🛑 task {op.op_id} failed after a stop: the failure is still told")
         self._task_flush_soon("task done")
 
+    def _task_stopped_finished(self, op: RouterOp) -> None:
+        """A stopped task finished: nothing about it is spoken. It stays in the
+        list, undelivered, only so a repeat within TASK_JOIN_DONE_WINDOW_S
+        joins it instead of running the action a second time."""
+        logger.info(f"🛑 task {op.op_id} finished after a stop: its result is not spoken")
+        if op.confirm_withdrawn or not op.key:
+            self._tasks.pop(op.op_id, None)
+            return
+        op.result_ready_mono = time.monotonic()
+        self._spawn(self._task_forget_stopped(op), f"live-task-forget-{op.op_id}")
+
+    async def _task_forget_stopped(self, op: RouterOp) -> None:
+        await asyncio.sleep(TASK_JOIN_DONE_WINDOW_S)
+        if op.stopped and self._tasks.get(op.op_id) is op:
+            self._tasks.pop(op.op_id, None)
+
     def _task_flush_soon(self, reason: str) -> None:
-        if self.router is None or not any(t.done and not t.delivered for t in self._tasks.values()):
+        if self.router is None or not any(t.done and not t.delivered and not t.stopped
+                                          for t in self._tasks.values()):
             return
         if self._task_flush_task is not None and not self._task_flush_task.done():
             # The running pass takes another look before it ends (a session
@@ -5125,7 +5453,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             retries = 0
             while True:
                 ready = [t for t in list(self._tasks.values())
-                         if t.done and not t.delivered and t.session_sent_mono is None]
+                         if t.done and not t.delivered and not t.stopped and t.session_sent_mono is None]
                 if not ready:
                     return
                 deferred = False
@@ -5463,15 +5791,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 return
             if self._last_audible_mono == heard_before and not self._device_audio_active() \
                     and self.on_fallback_ack is not None:
-                self._filler_playing = True
-                self._filler_done.clear()
                 try:
                     played = await self.on_fallback_ack(self.device_id)
                 except Exception:
                     played = False
-                finally:
-                    self._filler_playing = False
-                    self._filler_done.set()
                 if played:
                     self.router_stats["fallback_acks"] += 1
                 logger.warning(f"🔈 fallback acknowledgement {'fired' if played else 'wanted'} "
@@ -5515,8 +5838,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         meta = self._turn_meta()
         if player is None:
             return
-        self._filler_playing = True
-        self._filler_done.clear()
         ms = self._since_speech_end_ms()
         if self._op is op and self._gate == "pre" and not self._gate_blocked:
             # The clip is the acknowledgement. The voice's own "One moment."
@@ -5537,9 +5858,6 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except Exception as e:
             played = False
             logger.debug(f"fallback acknowledgement failed: {e!r}")
-        finally:
-            self._filler_playing = False
-            self._filler_done.set()
         if played:
             self.router_stats["fallback_acks"] += 1
             if self._turn_heard_mono is None:
@@ -5617,23 +5935,14 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._input_audio_ms_sent += ms
         return sent
 
-    def _note_audio_pushed(self, nbytes: int) -> None:
-        """Track when the audio sent so far finishes playing on the device. The
-        transport paces it at real time, so playout ends one buffer's length
-        after the later of now and the previous end."""
-        now = time.monotonic()
-        start = max(now, getattr(self, "_playout_end_mono", 0.0))
-        self._playout_end_mono = start + nbytes / (2.0 * LIVE_SAMPLE_RATE)
-
     def playout_remaining_s(self) -> float:
         """Seconds until the reply audio sent so far has finished playing on
         the device, including its jitter cushion. The session gate starts the
         follow-up window after this, and the device's own report that it
         finished playing restarts the window exactly."""
-        end = getattr(self, "_playout_end_mono", 0.0)
-        if not end:
-            return 0.0
-        return max(0.0, end + DEVICE_PLAYOUT_TAIL_S - time.monotonic())
+        owner = self.speaker_owner
+        remaining = owner.playout_remaining_s() if owner is not None else 0.0
+        return remaining + DEVICE_PLAYOUT_TAIL_S if remaining > 0.0 else 0.0
 
     def _add_wait(self, name: str, ms: float, first_only: bool = False) -> None:
         """Account a wait in this turn's breakdown (TurnTimeline.add_wait)."""

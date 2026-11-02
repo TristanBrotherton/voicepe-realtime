@@ -43,22 +43,6 @@ _ALIASES = {
 }
 
 DEFAULT_LIVE_MODEL = "gpt-live-1"
-# Relay-side playout lead the device needs on the Live runtime, in ms.
-#
-# Measured against the real endpoint on 2026-10-07 (app/live_probe.py): GPT-Live
-# delivers reply audio in 100 ms frames at 1.02-1.11x real time during speech,
-# with in-speech inter-frame gaps up to ~160 ms and session-wide spikes to
-# 341-380 ms. The Realtime API instead bursts a whole reply far faster than
-# real time, so the Voice PE accumulates seconds of playout lead by itself and
-# rides through jitter invisibly. On Live it starts every reply with no lead and
-# gains only ~20-80 ms per second, so its resampler/mixer/I2S chain starves
-# repeatedly from the first word — heard as static, rasp or stutter.
-#
-# 600 ms covers the measured worst-case inter-frame gap with room for network
-# jitter, and costs that much latency on the first word (once per reply).
-# app/main.py applies it as the default for OUTPUT_LEAD_BUFFER_MS on the Live
-# runtime only; an explicit operator value always wins.
-LIVE_OUTPUT_LEAD_MS = 600
 # The delegated Responses backend. The official delegation guide says to
 # start with gpt-6-luna; gpt-6-sol is the heavier option for complex tasks.
 DEFAULT_LIVE_BACKEND_MODEL = "gpt-6-luna"
@@ -102,26 +86,21 @@ def resolve_voice_runtime(env: Optional[Mapping[str, str]] = None) -> str:
     return normalize_runtime(env.get("VOICE_RUNTIME"))
 
 
-def resolve_output_lead_ms(configured: Optional[str], runtime: str,
-                           maximum: int = 2000) -> int:
-    """How much relay-side playout lead to give the device, in ms.
-
-    Realtime keeps its opt-in default of 0: it bursts a whole reply far faster
-    than real time, so the device builds its own cushion. Live defaults to
-    :data:`LIVE_OUTPUT_LEAD_MS` because it does not. An explicit operator value
-    always wins, including ``0`` to switch the lead off deliberately; a
-    non-numeric value falls back to the runtime's default rather than failing
-    the add-on's startup.
+def resolve_output_lead_ms(configured: Optional[str], maximum: int = 2000) -> int:
+    """How much relay-side playout lead to give a device on the Realtime
+    runtime, in ms: opt-in, 0 by default, because Realtime bursts a whole reply
+    far faster than real time and the device builds its own cushion. (GPT-Live
+    has no such lead: the speaker owner sets its pace.) A non-numeric value
+    falls back to 0 rather than failing the add-on's startup.
     """
-    default = LIVE_OUTPUT_LEAD_MS if runtime == LIVE else 0
     text = (configured or "").strip()
     if not text:
-        return default
+        return 0
     try:
         value = int(text)
     except (TypeError, ValueError):
-        logger.warning(f"⚠️ OUTPUT_LEAD_BUFFER_MS={configured!r} is not an int; using {default}")
-        return default
+        logger.warning(f"⚠️ OUTPUT_LEAD_BUFFER_MS={configured!r} is not an int; using 0")
+        return 0
     return max(0, min(maximum, value))
 
 

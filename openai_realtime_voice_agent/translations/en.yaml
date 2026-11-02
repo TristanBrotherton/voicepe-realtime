@@ -150,7 +150,7 @@ configuration:
   output_lead_buffer_ms:
     name: "🎚️ Audio · Reply start lead (ms)"
     description: >-
-      Holds the first part of each reply for this long and sends it as one
+      Realtime runtime only. Holds the first part of each reply for this long and sends it as one
       burst, so the device starts playback with a cushion. Helps when replies
       start with a click or stutter; costs about this much latency on the
       first word. 0 = off (default); try 400 if replies start clipped. The
@@ -675,7 +675,7 @@ configuration:
       and can give it the port it connects to (port; the device is then
       known by that port), its own announce port, and its own follow-up
       window, delays, buffers, timer ring switch, room, voice and GPT-Live
-      daily caps, and the speaker owner (speaker_owner, with chain_prime_ms and
-      utt_cushion_ms; off by default, see docs/device-protocol.md). Anything
-      left out uses the setting above. Empty: one set of
-      settings for every device, as before.
+      daily caps, and on GPT-Live the silence before a cold reply start
+      (chain_prime_ms, default 200) and its start cushion (utt_cushion_ms,
+      default 0; see docs/device-protocol.md). Anything left out uses the
+      setting above. Empty: one set of settings for every device, as before.

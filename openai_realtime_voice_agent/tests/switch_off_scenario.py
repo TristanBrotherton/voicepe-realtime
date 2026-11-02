@@ -1,11 +1,9 @@
 """A fixed scenario through the pipeline exactly as WebSocketHandler builds it,
-recording every frame the device receives. Used to show that with the
-speaker owner switched off the device gets byte-for-byte what it got before
-the owner existed (tests/test_speaker_owner_wiring.py holds the digest that
-the add-on produced before this work).
-
-Written against the handler's public construction steps only, so the same
-file runs unchanged on the code from before the owner existed.
+recording every frame the device receives. Used to show that without the
+speaker owner (the transport's output path, as on the Realtime runtime) the
+device gets byte-for-byte what it got before the owner existed
+(tests/test_speaker_owner_wiring.py holds the digest that the add-on produced
+before this work), and that with it the same audio arrives.
 """
 import asyncio
 import hashlib
@@ -26,7 +24,7 @@ from tests import live_fixtures as fx
 from tests.test_live_device_audio import DeviceSocket, ModelSocket
 
 
-async def run_fixed_scenario(devices_json: str = "", lead_ms: int = 600, start=None,
+async def run_fixed_scenario(owner: bool = False, lead_ms: int = 600, start=None,
                              interrupt=None, keep=None):
     """Model speech, a pause, more speech, then a device interrupt.
 
@@ -42,7 +40,8 @@ async def run_fixed_scenario(devices_json: str = "", lead_ms: int = 600, start=N
 
     with patch.object(live_service_module, "websocket_connect", fake_connect):
         handler = WebSocketHandler(output_lead_buffer_ms=lead_ms)
-        handler.device_directory = DeviceDirectory.from_json(devices_json)
+        handler.device_directory = DeviceDirectory.from_json("")
+        handler.speaker_owner_enabled = owner
         device = DeviceSocket()
         serializer = RawAudioSerializer("testdevice")
         connection = DeviceConnection(device_id="testdevice", websocket=device,
@@ -50,9 +49,7 @@ async def run_fixed_scenario(devices_json: str = "", lead_ms: int = 600, start=N
                                       profile=handler.device_directory.get("testdevice"))
         connection.transport = handler.create_transport(device, serializer)
         connection.turn_timeline = TurnTimeline("testdevice")
-        build_owner = getattr(handler, "_build_speaker_owner", None)
-        if build_owner is not None:
-            connection.speaker_owner = build_owner(connection)
+        connection.speaker_owner = handler._build_speaker_owner(connection)
         service = OpenAILiveLLMService(
             api_key="sk-test", config=LiveConfig(voice="marin"),
             instructions="Be brief.", backend_instructions="Use tools.",
@@ -88,7 +85,7 @@ async def run_fixed_scenario(devices_json: str = "", lead_ms: int = 600, start=N
         finally:
             await asyncio.wait_for(task.cancel(), 5)
             await asyncio.wait_for(run, 5)
-            if getattr(connection, "speaker_owner", None) is not None:
+            if connection.speaker_owner is not None:
                 await connection.speaker_owner.shutdown()
     texts = [json.loads(t) for t in device.text]
     if keep is not None:

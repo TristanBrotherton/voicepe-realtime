@@ -1,8 +1,7 @@
 """The pipeline end of the speaker owner (app/speaker_owner.py).
 
-``SpeakerOwnerProcessor`` sits right before the output transport when a
-device's ``speaker_owner`` option is on (and is not in the pipeline at all
-when it is off). It takes the model's audio frames out of the pipeline and
+``SpeakerOwnerProcessor`` sits right before the output transport on GPT-Live
+(on the Realtime runtime it is not in the pipeline at all). It takes the model's audio frames out of the pipeline and
 hands them to the owner as utterances, so they reach the device as soon as
 they exist, in order with clips and announcements, instead of through the
 transport's real-time pacer.

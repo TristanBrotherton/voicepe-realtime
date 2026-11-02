@@ -13,6 +13,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pipecat.frames.frames import ErrorFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -24,6 +25,7 @@ from app.phase_emitter import TurnLiveness
 from app.raw_audio_serializer import RawAudioSerializer
 from app.turn_timeline import TurnTimeline
 from app.wake_events import CaptureConfig, WakeAudioCapture, WakeEventStore
+import app.websocket_handler as websocket_handler_module
 from app.websocket_handler import WebSocketHandler
 
 from tests.test_handler_wiring import FakeTransport
@@ -233,7 +235,7 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.settle(lambda: connection.session_gate.state == OPEN)
         await self.send(connection, {"type": "interrupt"})
         self.assertEqual(connection.session_gate.state, CLOSED)
-        self.assertEqual(connection.openai_service.closes, ["device stop"])
+        await self.settle(lambda: connection.openai_service.closes == ["device stop"])
 
     async def test_a_follow_up_cut_off_closes_the_session(self):
         connection = self.build()
@@ -241,7 +243,7 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.settle(lambda: connection.session_gate.state == OPEN)
         await self.send(connection, {"type": "flush"})
         self.assertEqual(connection.session_gate.state, CLOSED)
-        self.assertEqual(connection.openai_service.closes, ["follow-up cut-off"])
+        await self.settle(lambda: connection.openai_service.closes == ["follow-up cut-off"])
 
     async def test_every_gate_close_forces_the_device_idle(self):
         """Regression: model session closed while Kitchen's ring kept spinning."""
@@ -278,6 +280,94 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await connection.session_gate.close("follow-up cut-off")
         await asyncio.sleep(0.05)
         self.assertNotIn(("idle", {}), phases)
+
+    async def _capture_phases(self, connection):
+        connection.phase_emitter._current = "replying"
+        phases = []
+
+        async def capture(value, **extra):
+            phases.append((value, extra))
+
+        connection.phase_emitter._send_phase = capture
+        return phases
+
+    async def test_a_wake_mid_reply_keeps_its_mic_and_gets_a_session(self):
+        """Rig 2026-11-01: the wake's interrupt closed the session, the wake was
+        read only after that close, and the idle it forced shut the wake's mic:
+        the request was never heard, 3 of 3."""
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        phases = await self._capture_phases(connection)
+        slow_close = connection.openai_service.close_session
+
+        async def close_session(reason=""):
+            await asyncio.sleep(0.2)
+            await slow_close(reason)
+
+        connection.openai_service.close_session = close_session
+        await self.send(connection, {"type": "interrupt", "reason": "wake", "seq": 1})
+        await self.send(connection, {"type": "wake", "turn": "k2", "src": "wake_word"})
+        self.assertIsNotNone(connection.last_wake_mono)
+        await self.settle(lambda: connection.session_gate.state == OPEN and connection.openai_service.opens == 2)
+        await asyncio.sleep(0.05)
+        self.assertNotIn(("idle", {}), phases)
+
+    async def test_the_old_reply_winding_down_does_not_end_the_new_wakes_turn(self):
+        """Ended by the old reply's idle, the wake's turn had no no-speech check
+        left, and a silent wake kept the mic open (rig 2026-11-01)."""
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        slow_close = connection.openai_service.close_session
+
+        async def close_session(reason=""):
+            await asyncio.sleep(0.2)
+            await slow_close(reason)
+
+        connection.openai_service.close_session = close_session
+        await self.send(connection, {"type": "interrupt", "reason": "wake", "seq": 1})
+        await self.send(connection, {"type": "wake", "turn": "k2", "src": "wake_word"})
+        turn = connection.turn_timeline.current
+        connection.phase_emitter.on_turn_end("completed")
+        self.assertFalse(turn.done)
+        await self.settle(lambda: connection.session_gate.state == OPEN and connection.openai_service.opens == 2)
+        connection.phase_emitter.on_turn_end("completed")
+        self.assertTrue(turn.done, "with the session open it is a normal turn end")
+
+    async def test_a_wake_during_a_close_is_not_followed_by_idle(self):
+        """A close takes seconds: a wake any time in it owns the device."""
+        import time as _time
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        phases = await self._capture_phases(connection)
+        slow_close = connection.openai_service.close_session
+
+        async def close_session(reason=""):
+            connection.last_wake_mono = _time.monotonic()
+            with patch.object(websocket_handler_module, "WAKE_SUPERSEDES_IDLE_S", 0.0):
+                await asyncio.sleep(0.05)
+                await slow_close(reason)
+
+        connection.openai_service.close_session = close_session
+        with patch.object(websocket_handler_module, "WAKE_SUPERSEDES_IDLE_S", 0.0):
+            await connection.session_gate.close("idle")
+            await asyncio.sleep(0.05)
+        self.assertNotIn(("idle", {}), phases)
+
+    async def test_a_new_session_that_fails_to_open_still_sends_the_device_idle(self):
+        """Nothing will ever hear the wake's mic: it must not be left open."""
+        import time as _time
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        phases = await self._capture_phases(connection)
+        connection.last_wake_mono = _time.monotonic()
+        connection.session_gate._state = "opening"
+        await connection.session_gate._close_locked("open failed", connection.session_gate.generation)
+        await self.settle(lambda: bool(phases))
+        self.assertEqual(phases[-1], ("idle", {}))
 
     async def test_a_new_wake_after_a_stop_opens_a_fresh_session(self):
         connection = self.build()

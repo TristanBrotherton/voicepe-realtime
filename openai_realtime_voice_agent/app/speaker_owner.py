@@ -281,6 +281,11 @@ class SpeakerOwner:
         items = list(self._queue) + ([self._head] if self._head else []) + self._inflight
         return any(u.kind in SPEECH and not u.terminal for u in items)
 
+    def playout_remaining_s(self) -> float:
+        """Seconds until the audio sent so far has played, by the estimate
+        (utt1: the device's own `done` is the fact that follows it)."""
+        return max(0.0, self._play_end - self._now()) if self._play_end > 0.0 else 0.0
+
     def utterance(self, uid: int) -> Optional[Utterance]:
         return self._by_id.get(uid)
 
@@ -760,7 +765,7 @@ class SpeakerOwner:
         self._check_idle()
 
     def _log_record(self, utt: Utterance, corrected: bool = False) -> None:
-        record = dict(utt.record(), framing=self.framing)
+        record = dict(utt.record(), framing=self.framing, prime_ms=self.prime_ms)
         if corrected:
             record["corrected"] = True
         try:

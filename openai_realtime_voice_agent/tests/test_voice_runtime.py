@@ -118,32 +118,26 @@ class TestDiagnosticCapture(unittest.TestCase):
         self.assertEqual(LiveConfig.from_env({"LIVE_AUDIO_CAPTURE_MS": "lots"}).audio_capture_ms, 0)
 
 
-class TestOutputLeadDefault(unittest.TestCase):
-    """GPT-Live delivers at ~1.0x real time, so the relay must supply the lead."""
+class TestOutputLead(unittest.TestCase):
+    """Opt-in on the Realtime runtime; GPT-Live has no such lead."""
 
-    def test_live_defaults_to_the_measured_lead_realtime_keeps_zero(self):
-        from app.voice_runtime import LIVE_OUTPUT_LEAD_MS, resolve_output_lead_ms
-
-        self.assertEqual(resolve_output_lead_ms(None, LIVE), LIVE_OUTPUT_LEAD_MS)
-        self.assertEqual(resolve_output_lead_ms("", LIVE), LIVE_OUTPUT_LEAD_MS)
-        self.assertEqual(resolve_output_lead_ms(None, REALTIME), 0,
-                         "the Realtime default must not change")
-        self.assertEqual(resolve_output_lead_ms("", REALTIME), 0)
-
-    def test_an_explicit_value_always_wins_including_zero(self):
+    def test_the_default_is_zero(self):
         from app.voice_runtime import resolve_output_lead_ms
 
-        self.assertEqual(resolve_output_lead_ms("0", LIVE), 0)
-        self.assertEqual(resolve_output_lead_ms("250", LIVE), 250)
-        self.assertEqual(resolve_output_lead_ms("400", REALTIME), 400)
+        self.assertEqual(resolve_output_lead_ms(None), 0)
+        self.assertEqual(resolve_output_lead_ms(""), 0)
+
+    def test_an_explicit_value_wins(self):
+        from app.voice_runtime import resolve_output_lead_ms
+
+        self.assertEqual(resolve_output_lead_ms("400"), 400)
 
     def test_out_of_range_is_clamped_and_nonsense_falls_back(self):
-        from app.voice_runtime import LIVE_OUTPUT_LEAD_MS, resolve_output_lead_ms
+        from app.voice_runtime import resolve_output_lead_ms
 
-        self.assertEqual(resolve_output_lead_ms("9999", LIVE), 2000)
-        self.assertEqual(resolve_output_lead_ms("-5", LIVE), 0)
-        self.assertEqual(resolve_output_lead_ms("soon", LIVE), LIVE_OUTPUT_LEAD_MS)
-        self.assertEqual(resolve_output_lead_ms("soon", REALTIME), 0)
+        self.assertEqual(resolve_output_lead_ms("9999"), 2000)
+        self.assertEqual(resolve_output_lead_ms("-5"), 0)
+        self.assertEqual(resolve_output_lead_ms("soon"), 0)
 
 
 class TestLiveCostBounds(unittest.TestCase):

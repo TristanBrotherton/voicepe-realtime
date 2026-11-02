@@ -30,6 +30,8 @@ ACOUSTIC_WAKE_SOURCES = frozenset({"", "wake_word"})
 # a detection can be reported slightly after the audio that caused it has
 # finished playing through the speaker.
 SELF_WAKE_TAIL_S = 0.6
+# The wake that follows its own interrupt comes this soon after it.
+WAKE_INTERRUPT_S = 1.0
 # Quiet time on the mic stream after which the next frame counts as the device
 # opening its microphone for a new turn. The firmware streams continuously for
 # the duration of a turn (frames every few tens of ms), so anything above a
@@ -180,6 +182,7 @@ class RawAudioSerializer(FrameSerializer):
         # Acoustic wakes dropped because they were our own announcement coming
         # back through the microphone (see is_self_wake).
         self.self_wakes_suppressed = 0
+        self._wake_interrupt_mono = 0.0
         self._last_button_mono = 0.0
         # Last device "stop" (interrupt); acknowledges a timer like a wake.
         self._last_interrupt_mono = 0.0
@@ -337,6 +340,8 @@ class RawAudioSerializer(FrameSerializer):
             # reply at a new wake) is not someone acknowledging a timer.
             if info.get("reason") not in HOUSEKEEPING_REASONS:
                 self._last_interrupt_mono = time.monotonic()
+            if info.get("reason") in ("wake", "residual"):
+                self._wake_interrupt_mono = time.monotonic()
             await self._call("interrupt", info)
         elif kind == "start":
             info = parse_start(data)
@@ -424,6 +429,11 @@ class RawAudioSerializer(FrameSerializer):
         """
         source = str(data.get("src") or "").strip().lower()
         if source not in ACOUSTIC_WAKE_SOURCES:
+            return False
+        if time.monotonic() - self._wake_interrupt_mono < WAKE_INTERRUPT_S:
+            # The device has already stopped the reply for this wake and opened
+            # its mic, and the add-on is closing the session: nothing is left to
+            # protect, and dropping the wake would lose what is said next.
             return False
         return time.monotonic() < self.suppress_inbound_until + SELF_WAKE_TAIL_S
 

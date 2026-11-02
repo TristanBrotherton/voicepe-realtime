@@ -26,7 +26,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pipecat.frames.frames import TTSAudioRawFrame
+from pipecat.frames.frames import InputAudioRawFrame, TTSAudioRawFrame
 
 import app.live_service as live_service_module
 from app.action_gate import ActionGate, EntityDirectory
@@ -53,7 +53,7 @@ TOOLS = [
 ]
 STATES = [
     {"entity_id": "lock.front_door", "attributes": {"friendly_name": "Entry Lock"}},
-    {"entity_id": "light.atrium", "attributes": {"friendly_name": "Atrium Lamp"}},
+    {"entity_id": "light.foyer", "attributes": {"friendly_name": "Foyer Lamp"}},
 ]
 
 
@@ -191,32 +191,32 @@ class Patched(unittest.IsolatedAsyncioTestCase):
 class RoutingAtTranscript(Patched):
     async def test_the_app_routes_a_command_the_voice_never_delegated(self):
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-            response(message("The Atrium Lamp is on."), cached=3900),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+            response(message("The Foyer Lamp is on."), cached=3900),
         )
         async with RouterHarness(self, backend) as h:
             start = h.socket.sent[0]["session"]
             self.assertEqual(start["delegation"], {"type": "client"},
                              "the voice gets no backend of its own")
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             sent = await h.wait_commentary()
-            self.assertEqual(h.executed, [("intent__HassTurnOn", {"name": "Atrium Lamp"})])
+            self.assertEqual(h.executed, [("intent__HassTurnOn", {"name": "Foyer Lamp"})])
             self.assertIn("Verified result", sent[0]["content"])
-            self.assertIn("The Atrium Lamp is on.", sent[0]["content"])
+            self.assertIn("The Foyer Lamp is on.", sent[0]["content"])
             self.assertIsNone(sent[0]["delegation_id"])
             self.assertEqual(h.socket.of("response.create"), [],
                              "nothing waits on the voice to delegate")
             self.assertEqual(backend.bodies[0]["input"][-1],
-                             {"role": "user", "content": "Turn on the Atrium Lamp."})
+                             {"role": "user", "content": "Turn on the Foyer Lamp."})
 
     async def test_a_delegation_attaches_to_the_routed_request_and_runs_nothing(self):
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-            response(message("The Atrium Lamp is on.")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+            response(message("The Foyer Lamp is on.")),
         )
         backend.gate.clear()
         async with RouterHarness(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             await asyncio.sleep(0.15)
             h.socket.push({"type": "session.delegation.created",
                            "delegation": {"id": "item_d1", "target": "client"}})
@@ -247,14 +247,14 @@ class RoutingAtTranscript(Patched):
             self.assertEqual(sent[0]["delegation_id"], "item_d1")
 
     async def test_a_local_intent_match_runs_one_tool_and_no_model(self):
-        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Atrium Lamp"}, ["light"], 1))
+        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Foyer Lamp"}, ["light"], 1))
         backend = FakeBackend()
         async with RouterHarness(self, backend, recognizer=recognizer) as h:
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             sent = await h.wait_commentary()
-            self.assertEqual(h.executed, [("intent__HassTurnOn", {"name": "Atrium Lamp"})])
+            self.assertEqual(h.executed, [("intent__HassTurnOn", {"name": "Foyer Lamp"})])
             self.assertEqual(backend.bodies, [], "a confident local match needs no model call")
-            self.assertIn("Turned on Atrium Lamp.", sent[0]["content"])
+            self.assertIn("Turned on Foyer Lamp.", sent[0]["content"])
 
     async def test_an_accidental_wake_fragment_is_not_routed_and_closes_silently(self):
         backend = FakeBackend()
@@ -271,11 +271,11 @@ class RoutingAtTranscript(Patched):
 
 class VerifiedOnlySpeech(Patched):
     async def test_a_guess_at_the_outcome_is_never_heard(self):
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         async with RouterHarness(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             await asyncio.sleep(0.15)
             h.voice_says("Done, it's on.", ms=400)
             await asyncio.sleep(0.3)
@@ -285,7 +285,7 @@ class VerifiedOnlySpeech(Patched):
             await asyncio.sleep(0.1)
             self.assertEqual(h.heard(), b"", "and dropped once a verified result is coming")
             h.socket.push({"type": "session.commentary.appended"})
-            h.voice_says("The Atrium Lamp is on now.", ms=300)
+            h.voice_says("The Foyer Lamp is on now.", ms=300)
             await h.sink.wait_for(TTSAudioRawFrame)
             self.assertIn(fx.tone(300)[:4800], h.heard())
 
@@ -295,14 +295,14 @@ class VerifiedOnlySpeech(Patched):
         acknowledged while the guess still streamed, and its tail played on
         its own: "sliced meats, <name>." The result now waits for the guess
         to end, so nothing of the guess is heard and the reply is fresh."""
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         guess = fx.tone(1200, freq=330.0)
         reply = fx.tone(300)
         with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.15)
                 h.socket.push({"type": "session.output_transcript.delta", "delta": "I've turned"})
 
@@ -325,7 +325,7 @@ class VerifiedOnlySpeech(Patched):
                 self.assertEqual(h.heard(), b"", "no part of the guess is heard, not even its tail")
                 commentary = " ".join(m["content"] for m in h.socket.of("session.commentary.append"))
                 self.assertIn("as if for the first time", commentary, "the voice is told to speak afresh")
-                h.voice_says("The Atrium Lamp is on now.", ms=300)
+                h.voice_says("The Foyer Lamp is on now.", ms=300)
                 await h.sink.wait_for(TTSAudioRawFrame)
                 await asyncio.sleep(0.2)
                 self.assertEqual(h.heard(), reply, "the fresh reply, whole")
@@ -333,12 +333,12 @@ class VerifiedOnlySpeech(Patched):
     async def test_a_finished_guess_does_not_delay_the_result(self):
         """A short guess ("Done.") that has already ended is no reason to
         wait: the result goes in at once, asking for a fresh reply."""
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.15)
                 h.voice_says("Done.", ms=200)
                 await asyncio.sleep(0.4)
@@ -352,12 +352,12 @@ class VerifiedOnlySpeech(Patched):
     async def test_a_guess_whose_audio_has_not_started_still_waits(self):
         """The guess's words were held but none of its audio had arrived
         when the result came in: it is still to stream, so the result waits."""
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         with patch.object(live_service_module, "GUESS_QUIET_S", 0.4):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.15)
                 h.socket.push({"type": "session.output_transcript.delta", "delta": "I've turned it on."})
                 await asyncio.sleep(0.05)
@@ -379,14 +379,14 @@ class VerifiedOnlySpeech(Patched):
         into it. The voice finishes what it is saying before it takes in the
         result, so the result now waits for the whole guess (the device
         shows `thinking` meanwhile), and only the answer is heard."""
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         guess = fx.tone(6000, freq=330.0)
         reply = fx.tone(300)
         with patch.object(live_service_module, "GUESS_QUIET_S", 0.25):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.15)
 
                 async def stream_guess():
@@ -410,10 +410,250 @@ class VerifiedOnlySpeech(Patched):
                 await h.wait_commentary(timeout=3.0)
                 self.assertEqual(h.service.turn_liveness.in_flight, 0)
                 h.socket.push({"type": "session.commentary.appended"})
-                h.voice_says("The Atrium Lamp is on now.", ms=300)
+                h.voice_says("The Foyer Lamp is on now.", ms=300)
                 await h.sink.wait_for(TTSAudioRawFrame)
                 await asyncio.sleep(0.2)
                 self.assertEqual(h.heard(), reply, "only the answer, whole; nothing of the guess")
+
+    async def _stream(self, h, pcm, words=None, period=0.1):
+        """Audio at about real time, 100 ms a delta, as the real endpoint does."""
+        for i in range(0, len(pcm), 4800):
+            if words:
+                h.socket.push({"type": "session.output_transcript.delta", "delta": words})
+            h.socket.push({"type": "session.output_audio.delta", "delta": b64(pcm[i:i + 4800])})
+            await asyncio.sleep(period)
+
+    async def test_the_tail_of_a_guess_past_the_acknowledgement_is_never_heard(self):
+        """Seen on a device: "I've added a fence post stake to the..." was
+        dropped until the commentary's acknowledgement, and the rest of it
+        ("...list, <name>.") played as the answer. A guess still streaming when
+        the acknowledgement lands stays dropped until its first gap, and the
+        answer behind it is heard whole."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(
+                    self._stream(h, fx.tone(1500, freq=330.0), words=" and on"))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()      # it outlasted the wait
+                await asyncio.sleep(0.3)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                self.assertEqual(h.heard(), b"", "nothing of the guess, not even past the acknowledgement")
+                await asyncio.sleep(0.5)        # the gap
+                answer = fx.tone(300)
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "It's on."})
+                h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer, "the answer, whole")
+                self.assertEqual(h.service._post_text, "It's on.")
+
+    async def test_a_voice_that_runs_from_its_guess_into_the_answer_is_heard(self):
+        """Seen on a device: "As you wish. It's off." with no gap: everything
+        from the acknowledgement on was dropped as the guess's tail, and the
+        answer was never heard. Nothing audible after the tail: it held the
+        answer, so it plays."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                speech = fx.tone(1500, freq=330.0)
+                streaming = asyncio.ensure_future(self._stream(h, speech, words=" on"))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(0.3)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                self.assertEqual(h.heard(), b"", "held so far")
+                self.assertTrue(h.service.answer_owed)
+                await asyncio.sleep(live_service_module.GUESS_TAIL_ANSWER_WAIT_S + 0.2)
+                heard = h.heard()
+                self.assertGreater(len(heard), 0, "the tail plays: it held the answer")
+                self.assertLess(len(heard), len(speech), "from the acknowledgement on, not the guess's start")
+                self.assertFalse(h.service.answer_owed)
+
+    async def test_a_guess_that_was_all_the_voice_said_is_asked_for_again(self):
+        """Seen on a device: "Done." was the guess and all the voice said; it
+        was dropped, and the turn was silent. Asked once to say the result."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(self._stream(h, fx.tone(800, freq=330.0), words=" on"))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(0.25)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(live_service_module.GUESS_TAIL_ANSWER_WAIT_S + 0.2)
+                self.assertEqual(h.heard(), b"", "not a fragment of the guess")
+                self.assertGreater(len(h.socket.of("session.commentary.append")), before, "asked again")
+                answer = fx.tone(300)
+                h.socket.push({"type": "session.commentary.appended"})
+                h.socket.push({"type": "session.output_transcript.delta", "delta": "It's on."})
+                h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
+                await h.sink.wait_for(TTSAudioRawFrame)
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer)
+
+    async def test_a_result_answered_with_only_an_acknowledgement_is_asked_for_once(self):
+        """Seen on a device: the action ran, the voice said "One moment." and
+        stopped, and the session closed with the result unsaid."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        with patch.object(live_service_module, "ANSWER_OWED_NUDGE_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                h.voice_says("One moment.", ms=100)
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before + 1, "asked once")
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before + 1, "only once")
+
+    async def test_an_answer_run_on_from_the_acknowledgement_is_not_asked_for_again(self):
+        """Seen on a device: "One moment. It's off." played, then the re-prompt
+        said "It's off." again."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        with patch.object(live_service_module, "ANSWER_OWED_NUDGE_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                h.voice_says("One moment.", ms=100)
+                h.service._voice_words_this_gate = "One moment. It's on."
+                h.service._result_heard = True
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before, "not asked again")
+
+    async def test_a_short_answer_that_starts_like_an_acknowledgement_is_not_asked_for_again(self):
+        """Seen on a device: "On." answered "Turn on the test light", counted
+        as the start of "On it.", and the re-prompt said "On." a second time."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        with patch.object(live_service_module, "ANSWER_OWED_NUDGE_S", 0.3):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await h.wait_commentary()
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.05)
+                h.voice_says("On.", ms=100)
+                before = len(h.socket.of("session.commentary.append"))
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(h.socket.of("session.commentary.append")), before, "not asked again")
+
+    async def test_a_broadcast_that_reached_nothing_is_not_reported_as_done(self):
+        from app.tool_results import broadcast_reached_nothing, classify_result
+        empty = '{"speech": {}, "response_type": "action_done", "data": {"success": [], "failed": []}}'
+        outcome = classify_result(broadcast_reached_nothing("assist_satellite__HassBroadcast", empty))
+        self.assertFalse(outcome.ok)
+        reached = {"response_type": "action_done", "data": {"success": [{"name": "Hall"}], "failed": []}}
+        self.assertIsNone(broadcast_reached_nothing("assist_satellite__HassBroadcast", reached))
+        self.assertIsNone(broadcast_reached_nothing("intent__HassTurnOn", empty))
+
+    async def test_what_is_said_after_a_wake_during_a_close_goes_to_the_next_session(self):
+        backend = FakeBackend(response(message("Hello.")))
+        async with RouterHarness(self, backend) as h:
+            service = h.service
+            service.hold_input_for_next_session()
+            speech = fx.tone(200)
+            await service._send_user_audio(InputAudioRawFrame(audio=speech, sample_rate=24000, num_channels=1))
+            self.assertTrue(service._held_input, "kept, not sent to the closing session")
+            await service.close_session("device stop")
+            await service.open_session()
+            self.assertFalse(service._hold_input)
+            self.assertFalse(service._held_input)
+
+    async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
+        """The bound: an answer the voice runs into with no gap at all must not
+        be lost for good."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_WAIT_MAX_S", 0.2), \
+                patch.object(live_service_module, "GUESS_TAIL_MAX_S", 0.5):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                streaming = asyncio.ensure_future(self._stream(h, fx.tone(2000, freq=330.0)))
+                await asyncio.sleep(0.25)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(0.2)
+                h.socket.push({"type": "session.commentary.appended"})
+                await streaming
+                self.assertGreater(len(h.heard()), 0, "heard once the bound passed")
+                self.assertLess(len(h.heard()), len(fx.tone(2000)), "and not before it")
+
+    async def test_the_answers_start_before_a_late_acknowledgement_is_heard(self):
+        """The answer's audio comes 0.4 s or more after the commentary, and its
+        acknowledgement can come a second after it. With a guess dropped until
+        the acknowledgement, the answer lost its first words."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("Done.", ms=200)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(live_service_module.ANSWER_EARLIEST_S + 0.05)
+                answer = fx.tone(600, freq=440.0)
+                await self._stream(h, answer[:9600])    # 200 ms before the acknowledgement
+                self.assertEqual(h.heard(), b"", "nothing plays before the acknowledgement")
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.02)
+                await self._stream(h, answer[9600:])
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), answer, "the answer, whole and in order")
+
+    async def test_the_start_of_an_answer_is_not_played_into_new_words(self):
+        """The user speaks again before the late acknowledgement: what was
+        held for the old result never plays into the new utterance."""
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
+        backend.gate.clear()
+        with patch.object(live_service_module, "GUESS_QUIET_S", 0.2):
+            async with RouterHarness(self, backend) as h:
+                await h.user_says("Turn on the Foyer Lamp.")
+                await asyncio.sleep(0.15)
+                h.voice_says("Done.", ms=200)
+                await asyncio.sleep(0.05)
+                backend.gate.set()
+                await h.wait_commentary()
+                await asyncio.sleep(live_service_module.ANSWER_EARLIEST_S + 0.05)
+                await self._stream(h, fx.tone(200, freq=440.0))
+                self.assertTrue(h.service._gate_answer_head)
+                h.service._gate_continue_utterance()
+                self.assertFalse(h.service._gate_answer_head)
+                h.socket.push({"type": "session.commentary.appended"})
+                await asyncio.sleep(0.1)
+                self.assertEqual(h.heard(), b"")
 
     async def test_an_acknowledgement_after_the_result_keeps_the_reply_open(self):
         """On a test device, after the result went in the voice
@@ -425,15 +665,15 @@ class VerifiedOnlySpeech(Patched):
         from app import speaker_owner as so
         from app.live_router import KNOWN_NAMES, set_known_names
         from app.speaker_owner_pipeline import SpeakerUtteranceEndFrame
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         names = set(KNOWN_NAMES)
         set_known_names(["Alex"])
         try:
             with patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
                 async with RouterHarness(self, backend) as h:
                     h.service.attach_speaker_owner(so.SpeakerOwner(AsyncMock(), AsyncMock()))
-                    await h.user_says("Turn on the Atrium Lamp.")
+                    await h.user_says("Turn on the Foyer Lamp.")
                     await h.wait_commentary()
                     h.socket.push({"type": "session.commentary.appended"})
                     await asyncio.sleep(0.05)
@@ -449,7 +689,7 @@ class VerifiedOnlySpeech(Patched):
                                      "the pause does not end the reply")
                     answer = fx.tone(400, freq=440.0)
                     h.socket.push({"type": "session.output_transcript.delta",
-                                   "delta": " The Atrium Lamp is on."})
+                                   "delta": " The Foyer Lamp is on."})
                     h.socket.push({"type": "session.output_audio.delta", "delta": b64(answer)})
                     await asyncio.sleep(0.2)
                     self.assertFalse(h.service.answer_owed)
@@ -476,12 +716,12 @@ class VerifiedOnlySpeech(Patched):
         from unittest.mock import AsyncMock
         from app import speaker_owner as so
         from app.speaker_owner_pipeline import SpeakerUtteranceEndFrame
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         with patch.object(live_service_module, "ASSISTANT_TURN_GAP_S", 0.3):
             async with RouterHarness(self, backend) as h:
                 h.service.attach_speaker_owner(so.SpeakerOwner(AsyncMock(), AsyncMock()))
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await h.wait_commentary()
                 # Timestamped words that do not line up with the audio's
                 # position (the first word "starts" 300 ms into the audio).
@@ -508,12 +748,12 @@ class VerifiedOnlySpeech(Patched):
     async def test_the_user_speaking_during_the_wait_holds_the_result(self):
         """The user starts new words while the dropped guess still streams:
         the old result does not go in over them (tenth review B8)."""
-        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-                              response(message("The Atrium Lamp is on.")))
+        backend = FakeBackend(response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+                              response(message("The Foyer Lamp is on.")))
         backend.gate.clear()
         with patch.object(live_service_module, "GUESS_QUIET_S", 0.4):
             async with RouterHarness(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp.")
+                await h.user_says("Turn on the Foyer Lamp.")
                 await asyncio.sleep(0.15)
                 h.voice_says("I've turned", ms=200)
                 await asyncio.sleep(0.05)
@@ -568,7 +808,7 @@ class NoFalseSuccess(unittest.IsolatedAsyncioTestCase):
             raw = {"success": True} if outcome_ok else {"error": "Received invalid slot info"}
             (executed if executed is not None else []).append(name)
             return raw, classify_result(raw)
-        return await router.route("Turn on the Atrium Lamp.", execute), backend
+        return await router.route("Turn on the Foyer Lamp.", execute), backend
 
     async def test_home_assistant_rejecting_the_call_is_never_a_success(self):
         """Kitchen 2026-10-28: the call was rejected ("Input validation
@@ -622,12 +862,12 @@ class NoFalseSuccess(unittest.IsolatedAsyncioTestCase):
 class Dedupe(Patched):
     async def test_identical_calls_in_one_step_run_once(self):
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1"),
-                     call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c2")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1"),
+                     call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c2")),
             response(message("It is on.")),
         )
         async with RouterHarness(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp.")
+            await h.user_says("Turn on the Foyer Lamp.")
             await h.wait_commentary()
             self.assertEqual(len(h.executed), 1)
             outputs = [i for i in backend.bodies[1]["input"] if i.get("type") == "function_call_output"]
@@ -636,14 +876,14 @@ class Dedupe(Patched):
 
     async def test_a_continued_request_does_not_repeat_an_action_that_ran(self):
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
             response(message("It is on.")),
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c9")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c9")),
             response(message("It is on.")),
         )
         async with RouterHarness(self, backend) as h:
             with patch.object(live_service_module, "USER_FRAGMENT_MERGE_S", 5.0):
-                await h.user_says("Turn on the Atrium")
+                await h.user_says("Turn on the Foyer")
                 await asyncio.sleep(0.4)
                 await h.user_says(" Lamp please", start_ms=3000)
                 await h.wait_commentary(count=1)
@@ -674,7 +914,7 @@ class InFlightRepeat(Patched):
 
     async def _continue_while_running(self, h):
         with patch.object(live_service_module, "USER_FRAGMENT_MERGE_S", 5.0):
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             for _ in range(100):
                 if h.executed:
                     break
@@ -687,8 +927,8 @@ class InFlightRepeat(Patched):
 
     async def test_backend_path(self):
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1")),
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c9")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1")),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c9")),
             response(message("It is on.")),
             response(message("It is on.")),
         )
@@ -697,7 +937,7 @@ class InFlightRepeat(Patched):
             self.assertEqual(len(h.executed), 1, "the identical action reached the house twice")
 
     async def test_local_intent_path(self):
-        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Atrium Lamp"}, ["light"], 1))
+        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Foyer Lamp"}, ["light"], 1))
         async with SlowHouse(self, FakeBackend(), recognizer=recognizer) as h:
             await self._continue_while_running(h)
             self.assertEqual(len(h.executed), 1, "the identical action reached the house twice")
@@ -1029,8 +1269,8 @@ class FirstCallSlow(RouterHarness):
         return await super().__aenter__()
 
 
-ON = ("intent__HassTurnOn", {"name": "Atrium Lamp"})
-OFF = ("intent__HassTurnOff", {"name": "Atrium Lamp"})
+ON = ("intent__HassTurnOn", {"name": "Foyer Lamp"})
+OFF = ("intent__HassTurnOff", {"name": "Foyer Lamp"})
 
 
 def by_request(body):
@@ -1052,8 +1292,8 @@ class CancelledJoin(Patched):
     delivered. These scenarios now pin that the house is still reachable
     afterwards and that the first call's result is spoken, not dropped."""
 
-    async def _scenario(self, h, supersede, repeat=ON, repeat_text="Turn on the Atrium Lamp"):
-        await h.user_says("Turn on the Atrium Lamp")
+    async def _scenario(self, h, supersede, repeat=ON, repeat_text="Turn on the Foyer Lamp"):
+        await h.user_says("Turn on the Foyer Lamp")
         for _ in range(100):
             if h.executed:
                 break
@@ -1079,13 +1319,13 @@ class CancelledJoin(Patched):
         later requests run normally."""
         backend = FakeBackend(*([by_request] * 12))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             for _ in range(100):
                 if h.executed:
                     break
                 await asyncio.sleep(0.02)
             await asyncio.sleep(2.5)
-            await h.user_says("Turn off the Atrium Lamp", start_ms=8000)
+            await h.user_says("Turn off the Foyer Lamp", start_ms=8000)
             await asyncio.sleep(1.0)
             h.release.set()
             await asyncio.sleep(1.5)
@@ -1094,7 +1334,7 @@ class CancelledJoin(Patched):
             # merge (v35): delivered through the task list (live_tasks.result_commentary).
             self.assertTrue(any("the earlier request" in c for c in contents), contents)
             await asyncio.sleep(2.0)
-            await h.user_says("Turn on the Atrium Lamp", start_ms=20000)
+            await h.user_says("Turn on the Foyer Lamp", start_ms=20000)
             await asyncio.sleep(1.5)
             self.assertEqual(h.executed.count(ON), 2, "a later identical request runs normally")
 
@@ -1108,13 +1348,13 @@ class CancelledJoin(Patched):
         async with FirstCallSlow(self, backend) as h:
             async def supersede(h):
                 await asyncio.sleep(2.5)
-                await h.user_says("Turn off the Atrium Lamp", start_ms=8000)
+                await h.user_says("Turn off the Foyer Lamp", start_ms=8000)
                 await asyncio.sleep(1.0)
             await self._scenario(h, supersede)
             self.assertEqual(h.executed.count(ON), 2, "each ON request ran exactly once")
 
     async def test_a_disconnect_does_not_cancel_the_first_local_call(self):
-        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Atrium Lamp"}, ["light"], 1))
+        recognizer = FakeRecognizer(LocalMatch("HassTurnOn", {"name": "Foyer Lamp"}, ["light"], 1))
         async with FirstCallSlow(self, FakeBackend(), recognizer=recognizer) as h:
             async def supersede(h):
                 await h.service._router_supersede("disconnect")
@@ -1124,7 +1364,7 @@ class CancelledJoin(Patched):
         backend = FakeBackend(response(call(*ON, "c1")), response(message("The lamp is on.")),
                               response(call(*OFF, "c3")), response(message("The lamp is off.")))
         async with FirstCallSlow(self, backend) as h:
-            await h.user_says("Turn on the Atrium Lamp")
+            await h.user_says("Turn on the Foyer Lamp")
             for _ in range(100):
                 if h.executed:
                     break
@@ -1137,7 +1377,7 @@ class CancelledJoin(Patched):
             await h.open_session()
             await h.start_session("sess_2")
             h.service.turn_timeline.begin("w2")
-            await h.user_says("Turn off the Atrium Lamp", start_ms=1000)
+            await h.user_says("Turn off the Foyer Lamp", start_ms=1000)
             await asyncio.sleep(3.0)
             self.assertEqual(h.executed, [ON, OFF], "the next wake's request reaches the house")
             self.assertTrue(h.service._op.done)
@@ -1151,15 +1391,15 @@ class FailedActionWithARead(unittest.IsolatedAsyncioTestCase):
     async def test_a_failed_action_is_not_verified_by_a_successful_read(self):
         from app.tool_results import classify_result
         backend = FakeBackend(
-            response(call("intent__HassTurnOn", {"name": "Atrium Lamp"}, "c1"),
+            response(call("intent__HassTurnOn", {"name": "Foyer Lamp"}, "c1"),
                      call("todo__get_items", {}, "c2")),
-            response(message("The Atrium Lamp is on.")))
+            response(message("The Foyer Lamp is on.")))
         router = TurnRouter(BackendRouter("k", model="m", instructions="i", tools=TOOLS, post=backend.post))
 
         async def execute(name, args):
             raw = {"items": []} if "get_items" in name else {"error": "Received invalid slot info"}
             return raw, classify_result(raw)
-        result = await router.route("Turn on the Atrium Lamp.", execute)
+        result = await router.route("Turn on the Foyer Lamp.", execute)
         self.assertEqual(result.kind, FAILED)
         self.assertNotIn("Verified", result.commentary())
 
@@ -1748,8 +1988,8 @@ class EarlierResultWaitsForTheNewVerdict(unittest.IsolatedAsyncioTestCase):
             self.bodies.append(json.loads(json.dumps(body)))
             items = body["input"]
             if items and items[-1].get("type") == "function_call_output":
-                return response(message("The Atrium Lamp is on."))
-            if "atrium" in str(items[-1].get("content", "")).lower():
+                return response(message("The Foyer Lamp is on."))
+            if "foyer" in str(items[-1].get("content", "")).lower():
                 return response(call(*ON, "c1"))
             await self.second.wait()
             return response(message("Which lock do you mean?"))
@@ -1758,7 +1998,7 @@ class EarlierResultWaitsForTheNewVerdict(unittest.IsolatedAsyncioTestCase):
         backend = self.Backend()
         with patch.object(live_service_module, "FALLBACK_ACK_AFTER_S", 5.0):
             async with SlowHouse(self, backend) as h:
-                await h.user_says("Turn on the Atrium Lamp")
+                await h.user_says("Turn on the Foyer Lamp")
                 for _ in range(200):
                     if h.executed:
                         break
@@ -1785,7 +2025,7 @@ class EarlierResultWaitsForTheNewVerdict(unittest.IsolatedAsyncioTestCase):
     async def test_superseded_request(self):
         heard, contents = await self._case(True, 2.6)
         self.assertEqual(heard, 0)
-        self.assertTrue(any("Atrium Lamp is on" in c for c in contents), "the earlier result is still spoken")
+        self.assertTrue(any("Foyer Lamp is on" in c for c in contents), "the earlier result is still spoken")
 
     async def test_continuation_fragment(self):
         heard, _ = await self._case(True, 1.2)
@@ -2055,8 +2295,8 @@ class QueuedResultsLifecycle(Patched):
     short unrouted utterance lets a finished result be spoken."""
 
     @staticmethod
-    def _finished_task(h, text="Turn on the Atrium Lamp", kind="action",
-                       result="The Atrium Lamp is on.", confirm_ids=()):
+    def _finished_task(h, text="Turn on the Foyer Lamp", kind="action",
+                       result="The Foyer Lamp is on.", confirm_ids=()):
         from app.live_router import RouteResult
         op = live_service_module.RouterOp(op_id="op-q1", seq=0, text=text, started_mono=0.0,
                                           key=live_service_module.normalize_request(text))
@@ -2093,7 +2333,7 @@ class QueuedResultsLifecycle(Patched):
             await h.user_says("hm")
             await asyncio.sleep(2.0)
             contents = [m["content"] for m in h.socket.of("session.commentary.append")]
-            self.assertTrue(any("The Atrium Lamp is on." in c and "earlier request" in c
+            self.assertTrue(any("The Foyer Lamp is on." in c and "earlier request" in c
                                 for c in contents), contents)
 
 
@@ -2364,8 +2604,8 @@ class IntentRecognizerWire(unittest.IsolatedAsyncioTestCase):
                     self.replies.append(json.dumps({"id": payload["id"], "type": "result", "success": True,
                                                     "result": {"results": [{
                                                         "intent": {"name": "HassTurnOn"},
-                                                        "slots": {"name": "Atrium Lamp"},
-                                                        "targets": {"light.atrium": {"matched": True}},
+                                                        "slots": {"name": "Foyer Lamp"},
+                                                        "targets": {"light.foyer": {"matched": True}},
                                                         "match": True, "unmatched_slots": {}}]}}))
 
             async def close(self):
@@ -2375,9 +2615,9 @@ class IntentRecognizerWire(unittest.IsolatedAsyncioTestCase):
             return Socket()
 
         recognizer = HaIntentRecognizer("token", connect=connect)
-        match = await recognizer.recognize("turn on the atrium lamp")
+        match = await recognizer.recognize("turn on the foyer lamp")
         self.assertEqual((match.intent, match.slots, match.domains, match.targets),
-                         ("HassTurnOn", {"name": "Atrium Lamp"}, ["light"], 1))
+                         ("HassTurnOn", {"name": "Foyer Lamp"}, ["light"], 1))
         self.assertEqual([m["type"] for m in sent], ["auth", "conversation/agent/homeassistant/debug"],
                          "recognition only: the debug command never runs the intent")
         self.assertIsNone(await HaIntentRecognizer("").recognize("x"))

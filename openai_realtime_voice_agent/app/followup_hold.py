@@ -93,6 +93,10 @@ def _env_seconds(name: str, default: float, low: float, high: float) -> float:
         return default
 
 
+# A reply with no transcript this long after the speech began: it is not coming (it has come 6.1 s after).
+REPLY_WITHOUT_TRANSCRIPT_WAIT_S = 7.0
+
+
 class SpeechOnsetDetector:
     """Energy onset over PCM16 mono frames of any size. ``feed`` returns True
     once per arming when sustained speech-level sound begins."""
@@ -365,12 +369,18 @@ class FollowUpHold:
         self._wake_task = asyncio.get_running_loop().create_task(self._wake_watch_run())
 
     def note_reply_without_transcript(self) -> None:
-        """The model is replying to a request it never transcribed. If the
-        add-on heard that request too, there is nothing to wait for."""
+        """The model is replying to a request it has not transcribed yet. The
+        transcript can still come: the model has answered 1 s into the request,
+        with its transcript 1.5 s after that (a test device, 2 of 22 requests,
+        each then told "I didn't catch that" and also answered). So this waits
+        until REPLY_WITHOUT_TRANSCRIPT_WAIT_S after the speech began."""
         if self.wake_watch and self.wake_speech_mono is not None:
             self._cancel_wake_task()
-            self._wake_task = asyncio.get_running_loop().create_task(
-                self._not_transcribed("the model is replying to it without a transcript"))
+            self._wake_task = asyncio.get_running_loop().create_task(self._reply_without_transcript())
+
+    async def _reply_without_transcript(self) -> None:
+        await asyncio.sleep(max(0.0, self.wake_speech_mono + REPLY_WITHOUT_TRANSCRIPT_WAIT_S - self._clock()))
+        await self._not_transcribed("the model is replying to it without a transcript")
 
     async def _wake_watch_run(self) -> None:
         try:

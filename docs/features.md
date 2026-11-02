@@ -81,14 +81,17 @@ Two tiers, from zero-setup to per-person identity:
 `speaker_female_name` for a one-male-one-female household. Each wake's opening
 audio is classified by pitch (in-process, off the audio path) and the verdict is
 injected into the session, so the assistant can use names or sir/ma'am. It cannot
-tell two men apart, and same-voice-type guests match that name. Leave both names
-empty to disable.
+tell two men apart, and same-voice-type guests match that name. Pitch near the
+boundary between the two voice types names nobody. Leave both names empty to
+disable.
 
 **Tier 2 — voice prints.** Per-person identification with a neural
 speaker-embedding model: each wake's capture is embedded and compared against
 enrolled per-person centroids (stored in `/share/voice-prints/<name>.json`), with
-a ≥3 s duration guard and the pitch heuristic as fallback. Guests classify as
-*unknown* and get neutral handling.
+a ≥3 s duration guard and the pitch heuristic as fallback. With prints enrolled,
+pitch names someone only when an uncertain print points to the same person;
+otherwise the assistant stays neutral. Guests classify as *unknown* and get
+neutral handling.
 
 To enroll a voice print — two steps:
 
@@ -242,8 +245,9 @@ Expiry is polite, in three stages:
 1. **One personal spoken announcement** — *"Alex, your pasta timer is done"* —
    addressed to whoever set it (via [speaker recognition](#speaker-recognition--voice-enrollment)).
    No nagging repeats.
-2. **A 60-second grace period.** A wake, the button or "stop" on the device that set the timer (from the start of the announcement) counts as
-   acknowledgement — no bell.
+2. **A 60-second grace period.** A wake or the button on the device that set the timer (from the start of the announcement) counts as
+   acknowledgement — no bell. So does "stop" with current firmware, which listens for it
+   during the announcement (after its first second, which is the device's own echo) and for 60 seconds after it.
 3. **A gentle two-tone bell** only if unacknowledged, auto-stopping after
    2 minutes. Silence it anytime with the **center button** or **"stop"**.
 

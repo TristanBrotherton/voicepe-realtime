@@ -49,7 +49,6 @@ from app.tool_guards import GuardedToolsMixin
 from app.live_cost import USD_PER_SESSION_MINUTE
 from app.voice_runtime import (
     LIVE,
-    LIVE_OUTPUT_LEAD_MS,
     LiveConfig,
     check_live_deployable,
     live_voice_for,
@@ -801,24 +800,13 @@ class Application:
         #
         # Realtime: 0 = disabled, opt-in until runtime-validated per install.
         #
-        # GPT-Live: REQUIRED, so the default flips to LIVE_OUTPUT_LEAD_MS when
-        # the option is left unset. Realtime bursts a reply far faster than
-        # real time, so the device accumulates seconds of playout lead by
-        # itself. GPT-Live streams at ~1.0x real time in 100 ms frames
-        # (measured 1.02-1.11x during speech, inter-frame spikes to ~160 ms, on
-        # top of network jitter), so the device starts every reply with no lead
-        # at all and its I2S chain starves from the first word. An explicit
-        # operator value always wins, including 0 to turn it off deliberately.
-        output_lead_buffer_ms = resolve_output_lead_ms(
-            os.environ.get("OUTPUT_LEAD_BUFFER_MS"), voice_runtime
-        )
-        if voice_runtime == LIVE and output_lead_buffer_ms <= 0:
-            logger.warning(
-                "⚠️ output_lead_buffer_ms is 0 with voice_runtime=live. GPT-Live "
-                "delivers reply audio at about real time, so the device has no "
-                f"playout cushion and replies are likely to break up. "
-                f"{LIVE_OUTPUT_LEAD_MS} ms is the tested default."
-            )
+        # GPT-Live: not used. The speaker owner sends reply audio as soon as
+        # it exists and the device's cold-start prime is the only start
+        # latency (docs/device-protocol.md).
+        output_lead_buffer_ms = resolve_output_lead_ms(os.environ.get("OUTPUT_LEAD_BUFFER_MS"))
+        if voice_runtime == LIVE and output_lead_buffer_ms > 0:
+            logger.info("ℹ️ output_lead_buffer_ms is ignored with voice_runtime=live: "
+                        "the speaker owner sets the pace (chain_prime_ms tunes the device's start)")
 
         # Get session reuse timeout and initialize session manager
         session_reuse_timeout = float(os.environ.get("SESSION_REUSE_TIMEOUT_SECONDS", "300"))
@@ -1143,6 +1131,7 @@ class Application:
         self.model = openai_model
         self.voice = openai_voice
         self.voice_runtime = voice_runtime
+        self.websocket_handler.speaker_owner_enabled = voice_runtime == LIVE
         self.live_config = live_config
         # Must come after voice_runtime/live_config are set: it reads both to
         # decide whether this process needs an on-demand session gate and a
@@ -1285,7 +1274,7 @@ class Application:
                 await asyncio.sleep(60)
 
     def _speaker_owner_for(self, device_id):
-        """The device's speaker owner, or None (option off, or no device)."""
+        """The device's speaker owner, or None (the Realtime runtime, or no device)."""
         from app.speaker_owner import SpeakerOwner
         resolve = getattr(getattr(self, "websocket_handler", None), "resolve_device", None)
         if resolve is None:
@@ -1298,7 +1287,7 @@ class Application:
         return owner if isinstance(owner, SpeakerOwner) else None
 
     async def _play_owned(self, pcm: bytes, device_id, kind: str, **kwargs):
-        """Through the speaker owner: a bool, or None to use the old path."""
+        """Through the speaker owner: a bool, or None to use the transport's path."""
         play = getattr(self.websocket_handler, "play_owned", None)
         if play is None:
             return None
@@ -1564,7 +1553,7 @@ class Application:
     def _speaker_name(self, connection) -> Optional[str]:
         """Return the current speaker name for one connection."""
         probe = getattr(connection, "speaker_probe", None)
-        return probe.name_for(probe.gate_speaker()) if probe else None
+        return probe.verdict_name() if probe else None
     
     async def create_openai_service(self, connection):
         """Create the model session for ONE device, in the configured runtime.
@@ -1923,7 +1912,9 @@ class Application:
                             context=lambda: router_context() + _speaker_note() + snapshot.block(),
                             device_id=connection.device_id or None, household=household,
                             satellite_ip=getattr(getattr(getattr(connection, "websocket", None),
-                                                         "client", None), "host", None))
+                                                         "client", None), "host", None),
+                            local_state_reads=not any(t.rsplit("__", 1)[-1] == "GetLiveContext"
+                                                      for t in getattr(self, "male_only_tools", ())))
         shared = lambda: self.instructions + memory_instructions()  # noqa: E731
         service = OpenAILiveLLMService(
             api_key=self.openai_api_key,
@@ -2046,7 +2037,12 @@ class Application:
                 "confirm_action", self._create_confirm_handler(service)
             )
         register_timer_tools(service, self.timer_registry, connection.device_id)
-        register_memory_tools(service, _current_speaker_name)
+
+        def _memory_author():
+            probe = getattr(connection, "speaker_probe", None)
+            return probe.memory_author() if probe else None
+
+        register_memory_tools(service, _memory_author)
         if openclaw_url():
             register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
             logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")

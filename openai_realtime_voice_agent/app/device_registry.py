@@ -126,8 +126,8 @@ class DeviceConnection:
     followup_hold: Any = None
     # Per-device settings (app/device_config.py), resolved once at accept.
     profile: Any = None
-    # The single writer of this device's audio (app/speaker_owner.py) when
-    # the device's `speaker_owner` option is on; None means the old paths.
+    # The single writer of this device's audio (app/speaker_owner.py) on
+    # GPT-Live; None on the Realtime runtime (the transport's path).
     speaker_owner: Any = None
 
     def touch(self) -> None:

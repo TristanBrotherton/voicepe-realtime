@@ -176,6 +176,7 @@ class LiveSessionGate:
         self._reserved_seconds = 0.
         self._state = CLOSED
         self.generation = 0
+        self.close_began_mono: Optional[float] = None
         self._opened_mono: Optional[float] = None
         self._supervisor: Optional[asyncio.Task] = None
         self._closed_for_good = False
@@ -662,6 +663,7 @@ class LiveSessionGate:
         if self._state == CLOSED:
             return False
         self._state = CLOSED
+        self.close_began_mono = time.monotonic()
         if self._base_policy is not None:
             self.policy, self._base_policy = self._base_policy, None
         self._turn_in_flight = False

@@ -7,14 +7,14 @@ GPT-Live's delegated backend can fill in **every** optional parameter of a
 tool, using a type-appropriate placeholder when it has no value to supply. A
 captured failure had this protocol shape (with synthetic entity names)::
 
-    light__HassLightSet {"name": "Atrium Lamp", "area": "Kitchen", "floor": "",
+    light__HassLightSet {"name": "Foyer Lamp", "area": "Kitchen", "floor": "",
                          "domain": ["light"], "color": "", "temperature": 0,
                          "brightness": 100}
-    intent__HassTurnOn  {"name": "Atrium Lamp", "area": "Kitchen", "floor": "",
+    intent__HassTurnOn  {"name": "Foyer Lamp", "area": "Kitchen", "floor": "",
                          "domain": ["light"], "device_class": []}
 
 Both came back ``Error calling tool: Received invalid slot info for ...`` and
-Atrium Lamp stayed off. Every placeholder is schema-legal in the MCP tool
+Foyer Lamp stayed off. Every placeholder is schema-legal in the MCP tool
 definition — ``floor`` is just ``{"type": "string"}`` — but Home Assistant
 validates intent slots a second time, and that schema is stricter. Checked
 against Home Assistant's intent validation with the payload shapes above:

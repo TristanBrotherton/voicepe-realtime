@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 _INT_FIELDS = ("port", "announce_port", "follow_up_listen_seconds", "follow_up_open_delay_ms",
                "wake_open_delay_ms", "playback_prebuffer_ms", "output_lead_buffer_ms",
                "chain_prime_ms", "utt_cushion_ms")
-_BOOL_FIELDS = ("speaker_owner",)
 _FLOAT_FIELDS = ("live_max_usd_per_day", "live_max_session_minutes_per_day")
 _STR_FIELDS = ("timer_ring_entity", "room", "voice")
 
@@ -51,9 +50,8 @@ class DeviceProfile:
     wake_open_delay_ms: Optional[int] = None
     playback_prebuffer_ms: Optional[int] = None
     output_lead_buffer_ms: Optional[int] = None
-    # The speaker owner (app/speaker_owner.py): off unless set. With it on,
-    # the hello also carries the device's cold-start prime and start cushion.
-    speaker_owner: Optional[bool] = None
+    # GPT-Live: the device's cold-start prime and start cushion, in its hello
+    # (app/speaker_owner.py, docs/device-protocol.md).
     chain_prime_ms: Optional[int] = None
     utt_cushion_ms: Optional[int] = None
     live_max_usd_per_day: Optional[float] = None
@@ -83,14 +81,6 @@ def _profile(raw: Any) -> Optional[DeviceProfile]:
                 values[key] = int(value)
             except (TypeError, ValueError):
                 logger.warning(f"⚠️ device {name}: ignoring {key}={value!r} (not a whole number)")
-    for key in _BOOL_FIELDS:
-        value = raw.get(key)
-        if isinstance(value, bool):
-            values[key] = value
-        elif isinstance(value, str) and value.strip().lower() in ("true", "false", "on", "off", "1", "0"):
-            values[key] = value.strip().lower() in ("true", "on", "1")
-        elif value not in (None, ""):
-            logger.warning(f"⚠️ device {name}: ignoring {key}={value!r} (not true or false)")
     for key in _FLOAT_FIELDS:
         value = raw.get(key)
         if value not in (None, ""):

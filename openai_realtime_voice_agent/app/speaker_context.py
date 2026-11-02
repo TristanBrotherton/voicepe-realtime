@@ -21,7 +21,7 @@ import logging
 import time
 from typing import Awaitable, Callable, Optional
 
-from .speaker_gender import classify_gender
+from .speaker_gender import FEMALE_MIN_HZ, MALE_MAX_HZ, classify_gender
 from . import voiceprint
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,9 @@ CAPTURE_BYTES = int(CAPTURE_SECONDS * SAMPLE_RATE * 2)  # PCM16 mono
 # A verdict older than this is stale (device asleep between turns); the gate
 # then fails closed ("uncertain") rather than trusting yesterday's voice.
 VERDICT_TTL_SECONDS = 120.0
+# Pitch alone names nobody this close to the male/female gap (150-165 Hz): a
+# raised question or a low voice crosses it.
+PITCH_NAME_MARGIN_HZ = 15.0
 
 
 class SpeakerProbe:
@@ -68,11 +71,37 @@ class SpeakerProbe:
             return self.female_name or None
         return None
 
+    def _pitch_name(self, level: str, print_name: Optional[str], label: str, f0: float) -> Optional[str]:
+        """The name a pitch verdict may use. A wrong name is worse than none: a
+        raised question reads as the other voice type (seen at 210 Hz), so pitch
+        names someone only where nothing contradicts it: the uncertain voice
+        print points to the same person, or no voice print is enrolled."""
+        if MALE_MAX_HZ - PITCH_NAME_MARGIN_HZ < f0 < FEMALE_MIN_HZ + PITCH_NAME_MARGIN_HZ:
+            return None
+        name = self.name_for(label)
+        if level == "uncertain":
+            return name if name and name.lower() == (print_name or "").lower() else None
+        if level == "unavailable" and not voiceprint.available():
+            return name
+        return None
+
     def gate_speaker(self) -> str:
         """Label for tool gating: expires stale verdicts (fails closed)."""
         if time.monotonic() - self._verdict_at > VERDICT_TTL_SECONDS:
             return "unknown"
         return self.current_label
+
+    def verdict_name(self) -> Optional[str]:
+        """The name this wake's fresh verdict gives, if it gives one."""
+        if self.gate_speaker() not in ("male", "female", "match"):
+            return None
+        return self.current_name
+
+    def memory_author(self) -> Optional[str]:
+        """Who a memory note is from. A household voice type may still change
+        notes (a convenience check) when the voice check can't say who it is."""
+        return self.verdict_name() or (
+            "a household member" if self.gate_speaker() in ("male", "female") else None)
 
     def progress_name(self) -> Optional[str]:
         """A name only for a fresh, enrolled voiceprint match this wake."""
@@ -165,10 +194,11 @@ class SpeakerProbe:
         # speaker (observed 0.48 then 0.22 for a verified household member) —
         # until thresholds are recalibrated on live captures, treat a non-match
         # as "voiceprint can't tell" and fall back to the pitch heuristic
-        # rather than confidently reporting a stranger.
+        # rather than confidently reporting a stranger. The voice type stays
+        # (tool gating), but pitch rarely gets to name anyone (_pitch_name).
         label, f0, voiced = classify_gender(data)
         if label in ("male", "female"):
-            return label, self.name_for(label), f0, f"pitch(vp={level}:{score:.2f})"
+            return label, self._pitch_name(level, name, label, f0), f0, f"pitch(vp={level}:{score:.2f})"
         if level in ("unknown", "uncertain"):
             return level, name if level == "uncertain" else None, score, "voiceprint"
         return label, self.name_for(label), f0, "pitch"
@@ -214,7 +244,7 @@ def router_note(probe: Optional["SpeakerProbe"]) -> str:
     name = probe.current_name if label in ("male", "female", "match") else None
     if name:
         how = ("their enrolled voice print" if probe.current_method == "voiceprint"
-               else "voice pitch only, so it may be wrong")
+               else "an unconfirmed voice check, so it may be wrong")
         return f"The voice check identifies the speaker as {name} ({how})."
     if label == "unknown" and probe.current_method == "voiceprint":
         return "The voice check did not match the speaker to anyone in the household."

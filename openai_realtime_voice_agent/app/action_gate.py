@@ -80,6 +80,20 @@ def _canonical_tool_name(function_name: str) -> str:
     return str(function_name or "").rsplit("__", 1)[-1]
 
 
+def _names_the_target(spoken: str, entity_name: str) -> bool:
+    """Does ``spoken`` really name this entity, for rewriting a call's domain?
+    The directory also returns entities whose whole name is a part of what was
+    said, which is right for the safety check (it only makes a call stricter)
+    but not here: a switch called "Light" took "Voice PE Test Light" for its
+    own and turned domain "light" into "switch", so nothing matched."""
+    said, name = _normalise_target_words(spoken).split(), _normalise_target_words(entity_name).split()
+    if not said or not name:
+        return False
+    if len(name) >= len(said):
+        return True  # the same name, or what was said is a part of this name
+    return len(name) >= 2 and 2 * len(name) >= len(said)
+
+
 def _as_list(value: Any) -> List[str]:
     if value is None:
         return []
@@ -292,7 +306,7 @@ class ActionGate:
                         name,
                     )
 
-        matches = await self.directory.lookup(name)
+        matches = [m for m in await self.directory.lookup(name) if _names_the_target(name, m.name)]
         if len(matches) != 1:
             return args
         actual_domain = matches[0].domain

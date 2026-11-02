@@ -523,6 +523,7 @@ class ConnectionRecovery(FrameProcessor):
 # A wake this recent means the device is already in its next turn: a session
 # close must not send it to idle.
 WAKE_SUPERSEDES_IDLE_S = 1.5
+OPEN_FAILED_REASONS = ("open failed", "open cancelled", "open invalidated")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -589,6 +590,10 @@ class WebSocketHandler:
         self.wake_open_delay_ms = max(0, int(wake_open_delay_ms))
         self.playback_prebuffer_ms = max(0, int(playback_prebuffer_ms))
         self.output_lead_buffer_ms = max(0, int(output_lead_buffer_ms))
+        # GPT-Live: one speaker owner per device connection (app/speaker_owner.py;
+        # set by main.py). The Realtime runtime stays on the transport's own
+        # output path: its audio, barge-in and clip waits are pipecat's.
+        self.speaker_owner_enabled = False
         # Wake metadata, false-wake labels and (opt-in) captures, shared by
         # every connection of this add-on instance.
         self.wake_events = wake_events or WakeEventStore()
@@ -705,12 +710,20 @@ class WebSocketHandler:
             # forever after the session itself was gone.
             phase_emitter = connection.phase_emitter
             woke = getattr(connection, "last_wake_mono", None)
-            if woke is not None and time.monotonic() - woke < WAKE_SUPERSEDES_IDLE_S:
+            began = gate.close_began_mono
+            if (woke is not None and getattr(charge, "reason", "") not in OPEN_FAILED_REASONS
+                    and (time.monotonic() - woke < WAKE_SUPERSEDES_IDLE_S
+                         or (began is not None and woke >= began))):
                 # A wake arrived as this session closed: the device has already
                 # started the next turn, and an idle now would stop its mic
                 # (rig 2026-10-16: the wake landed 1 ms after a close; the
-                # forced idle followed it and the turn heard nothing).
+                # forced idle followed it and the turn heard nothing). A close
+                # takes about 2.7 s, so "during the close" counts as well as
+                # "just now". An open that failed is different: nothing will
+                # hear the device, so it does go to idle.
                 logger.info("📞 not forcing idle at close: a new wake just started the next turn")
+                if phase_emitter is not None:
+                    phase_emitter.turn_superseded()
             elif phase_emitter is not None:
                 self._spawn(phase_emitter.force_idle(
                     f"GPT-Live session closed: {getattr(charge, 'reason', 'closed')}"
@@ -968,12 +981,6 @@ class WebSocketHandler:
             if client is not None:
                 client.on_audio_sent = self._output_recording_tap(connection)
 
-        # Prime the device's playout buffer against the resampler cold-start
-        # starve: hold the first LEAD_MS of each reply's audio and burst it so the
-        # device gets a buffer lead even on a cold turn. Placed LAST, right before
-        # transport.output(), so it acts on the final audio stream the device
-        # receives.
-        # Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
         def _wait_hook(name):
             def _add(ms):
                 add = getattr(connection.turn_timeline, "add_wait", None)
@@ -984,8 +991,8 @@ class WebSocketHandler:
         owner = getattr(connection, "speaker_owner", None)
         if owner is not None:
             # The device's speaker owner takes model audio here, ahead of the
-            # lead buffer and the transport's pacer (both pass-through then),
-            # and makes the Bot speaking frames the transport used to.
+            # transport's pacer, and makes the Bot speaking frames the
+            # transport used to.
             def _speech_sent():
                 if serializer is not None:
                     serializer._reply_audio_since_wake = True
@@ -1003,8 +1010,14 @@ class WebSocketHandler:
                 attach(owner)
                 openai_service.on_speaker_source_closed = (
                     lambda: owner_processor.end_stream(truncated=True))
-        pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id),
-                                                    on_hold=_wait_hook("lead_hold")))
+        else:
+            # No owner (Realtime): the device's playout buffer can be primed
+            # against the resampler cold-start starve by holding the first
+            # LEAD_MS of each reply and bursting it. Placed right before
+            # transport.output(), so it acts on the final audio stream the
+            # device receives. Pass-through when OUTPUT_LEAD_BUFFER_MS=0.
+            pipeline_components.append(OutputLeadBuffer(lead_ms=self.output_lead_ms_for(connection.device_id),
+                                                        on_hold=_wait_hook("lead_hold")))
         if serializer is not None:
             serializer.on_clip_wait = _wait_hook("clip")
 
@@ -1108,6 +1121,14 @@ class WebSocketHandler:
 
         async def _on_device_interrupt(info=None):
             try:
+                if (info or {}).get("reason") == "stop":
+                    # Only the stop word: the same interrupt also means a
+                    # barge-in wake, the no-speech watchdog, mute or the
+                    # button, and firmware without reasons sends none. Those
+                    # never cancel what the user asked for.
+                    note_stop = getattr(controls, "note_device_stop", None)
+                    if note_stop is not None:
+                        note_stop()
                 await _handle_device_interrupt()
             finally:
                 # The speaker owner flushed when the interrupt arrived
@@ -1169,7 +1190,12 @@ class WebSocketHandler:
                 # (utt1: interrupt_ack) without waiting for the session close.
                 await owner.acknowledge_interrupt()
             if gate is not None:
-                await gate.close("device stop")
+                # Spawned, not awaited: this loop also delivers the wake that
+                # follows a barge-in, and its audio. Awaited, the wake was only
+                # seen after the close, too late to stop the idle that shut its
+                # mic, and the request was lost.
+                self._spawn(gate.close("device stop"))
+                await asyncio.sleep(0)  # the close has begun when the next message is read
 
         async def _kill_racing_response():
             # Runs whenever a NEW assistant response starts; only one right
@@ -1252,10 +1278,19 @@ class WebSocketHandler:
                         f"{gate.policy.rewake_grace_s:.0f}s re-wake grace"
                     )
                 else:
-                    await gate.close("follow-up cut-off")
+                    # Spawned for the same reason as the stop's close: a wake
+                    # right after this must be read at once.
+                    self._spawn(gate.close("follow-up cut-off"))
+                    await asyncio.sleep(0)
 
         async def _on_device_wake(meta=None):
             connection.last_wake_mono = time.monotonic()
+            if gate is not None and not gate.is_open:
+                # The last session is still closing, or is gone: what the user
+                # says from here on is the request, not room noise.
+                hold_input = getattr(openai_service, "hold_input_for_next_session", None)
+                if hold_input is not None:
+                    hold_input()
             meta = dict(meta or {})
             source = meta.get("src") or "wake_word"
             if hold is not None:
@@ -1322,6 +1357,14 @@ class WebSocketHandler:
                 cancel_ack()
             turn = timeline.current
             if turn is None or turn.done:
+                return
+            woke = getattr(connection, "last_wake_mono", None)
+            began = gate.close_began_mono if gate is not None else None
+            if (gate is not None and not gate.is_open and woke is not None and began is not None
+                    and woke >= began):
+                # The old session's reply winding down as it closes: the turn
+                # the wake began is not over. Ended, the no-speech check would
+                # stand down and a silent wake would hold the mic open.
                 return
             timeline.finish(outcome)
 
@@ -1648,18 +1691,15 @@ class WebSocketHandler:
             return False
 
     # ------------------------------------------------------------------
-    # The speaker owner (app/speaker_owner.py), per device, when its
-    # `speaker_owner` option is on. Off: every method here is a no-op and
-    # callers keep their old paths.
+    # The speaker owner (app/speaker_owner.py), one per device connection on
+    # GPT-Live. A device on older firmware gets legacy framing from it. The
+    # Realtime runtime has no owner: every method here is a no-op there and
+    # callers use the transport's path.
     # ------------------------------------------------------------------
-
-    def speaker_owner_on(self, device_id: Optional[str]) -> bool:
-        profile = self.profile_for(device_id)
-        return bool(profile is not None and getattr(profile, "speaker_owner", None))
 
     def _build_speaker_owner(self, connection: DeviceConnection):
         client = getattr(connection.transport, "client", None)
-        if client is None or not self.speaker_owner_on(connection.device_id):
+        if client is None or not self.speaker_owner_enabled:
             return None
 
         def _turn() -> str:
@@ -1671,16 +1711,16 @@ class WebSocketHandler:
             prime_ms=self._device_value(connection.device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS),
             turn=_turn,
         )
-        logger.info(f"🔈 speaker owner on for {connection.device_id} "
-                    "(legacy framing until the device offers utt1)")
+        logger.info(f"🔈 speaker owner on for {connection.device_id}: cold-start lead "
+                    f"{owner.prime_ms} ms (legacy framing until the device offers utt1)")
         return owner
 
     async def play_owned(self, pcm: bytes, device_id: Optional[str], kind: str, *,
                          wait: str = "settled", keep: bool = False) -> Optional[bool]:
         """Play complete audio through the device's speaker owner.
 
-        Returns None when the device has no owner (the caller uses its old
-        path), else whether it was delivered: ``settled`` waits until it is
+        Returns None when the device has no owner (Realtime: the caller uses
+        the transport's path), else whether it was delivered: ``settled`` waits until it is
         sent (True unless dropped or lost); ``finished`` waits for its
         outcome (True if played to its end or stopped by the user)."""
         connection = self.resolve_device(device_id)
@@ -1911,9 +1951,9 @@ class WebSocketHandler:
             # for false-wake review; firmware also requires its own switch.
             "trigger_capture": 1 if (self.trigger_capture and self.wake_events.storing_audio()) else 0,
         }
-        if self.speaker_owner_on(device_id):
-            # Only with the speaker owner on: the device's cold-start prime
-            # and its per-utterance start cushion (utt1 firmware; older
+        if self.speaker_owner_enabled:
+            # The device's cold-start prime and its per-utterance start
+            # cushion, per device without a rebuild (utt1 firmware; older
             # firmware ignores unknown keys).
             hello["chain_prime_ms"] = min(600, self._device_value(
                 device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS))

@@ -23,7 +23,7 @@ import asyncio
 import dataclasses
 import logging
 
-from app.action_gate import confirmation_result, replace_arguments
+from app.action_gate import GateDecision, confirmation_result, replace_arguments
 from app.progress_ack import (
     early_progress_phrase,
     looks_like_instant_local,
@@ -89,7 +89,12 @@ class GuardedToolsMixin:
                     if reconciled != dict(params.arguments or {}):
                         params = replace_arguments(params, function_name, reconciled)
                 if gate is not None and gate.enabled and function_name != "confirm_action":
-                    decision = await gate.check(function_name, params.arguments)
+                    # The router asks for a yes itself when the words were not
+                    # a clear command (per call, by id: parallel calls differ).
+                    forced = getattr(self, "_forced_confirmations", {}).pop(
+                        getattr(params, "tool_call_id", None), None)
+                    decision = (GateDecision(True, forced, "unclear_command") if forced
+                                else await gate.check(function_name, params.arguments))
                     if decision.requires_confirmation:
                         # Live can receive a delegated call before the transcript
                         # for the utterance which caused it. Give runtimes a way

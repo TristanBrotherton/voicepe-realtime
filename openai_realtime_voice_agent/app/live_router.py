@@ -86,11 +86,12 @@ Carry the request out with the tools, or look it up with them:
 - A request to be told when something happens ("tell me when X leaves") is done once the watch tool has run: say the user will be told, nothing more.
 - Never claim an action succeeded unless its tool result confirms it. If a tool fails, say what failed.
 - If an action returns confirmation_required, do not act: reply with one short yes/no question. Call confirm_action with that confirm_id only after the user clearly says yes in a later message.
+- If the user corrects themselves ("sorry", "I mean", "actually", "no, the other one"), carry out only the corrected request, once. A list item is just the thing meant, never a list name or the correction's words: "Add oat bites to the shopping list. Sorry, add it to the hardware list" adds "Oat bites" to the hardware list.
 - If the request is ambiguous, reply with one short clarifying question.
 
 Answer formats:
 - Not addressed to the assistant (background speech, television, a cut-off fragment with no request): reply exactly NO_REQUEST. A question cut short but still clear (for example "what time") is a request.
-- Needs no tool (greeting, small talk, general knowledge you can answer without looking anything up): reply exactly CHAT.
+- Needs no tool (greeting, small talk, a story, a joke, ideas, general knowledge you can answer without looking anything up): reply exactly CHAT.
 - Otherwise: one or two short sentences for speech stating the verified result. No lists, URLs or markdown. Use ordinary names, never entity ids."""
 
 # Appended to the backend instructions when discussions are enabled.
@@ -343,6 +344,8 @@ class ToolRun:
     task_id: str = ""
     deferred: bool = False
     explain: bool = False
+    # What Home Assistant reports this call did, as a sentence (action_fact).
+    fact: str = ""
 
 
 def tool_run(name: str, outcome: Any) -> ToolRun:
@@ -411,7 +414,7 @@ class RouteResult:
         text = (self.text or "").strip()
         if self.kind in (ACTION, LOOKUP):
             return ("Verified result from the home system: " + text +
-                    " Tell the user this briefly in your own words and add nothing that is not stated here.")
+                    " Tell the user this once, briefly, in your own words and add nothing that is not stated here.")
         if self.kind == CONFIRM:
             return ("Nothing has been done yet: a spoken yes is required first. Ask the user this yes/no "
                     "question and nothing else: " + text)
@@ -445,6 +448,10 @@ class LocalMatch:
     slots: Dict[str, Any]
     domains: List[str]
     targets: int
+    # With a state slot and one target ("Is the test light on?"): does the
+    # target's state equal the slot right now? Home Assistant's debug reply
+    # says so per target. None otherwise.
+    state_matches: Optional[bool] = None
 
 
 class HaIntentRecognizer:
@@ -692,8 +699,12 @@ class HaIntentRecognizer:
                 slots[str(key)] = value
         targets = res.get("targets") or {}
         domains = sorted({str(entity).split(".", 1)[0] for entity in targets})
+        state_matches = None
+        if len(targets) == 1 and isinstance(next(iter(targets.values())), dict):
+            matched = next(iter(targets.values())).get("matched")
+            state_matches = matched if isinstance(matched, bool) else None
         return LocalMatch(intent=str((res.get("intent") or {}).get("name") or ""), slots=slots,
-                          domains=domains, targets=len(targets))
+                          domains=domains, targets=len(targets), state_matches=state_matches)
 
 
 # Why a local match was refused. A refusal never acts: the request goes to
@@ -705,6 +716,7 @@ REFUSED_UNSAFE_DOMAIN = "unsafe_domain"
 REFUSED_UNNAMED = "unnamed_target"
 REFUSED_TOO_MANY = "too_many_targets"
 REFUSED_NO_TOOL = "tool_not_offered"
+REFUSED_CORRECTED_ITEM = "self_correction_in_item"
 # Refusals about WHICH device was meant: if the backend is unreachable too,
 # the user hears that, never a generic failure and never an action.
 TARGET_REFUSALS = frozenset({REFUSED_UNRESOLVED, REFUSED_UNNAMED, REFUSED_TOO_MANY})
@@ -714,6 +726,19 @@ UNCLEAR_TARGET_TEXT = "I couldn't tell which device you meant."
 # an intent out of it (Kitchen 2026-10-26: a family conversation parsed as
 # HassLightSet got "I couldn't tell which device you meant", twice).
 COMMAND_MAX_WORDS = 12
+
+
+# A list item Home Assistant cut out of a self-correction: its template is "add
+# {item} to [the] {name} [list]", so "Add oat bites to the shopping list. Sorry,
+# add it to the hardware list" has the item "oat bites to the shopping list Sorry
+# add it". A real item holds no correction, and no second list.
+_GARBLED_ITEM = re.compile(
+    r"\b(?:sorry|i\s+mean|i\s+meant|no\s+wait|scratch\s+that|make\s+that|oops|actually|"
+    r"add\s+it|put\s+it)\b|\b(?:to|on|onto)\s+(?:the|my|our)\s+(?:\w+\s+){0,3}?list\b", re.I)
+
+
+def is_garbled_item(item: Any) -> bool:
+    return bool(_GARBLED_ITEM.search(str(item or "")))
 
 
 def _named(value: Any) -> bool:
@@ -739,6 +764,8 @@ def local_refusal(match: Optional[LocalMatch], tool_names: List[str]) -> Optiona
             return REFUSED_UNNAMED
         if match.targets > LOCAL_MAX_TARGETS:
             return REFUSED_TOO_MANY
+        if match.intent in ("HassListAddItem", "HassListCompleteItem") and is_garbled_item(match.slots.get("item")):
+            return REFUSED_CORRECTED_ITEM
     if not any(n.rsplit("__", 1)[-1] == bare for n in tool_names):
         return REFUSED_NO_TOOL
     return None
@@ -753,6 +780,57 @@ def local_tool_call(match: Optional[LocalMatch], tool_names: List[str]) -> Optio
     if match.intent in NO_TARGET_INTENTS:
         return tool, {}
     return tool, dict(match.slots)
+
+
+def local_state_answer(match: Optional[LocalMatch]) -> str:
+    """The answer to a yes/no state question Home Assistant resolved to one
+    entity ("Is the test light on?": HassGetState, name and state slots, one
+    target), or "". Home Assistant has compared the state itself, so this
+    needs no backend call. A mismatch is "not on", never "off": the debug
+    reply does not say what the state is (it may be unavailable)."""
+    if (match is None or match.intent != "HassGetState" or match.targets != 1
+            or match.state_matches is None or not _named(match.slots.get("name"))
+            or not _named(match.slots.get("state"))):
+        return ""
+    name, state = str(match.slots["name"]).strip(), str(match.slots["state"]).strip()
+    article = "" if name.lower().startswith(("the ", "my ", "our ")) else "the "
+    text = f"{article}{name} is {'' if match.state_matches else 'not '}{state}."
+    return text[0].upper() + text[1:]
+
+
+def action_fact(name: str, result: Any) -> str:
+    """What a plain on/off call did, from Home Assistant's own report of which
+    entities it changed, or "" when it does not say. The transcript is not in
+    it: "in the test room" heard as "and the test room" made the backend say
+    "The test light and the test room are off", or doubt a switch that had
+    turned on ("I'm not sure which switch you mean")."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if bare not in ("HassTurnOn", "HassTurnOff"):
+        return ""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return ""
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, dict) or data.get("failed") or not isinstance(data.get("success"), list):
+        return ""
+    entries = [e for e in data["success"] if isinstance(e, dict)]
+    entities = [e for e in entries if e.get("type") == "entity" and str(e.get("name") or "").strip()]
+    # "Turned on" reads wrong for a door or a lock: the backend's words stand.
+    if not entities or any(str(e.get("id") or "").split(".", 1)[0] not in SAFE_LOCAL_DOMAINS for e in entities):
+        return ""
+    areas = [str(e["name"]) for e in entries if e.get("type") == "area" and e.get("name")]
+    names = [str(e["name"]).strip() for e in entities]
+    if len(names) == 1:
+        target = names[0]
+    elif len(areas) == 1:
+        target = f"{len(names)} devices in {areas[0]}"
+    elif len(names) <= 3:
+        target = ", ".join(names[:-1]) + " and " + names[-1]
+    else:
+        target = f"{len(names)} devices"
+    return f"{_PAST[bare].capitalize()} {target}."
 
 
 def describe_local(intent: str, slots: Dict[str, Any]) -> str:
@@ -939,7 +1017,10 @@ class BackendRouter:
                 result, outcome = task.result()
             if key not in seen:
                 seen.add(key)
-                runs.append(tool_run(str(call.get("name")), outcome))
+                run = tool_run(str(call.get("name")), outcome)
+                if run.ok:
+                    run.fact = action_fact(run.name, result)
+                runs.append(run)
             outputs.append({"type": "function_call_output", "call_id": call.get("call_id"),
                             "output": result if isinstance(result, str)
                             else json.dumps(result, ensure_ascii=False, default=str)})
@@ -957,8 +1038,11 @@ class TurnRouter:
                  context: Optional[Callable[[], str]] = None,
                  history_turns: int = ROUTER_HISTORY_TURNS,
                  device_id: Optional[str] = None, household=None,
-                 satellite_ip: Optional[str] = None):
+                 satellite_ip: Optional[str] = None, local_state_reads: bool = True):
         self.backend = backend
+        # False when reading state is reserved for one speaker (the guards
+        # only see tool calls, and a local state answer is not one).
+        self.local_state_reads = local_state_reads
         self.recognizer = recognizer
         self.context = context
         # The satellite this router serves (its address). Its room comes from
@@ -1094,6 +1178,16 @@ class TurnRouter:
             return again
         return None
 
+    def _and_the_room(self, spoken: str) -> Optional[str]:
+        """The sentence with its final "and the <room>" as "in the <room>", or None."""
+        found = _AND_THE_ROOM.match(spoken or "")
+        if found is None or self.household is None:
+            return None
+        room = self.household.spoken_room(found.group("room"))
+        if room is None or fold(room.name) != fold(found.group("room")):
+            return None
+        return f"{found.group('head')} in the {found.group('room')}"
+
     def _heard_note(self, heard_info: Optional[Dict[str, Any]], refused: Optional[str]) -> str:
         """Tell the backend what Home Assistant's own parser heard."""
         if not heard_info or heard_info.get("question"):
@@ -1114,23 +1208,47 @@ class TurnRouter:
         user_text = (user_text or "").strip()
         refused: Optional[str] = None
         heard_info: Optional[Dict[str, Any]] = None
+        # Home Assistant's templates start at the verb: "And turn off the test
+        # light" is no match at all. The connective is for the listener.
+        spoken = strip_lead_filler(user_text)
         if self.recognizer is not None and self.recognizer.available:
             t0 = time.monotonic()
             rec = (user_text, asyncio.Event(), {"intent": None})
             self._recognition = rec
             try:
-                match = await self.recognizer.recognize(user_text, device_id=self._ha_device_id())
+                match = await self.recognizer.recognize(spoken, device_id=self._ha_device_id())
                 heard_info = getattr(self.recognizer, "last_heard", None)
+                room_fixed = self._and_the_room(spoken) if match is None else None
+                if room_fixed:
+                    # "in the test room" heard as "and the test room". Used only
+                    # if Home Assistant then resolves it to a device.
+                    again = await self.recognizer.recognize(room_fixed, device_id=self._ha_device_id())
+                    if again is not None and again.targets:
+                        match, spoken = again, room_fixed
+                        heard_info = getattr(self.recognizer, "last_heard", None)
+                    else:
+                        self.recognizer.last_heard = heard_info
                 if heard_info and is_state_question(user_text):
                     heard_info = dict(heard_info, question=True)
-                # Any recognised intent (also one refused locally below) means
-                # a command: the fast chat path is vetoed (v35 merge).
+                # A recognised intent (also one refused locally below) means a
+                # command: the fast chat path is vetoed (v35 merge). A wildcard
+                # parse with a slot unmatched is not one: for any sentence the
+                # parser returns a guess ("Tell me a short story" is HassGetState
+                # with name "a short story"), and the veto dropped the voice's
+                # own story and left about 20 s of silence.
                 rec[2]["intent"] = (getattr(match, "intent", None) if match is not None
-                                    else (heard_info or {}).get("intent"))
+                                    else _clean_parse_intent(heard_info))
             finally:
                 rec[1].set()
-            match = await self._own_room(user_text, match, timings)
+            match = await self._own_room(spoken, match, timings)
             timings["ha_intent_ms"] = int((time.monotonic() - t0) * 1000)
+            answer = local_state_answer(match) if self.local_state_reads else ""
+            if answer:
+                timings["local_intent"] = match.intent
+                self._remember(user_text, [{"role": "assistant", "content": answer}])
+                timings["route_ms"] = int((time.monotonic() - started) * 1000)
+                return RouteResult(LOOKUP, answer, "ha_local",
+                                   [ToolRun(name=match.intent, ok=True, kind="ok")], timings)
             refused = local_refusal(match, self.backend.tool_names)
             if refused not in (None, REFUSED_NO_MATCH):
                 # Recognised but not safe to run locally: nothing runs here;
@@ -1193,11 +1311,15 @@ class TurnRouter:
                 timings["route_ms"] = int((time.monotonic() - started) * 1000)
                 return RouteResult(LOOKUP, text, "clock", [run], timings)
         t2 = time.monotonic()
+        execute = _live_context_retry(execute)
+        held_for_yes: List[str] = []
         if is_state_question(user_text):
             # A state question never changes the house (v35 rig: "Is the test
             # light on?" ran HassLightSet). Household-control calls are
             # refused unrun; the backend answers from a read instead.
             execute = _read_only_execute(execute)
+        else:
+            execute = _clear_command_execute(execute, user_text, heard_info, held_for_yes)
         try:
             text, runs, steps, new_items = await self.backend.run(
                 self._input(user_text, self._heard_note(heard_info, refused)), execute)
@@ -1218,17 +1340,19 @@ class TurnRouter:
         self._remember(user_text, new_items)
         upper = text.strip().upper().rstrip(".")
         if not runs and upper == NO_REQUEST:
-            if heard_info and len(user_text.split()) <= COMMAND_MAX_WORDS:
+            if (heard_info and len(user_text.split()) <= COMMAND_MAX_WORDS
+                    and (_clean_parse_intent(heard_info) or is_house_request(user_text, heard_info))):
                 # Home Assistant parsed a command, so it was one (16:22: a
                 # clean "Turn on the kitchen lights" was judged NO_REQUEST and
-                # the user heard 20 s of nothing). Say it was not done.
+                # the user heard 20 s of nothing). Say it was not done. A
+                # wildcard guess with no household verb proves nothing.
                 timings["no_request_vetoed"] = heard_info.get("intent")
                 logger.warning("⛔ router: backend said NO_REQUEST for a parsed command; telling the user")
                 return RouteResult(FAILED, UNCLEAR_TARGET_TEXT, "backend", [], timings)
             return RouteResult(NOTHING, "", "backend", [], timings)
         if not runs and (upper == CHAT or not text):
             return RouteResult(CHAT_KIND, "", "backend", [], timings)
-        house = is_house_request(user_text, heard_info)
+        house = is_house_request(user_text, heard_info) and not is_misheard_question_shape(user_text, heard_info)
         if not runs:
             # A clarifying question, or a remark from the conversation so far.
             # With no tool behind it nothing happened, so it may not say that
@@ -1242,6 +1366,8 @@ class TurnRouter:
                 return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", [], timings)
             return RouteResult(REPLY, text, "backend", [], timings)
         if any(r.pending_confirmation for r in runs):
+            if held_for_yes:
+                text = f"Do you want me to {held_for_yes[0]}?"
             return RouteResult(CONFIRM, text, "backend", runs, timings)
         if any(r.pending for r in runs):
             # The work goes on elsewhere: the voice may promise a report,
@@ -1274,6 +1400,13 @@ class TurnRouter:
             logger.warning("⛔ router: a house request ran no action (only reads); not spoken as done")
             return RouteResult(FAILED, NOTHING_CHANGED_TEXT, "backend", runs, timings)
         actionish = any(_is_action_tool(r.name) for r in runs)
+        if actionish and all(r.fact for r in runs):
+            # Every call was on or off and Home Assistant says what changed:
+            # that is the result, whatever the backend made of the transcript.
+            # With a read in the mix the backend's text may answer more.
+            text = " ".join(dict.fromkeys(r.fact for r in runs))
+            if new_items and new_items[-1].get("role") == "assistant":
+                new_items[-1]["content"] = text
         return RouteResult(ACTION if actionish else LOOKUP, text, "backend", runs, timings)
 
     def _remember(self, user_text: str, items: List[dict]) -> None:
@@ -1281,6 +1414,18 @@ class TurnRouter:
             return
         self._history.append([{"role": "user", "content": user_text}] + list(items))
         del self._history[:-self.history_turns]
+
+
+_AND_THE_ROOM = re.compile(r"^(?P<head>.+?)\s+and\s+the\s+(?P<room>[^,.?!]+?)[\s.?!]*$", re.I)
+_LEAD_FILLER = re.compile(
+    r"^\W*(?:(?:and|also|then|plus|so|now|ok|okay|oh|um|uh|well)\b[\s,.]*)+", re.I)
+
+
+def strip_lead_filler(text: str) -> str:
+    """The sentence without its leading connective ("And", "Also", "Then",
+    "OK so"); unchanged if nothing else would be left."""
+    text = (text or "").strip()
+    return _LEAD_FILLER.sub("", text).strip() or text
 
 
 _CLOCK = re.compile(
@@ -1412,7 +1557,7 @@ def claims_own_action(text: str) -> bool:
 # A question about state. "did/have/has" are not leads: "Did you turn off
 # the lights?" asks about an action and stays protected.
 _QUESTION_LEAD = re.compile(
-    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|oh)\b[\s,]*)*"
+    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh)\b[\s,]*)*"
     r"(?:what|what's|whats|where|where's|when|when's|which|who|who's|how|how's|is|isn't|are|aren't|"
     r"was|were|does|doesn't)\b", re.I)
 _REQUEST_FORM = re.compile(
@@ -1479,10 +1624,10 @@ def is_state_question(text: str) -> bool:
 
 # A yes/no state question: "is/are/was/were ... ?" (not "is it possible to").
 _BE_QUESTION = re.compile(
-    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|oh)\b[\s,]*)*(?:is|isn't|are|aren't|was|were)\b(?!\s+you\b)", re.I)
+    r"^(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh)\b[\s,]*)*(?:is|isn't|are|aren't|was|were)\b(?!\s+you\b)", re.I)
 
 
-_FILLER = re.compile(r"(?:(?:hey|hi|ok|okay|so|um|uh|oh|and|also|well)\s*)+", re.I)
+_FILLER = re.compile(r"(?:(?:hey|hi|ok|okay|so|um|uh|oh|and|also|then|well)\s*)+", re.I)
 
 
 def is_action_shaped(text: str) -> bool:
@@ -1505,6 +1650,14 @@ _READ_INTENT = re.compile(r"Get|Status|LastItems|Nevermind|Respond", re.I)
 # What a failed house request tells the voice (FAILED commentary adds "do
 # not say it was done").
 NOTHING_CHANGED_TEXT = "Nothing was changed: no action ran for this request."
+
+
+def _clean_parse_intent(heard_info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The intent Home Assistant's parser resolved, or None for no parse or a
+    wildcard guess with a slot unmatched."""
+    if not heard_info or heard_info.get("unmatched"):
+        return None
+    return heard_info.get("intent") or None
 
 
 def is_house_request(user_text: str, heard_info: Optional[Dict[str, Any]] = None) -> bool:
@@ -1553,6 +1706,12 @@ class _Refused:
     kind: str = READ_ONLY_REFUSED
 
 
+def unclear_refusal(question: str) -> Tuple[dict, "_Refused"]:
+    """A wide tool on unclear words with no action gate to hold it: not run."""
+    return ({"error": f"Not run: this was not a clear command. Ask the user: do you want me to {question}? "
+                      "Do not say it was done."}, _Refused())
+
+
 def _read_only_execute(execute: ExecuteFn) -> ExecuteFn:
     async def guarded(name: str, arguments: dict):
         if _HOUSE_CONTROL_TOOL.search(name or ""):
@@ -1560,6 +1719,136 @@ def _read_only_execute(execute: ExecuteFn) -> ExecuteFn:
             return ({"error": "The user asked a question; nothing may be changed. Not run. "
                               "Answer from a read tool (GetLiveContext) instead."}, _Refused())
         return await execute(name, arguments)
+    return guarded
+
+
+def _live_context_retry(execute: ExecuteFn) -> ExecuteFn:
+    """A read filtered by a spoken name that matched nothing is asked again
+    without the name, so the backend reads the area (or domain) and matches the
+    name itself. Home Assistant's name filter is exact: "Voice PE Test Light"
+    missed "Voice PE Live Test Light", and the voice said the light was not
+    exposed. Without an area or domain to fall back on the miss stands: an
+    unfiltered read is every exposed entity."""
+    async def retrying(name: str, arguments: dict, **kwargs):
+        result, outcome = await execute(name, arguments, **kwargs)
+        if (name.rsplit("__", 1)[-1] != "GetLiveContext" or getattr(outcome, "ok", True)
+                or getattr(outcome, "kind", "") != "no-matching-entity"
+                or not isinstance(arguments, dict) or not arguments.get("name")):
+            return result, outcome
+        wider = {k: v for k, v in arguments.items() if k not in ("name", "domain")} if arguments.get("area") \
+            else {k: v for k, v in arguments.items() if k != "name"}
+        if not (wider.get("area") or wider.get("domain")):
+            return result, outcome
+        logger.info("🔁 router: GetLiveContext matched no name; reading again without the name filter")
+        again, again_outcome = await execute(name, wider, **kwargs)
+        return (again, again_outcome) if getattr(again_outcome, "ok", False) else (result, outcome)
+    return retrying
+
+
+# Tools that reach the whole house. Clear command, else confirm (the owner's
+# decision on the "Testing the placement, one two three" announcement): a clear
+# command runs straight away, anything else gets a question first.
+_WIDE_TOOL = re.compile(r"(?:broadcast|announce|everywhere|whole_house|house_wide|all_lights|everything)", re.I)
+_TARGET_ARGUMENTS = ("name", "area", "floor")
+_BROADCASTS = re.compile(r"(?:broadcast|announce)", re.I)
+_PLAIN_VERB = {"HassTurnOn": "turn on", "HassTurnOff": "turn off"}
+_LEAD_IN = (r"^\W*(?:(?:hey|hi|ok|okay|so|um|uh|and|also|then|oh|well|now|please|just|go\s+ahead\s+and|"
+            r"(?:can|could|would|will)\s+you|i\s+(?:want|need)\s+you\s+to|i'd\s+like\s+you\s+to)\b[\s,]*)*")
+# The base form only: "Turned off the lights." is a statement.
+_IMPERATIVE = re.compile(
+    _LEAD_IN + r"(?:turn|switch|shut|set|dim|brighten|make|stop|start|pause|resume|play|mute|unmute|open|close|"
+    r"lock|unlock|kill|activate|deactivate|arm|disarm|run)\b", re.I)
+_ANNOUNCE_REQUEST = re.compile(
+    _LEAD_IN + r"(?:announce|broadcast|page\b|"
+    r"tell\s+(?:everyone|everybody|all\b|the\s+(?:whole\s+)?(?:house|family|kids))|"
+    r"let\s+(?:everyone|everybody|the\s+(?:whole\s+)?(?:house|family|kids))\s+know|"
+    r"say\b.*\b(?:everywhere|everyone|everybody|all\s+(?:the\s+)?speakers|every\s+room))", re.I)
+
+
+def is_wide_effect(name: str, arguments: dict) -> bool:
+    """Does this call reach the whole house? An announcement or a whole-house
+    tool, or a device command with no name, area or floor."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _WIDE_TOOL.search(bare):
+        return True
+    # Lights and switches fan out. Media and the like with no target ("Next
+    # song") mean what is playing here.
+    return (bare in ("HassTurnOn", "HassTurnOff", "HassLightSet")
+            and not any(_named((arguments or {}).get(k)) for k in _TARGET_ARGUMENTS))
+
+
+def _clauses(text: str) -> List[str]:
+    normalized = " ".join((text or "").replace("’", "'").split())
+    return [c.strip() for c in re.split(r"[.?!;,]+", normalized) if c.strip()]
+
+
+def is_clear_command(name: str, user_text: str, heard_info: Optional[Dict[str, Any]]) -> bool:
+    """Is this wide tool what the user plainly asked for? Home Assistant's
+    parser resolved that very command, or a sentence opens with the request."""
+    clean = _clean_parse_intent(heard_info)
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _BROADCASTS.search(bare):
+        return clean == "HassBroadcast" or any(_ANNOUNCE_REQUEST.match(c) for c in _clauses(user_text))
+    if clean and not _READ_INTENT.search(clean):
+        return True
+    return any(_IMPERATIVE.match(c) for c in _clauses(user_text))
+
+
+def is_misheard_question_shape(user_text: str, heard_info: Optional[Dict[str, Any]]) -> bool:
+    """"And just the voice PE test switch on" was "Is the ... test switch on?"
+    misheard. Home Assistant's template is "[turn] [the] {area} [the] {name}
+    on": it found the device, and the opening words are no room. No sentence
+    opens with a verb and nothing asks: the structure cannot say this is a
+    command. (Not "a household verb anywhere": the switch's name holds one.)"""
+    if not heard_info or heard_info.get("intent") not in _PLAIN_VERB:
+        return False
+    if "area" not in (heard_info.get("unmatched") or ()):
+        return False
+    return not any(_IMPERATIVE.match(c) for c in _clauses(user_text)) and not _REQUEST_FORM.search(user_text or "")
+
+
+def _confirm_question(name: str, arguments: dict) -> str:
+    """What the question asks ("Do you want me to ...?")."""
+    bare = (name or "").rsplit("__", 1)[-1]
+    if _BROADCASTS.search(bare):
+        return "announce that"
+    arguments = arguments or {}
+    verb = _PLAIN_VERB.get(bare)
+    target = str(arguments.get("name") or "").strip()
+    if verb and target:
+        return f"{verb} {target}"
+    if not bare.startswith("Hass"):
+        return "run " + bare.replace("_", " ")
+    domain = arguments.get("domain")
+    domain = domain[0] if isinstance(domain, (list, tuple)) and domain else domain
+    what = f"every {str(domain).replace('_', ' ')}" if domain else "everything"
+    return f"{verb or 'change'} {what} in the house"
+
+
+def _clear_command_execute(execute: ExecuteFn, user_text: str, heard_info: Optional[Dict[str, Any]],
+                           held_for_yes: List[str]) -> ExecuteFn:
+    """Hold a wide tool, or a control call on words that may be a misheard
+    question, for a spoken yes through the action gate. A clear command is not
+    touched and adds no time."""
+    async def guarded(name: str, arguments: dict):
+        if (name or "").rsplit("__", 1)[-1] in ("HassListAddItem", "HassListCompleteItem") and is_garbled_item(
+                (arguments or {}).get("item")):
+            # The last line of defence for the case above: never on the list.
+            logger.info(f"⛔ router: {name} refused: the item holds a self-correction")
+            return ({"error": "Not run: the item holds the user's self-correction. Call it again with only "
+                              "the item they meant, on the list they settled on."}, _Refused())
+        unclear = (is_wide_effect(name, arguments) and not is_clear_command(name, user_text, heard_info)) or (
+            _HOUSE_CONTROL_TOOL.search(name or "") is not None
+            and (name or "").rsplit("__", 1)[-1] != "confirm_action"
+            and is_misheard_question_shape(user_text, heard_info))
+        if not unclear:
+            return await execute(name, arguments)
+        question = _confirm_question(name, arguments)
+        logger.info(f"🔐 router: {name} needs a clear command; asking first")
+        result, outcome = await execute(name, arguments, confirm=question)
+        if getattr(outcome, "pending_confirmation", False):
+            held_for_yes.append(question)
+        return result, outcome
     return guarded
 
 

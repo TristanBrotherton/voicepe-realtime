@@ -14,12 +14,13 @@ The rule both sides keep: **once an utterance has started, it plays to its
 end.** Only the user (stop word, a new wake, the button, mute) or a lost
 connection stops it. The add-on never cuts a started utterance.
 
-## Turning it on
+## When it applies
 
-Per device, with the `speaker_owner` option in the `devices` list (default
-off). With it off, nothing on the wire changes.
+Always on the GPT-Live runtime, for every device. (The Realtime runtime has no
+owner: its audio goes through the output transport as before, and nothing on
+the wire changes.)
 
-With it on, the add-on uses utterance framing only if the device offers it:
+The add-on uses utterance framing only if the device offers it:
 
 - the device's `start` message lists `"utt1"` in `caps`: utterance framing;
 - otherwise: **legacy framing**. The same queue and order, plain audio as
@@ -66,7 +67,7 @@ housekeeping. Every interrupt flushes the speaker.
 
 | message | fields | notes |
 |---|---|---|
-| `hello` | adds `chain_prime_ms` (0 to 600) and `utt_cushion_ms` (0 to 1000) | only when `speaker_owner` is on; older firmware ignores unknown keys |
+| `hello` | adds `chain_prime_ms` (0 to 600) and `utt_cushion_ms` (0 to 1000) | GPT-Live only; older firmware ignores unknown keys. Both are per-device options in the `devices` list, so the cold-start lead can be changed without a rebuild |
 | `utt_start` | `id`, `kind`, `turn` | before the utterance's first byte |
 | binary | PCM, at most 4800 bytes per frame | unchanged |
 | `utt_end` | `id`, `bytes` | after its last byte; a short utterance can start without waiting for a cushion |
@@ -132,7 +133,7 @@ never repeated.
 
 ## Compatibility
 
-| | older add-on | newer add-on, option off | newer add-on, option on |
+| | older add-on | newer add-on, Realtime | newer add-on, GPT-Live |
 |---|---|---|---|
 | older firmware | as before | as before | owner with legacy framing |
 | newer firmware | as before (extra fields ignored) | as before, interrupt reasons logged | owner with utterance framing |

@@ -207,6 +207,15 @@ class PhaseEmitter(FrameProcessor):
         self._on_dangling_stop = on_dangling
         self._on_real_speech = on_real_speech
 
+    def turn_superseded(self) -> None:
+        """A wake took over as the last session closed. The old turn is over,
+        with nothing sent to the device: an idle would stop the mic the wake
+        opened. Its watchdogs go, and the no-speech check sees a clean slate."""
+        self._cancel_pending_idle()
+        self._cancel_watchdog()
+        self._cancel_silent()
+        self._current = "idle"
+
     async def force_idle(self, reason: str = "") -> None:
         """Declare the current turn dead and put the device in idle.
 

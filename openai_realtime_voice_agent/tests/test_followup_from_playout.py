@@ -10,6 +10,7 @@ import unittest
 
 from app.live_session_gate import CLOSED, OPEN, LiveSessionPolicy
 import app.live_session_gate as gate_module
+from app import speaker_owner as so
 from app.live_service import DEVICE_PLAYOUT_TAIL_S, OpenAILiveLLMService
 from tests.test_live_session_gate import FakeLiveService, GateCase
 
@@ -78,14 +79,19 @@ class TestWindowFromPlayback(GateCase):
 
 
 class TestPlayoutEstimate(unittest.TestCase):
-    def test_real_time_paced_audio_plays_out_after_the_last_push(self):
+    def test_the_estimate_comes_from_what_the_owner_sent(self):
         svc = OpenAILiveLLMService.__new__(OpenAILiveLLMService)
+        svc.speaker_owner = None
         self.assertEqual(svc.playout_remaining_s(), 0.0)
-        for _ in range(10):              # 2 s of 24 kHz mono PCM16, in a burst
-            svc._note_audio_pushed(9600)
-        remaining = svc.playout_remaining_s()
-        self.assertAlmostEqual(remaining, 2.0 + DEVICE_PLAYOUT_TAIL_S, delta=0.1)
-        svc._playout_end_mono = time.monotonic() - 5
+
+        async def _noop(_data):
+            pass
+        owner = so.SpeakerOwner(_noop, _noop, device_id="a", prime_ms=0)
+        svc.speaker_owner = owner
+        self.assertEqual(svc.playout_remaining_s(), 0.0, "nothing sent yet")
+        owner._account(None, 96000, time.monotonic())   # 2 s of 24 kHz mono PCM16
+        self.assertAlmostEqual(svc.playout_remaining_s(), 2.0 + DEVICE_PLAYOUT_TAIL_S, delta=0.1)
+        owner._play_end = time.monotonic() - 5
         self.assertEqual(svc.playout_remaining_s(), 0.0)
 
 
