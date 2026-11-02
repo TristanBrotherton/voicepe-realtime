@@ -227,6 +227,21 @@ class TestSelfWakeGuard(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.serializer.is_self_wake({"src": "wake_word"}))
         self.assertGreater(SELF_WAKE_TAIL_S, 0.0)
 
+    async def test_a_wake_right_after_its_own_interrupt_is_not_an_echo(self):
+        """The device stopped the reply for this wake and its mic is open: with
+        the wake dropped, what is said next has no session (rig 2026-11-01)."""
+        self.play_announcement()
+        await self.serializer._handle_control({"type": "interrupt", "reason": "wake", "seq": 1})
+        await self.wake(src="wake_word")
+        self.assertEqual(len(self.wakes), 1)
+        self.assertEqual(self.serializer.self_wakes_suppressed, 0)
+
+    async def test_a_stop_does_not_let_an_echo_wake_through(self):
+        self.play_announcement()
+        await self.serializer._handle_control({"type": "interrupt", "reason": "stop", "seq": 1})
+        await self.wake(src="wake_word")
+        self.assertEqual(self.wakes, [])
+
     async def test_a_button_wake_is_never_dropped(self):
         self.play_announcement()
         await self.wake(src="button")
