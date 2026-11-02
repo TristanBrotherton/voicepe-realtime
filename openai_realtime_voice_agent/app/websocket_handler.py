@@ -1278,7 +1278,10 @@ class WebSocketHandler:
                         f"{gate.policy.rewake_grace_s:.0f}s re-wake grace"
                     )
                 else:
-                    await gate.close("follow-up cut-off")
+                    # Spawned for the same reason as the stop's close: a wake
+                    # right after this must be read at once.
+                    self._spawn(gate.close("follow-up cut-off"))
+                    await asyncio.sleep(0)
 
         async def _on_device_wake(meta=None):
             connection.last_wake_mono = time.monotonic()
@@ -1354,6 +1357,14 @@ class WebSocketHandler:
                 cancel_ack()
             turn = timeline.current
             if turn is None or turn.done:
+                return
+            woke = getattr(connection, "last_wake_mono", None)
+            began = gate.close_began_mono if gate is not None else None
+            if (gate is not None and not gate.is_open and woke is not None and began is not None
+                    and woke >= began):
+                # The old session's reply winding down as it closes: the turn
+                # the wake began is not over. Ended, the no-speech check would
+                # stand down and a silent wake would hold the mic open.
                 return
             timeline.finish(outcome)
 

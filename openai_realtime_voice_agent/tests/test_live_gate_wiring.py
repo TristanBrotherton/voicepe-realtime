@@ -243,7 +243,7 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.settle(lambda: connection.session_gate.state == OPEN)
         await self.send(connection, {"type": "flush"})
         self.assertEqual(connection.session_gate.state, CLOSED)
-        self.assertEqual(connection.openai_service.closes, ["follow-up cut-off"])
+        await self.settle(lambda: connection.openai_service.closes == ["follow-up cut-off"])
 
     async def test_every_gate_close_forces_the_device_idle(self):
         """Regression: model session closed while Kitchen's ring kept spinning."""
@@ -312,6 +312,28 @@ class TestDeviceFramesDriveTheGate(GateWiringCase):
         await self.settle(lambda: connection.session_gate.state == OPEN and connection.openai_service.opens == 2)
         await asyncio.sleep(0.05)
         self.assertNotIn(("idle", {}), phases)
+
+    async def test_the_old_reply_winding_down_does_not_end_the_new_wakes_turn(self):
+        """Ended by the old reply's idle, the wake's turn had no no-speech check
+        left, and a silent wake kept the mic open (rig 2026-11-01)."""
+        connection = self.build()
+        await self.send(connection, {"type": "wake", "turn": "k1", "src": "wake_word"})
+        await self.settle(lambda: connection.session_gate.state == OPEN)
+        slow_close = connection.openai_service.close_session
+
+        async def close_session(reason=""):
+            await asyncio.sleep(0.2)
+            await slow_close(reason)
+
+        connection.openai_service.close_session = close_session
+        await self.send(connection, {"type": "interrupt", "reason": "wake", "seq": 1})
+        await self.send(connection, {"type": "wake", "turn": "k2", "src": "wake_word"})
+        turn = connection.turn_timeline.current
+        connection.phase_emitter.on_turn_end("completed")
+        self.assertFalse(turn.done)
+        await self.settle(lambda: connection.session_gate.state == OPEN and connection.openai_service.opens == 2)
+        connection.phase_emitter.on_turn_end("completed")
+        self.assertTrue(turn.done, "with the session open it is a normal turn end")
 
     async def test_a_wake_during_a_close_is_not_followed_by_idle(self):
         """A close takes seconds: a wake any time in it owns the device."""
