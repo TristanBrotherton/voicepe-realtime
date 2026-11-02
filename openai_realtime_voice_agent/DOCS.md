@@ -154,7 +154,8 @@ the hourly session refresh but not add-on restarts.
 
 Set `speaker_male_name` / `speaker_female_name` and each wake is tagged with the
 likely speaker (pitch heuristic for a one-male-one-female household); enroll voice
-prints for true per-person identity. The assistant can address people by name, and
+prints for true per-person identity (with prints enrolled, pitch alone no longer
+names anyone; the assistant stays neutral). The assistant can address people by name, and
 `male_only_tools` (comma-separated tool names) are enforced below the model — a
 gated tool politely refuses unless the gated voice was identified. Convenience,
 not biometric security. Leave names empty to disable.

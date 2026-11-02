@@ -116,7 +116,7 @@ def _score(spoken: List[str], name: str, sole_holder: bool = False) -> float:
     score = (plain + sound) / 2
     # Every spoken word is part of this name and of no other entity's ("test
     # switch" -> "Lab PE Test Switch"). Weighted by how much of the name
-    # was said. A word shared by several entities ("powerwall") never wins.
+    # was said. A word shared by several entities ("battery") never wins.
     if sole_holder:
         said, have = {_stem(w) for w in spoken}, {_stem(w) for w in real}
         if said <= have:

@@ -61,7 +61,7 @@ def running(results=None):
 
 
 class LeadingConnective(unittest.IsolatedAsyncioTestCase):
-    """Garage regression on 0.20.12: "And turn off the test light" missed Home
+    """Device regression on 0.20.12: "And turn off the test light" missed Home
     Assistant's local match, because its templates start at the verb."""
 
     def test_the_connective_goes_and_nothing_else(self):

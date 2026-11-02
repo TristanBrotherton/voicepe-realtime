@@ -1745,7 +1745,7 @@ def _live_context_retry(execute: ExecuteFn) -> ExecuteFn:
     return retrying
 
 
-# Tools that reach the whole house. Clear command, else confirm (Tristan's
+# Tools that reach the whole house. Clear command, else confirm (the owner's
 # decision on the "Testing the placement, one two three" announcement): a clear
 # command runs straight away, anything else gets a question first.
 _WIDE_TOOL = re.compile(r"(?:broadcast|announce|everywhere|whole_house|house_wide|all_lights|everything)", re.I)

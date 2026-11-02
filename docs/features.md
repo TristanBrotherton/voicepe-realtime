@@ -81,14 +81,17 @@ Two tiers, from zero-setup to per-person identity:
 `speaker_female_name` for a one-male-one-female household. Each wake's opening
 audio is classified by pitch (in-process, off the audio path) and the verdict is
 injected into the session, so the assistant can use names or sir/ma'am. It cannot
-tell two men apart, and same-voice-type guests match that name. Leave both names
-empty to disable.
+tell two men apart, and same-voice-type guests match that name. Pitch near the
+boundary between the two voice types names nobody. Leave both names empty to
+disable.
 
 **Tier 2 — voice prints.** Per-person identification with a neural
 speaker-embedding model: each wake's capture is embedded and compared against
 enrolled per-person centroids (stored in `/share/voice-prints/<name>.json`), with
-a ≥3 s duration guard and the pitch heuristic as fallback. Guests classify as
-*unknown* and get neutral handling.
+a ≥3 s duration guard and the pitch heuristic as fallback. With prints enrolled,
+pitch names someone only when an uncertain print points to the same person;
+otherwise the assistant stays neutral. Guests classify as *unknown* and get
+neutral handling.
 
 To enroll a voice print — two steps:
 
