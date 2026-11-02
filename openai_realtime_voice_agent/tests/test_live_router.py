@@ -26,7 +26,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pipecat.frames.frames import TTSAudioRawFrame
+from pipecat.frames.frames import InputAudioRawFrame, TTSAudioRawFrame
 
 import app.live_service as live_service_module
 from app.action_gate import ActionGate, EntityDirectory
@@ -563,6 +563,28 @@ class VerifiedOnlySpeech(Patched):
                 before = len(h.socket.of("session.commentary.append"))
                 await asyncio.sleep(0.5)
                 self.assertEqual(len(h.socket.of("session.commentary.append")), before, "not asked again")
+
+    async def test_a_broadcast_that_reached_nothing_is_not_reported_as_done(self):
+        from app.tool_results import broadcast_reached_nothing, classify_result
+        empty = '{"speech": {}, "response_type": "action_done", "data": {"success": [], "failed": []}}'
+        outcome = classify_result(broadcast_reached_nothing("assist_satellite__HassBroadcast", empty))
+        self.assertFalse(outcome.ok)
+        reached = {"response_type": "action_done", "data": {"success": [{"name": "Hall"}], "failed": []}}
+        self.assertIsNone(broadcast_reached_nothing("assist_satellite__HassBroadcast", reached))
+        self.assertIsNone(broadcast_reached_nothing("intent__HassTurnOn", empty))
+
+    async def test_what_is_said_after_a_wake_during_a_close_goes_to_the_next_session(self):
+        backend = FakeBackend(response(message("Hello.")))
+        async with RouterHarness(self, backend) as h:
+            service = h.service
+            service.hold_input_for_next_session()
+            speech = fx.tone(200)
+            await service._send_user_audio(InputAudioRawFrame(audio=speech, sample_rate=24000, num_channels=1))
+            self.assertTrue(service._held_input, "kept, not sent to the closing session")
+            await service.close_session("device stop")
+            await service.open_session()
+            self.assertFalse(service._hold_input)
+            self.assertFalse(service._held_input)
 
     async def test_a_voice_that_never_pauses_is_heard_in_the_end(self):
         """The bound: an answer the voice runs into with no gap at all must not

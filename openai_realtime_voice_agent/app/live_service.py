@@ -138,7 +138,7 @@ from app.live_protocol import (
 )
 from app.tool_arguments import sanitize_tool_arguments, tool_schema_index
 from app.tool_guards import GuardedToolsMixin
-from app.tool_results import ActionLedger, classify_result, explain_for_model
+from app.tool_results import ActionLedger, broadcast_reached_nothing, classify_result, explain_for_model
 from app.voice_runtime import LiveConfig
 
 logger = logging.getLogger(__name__)
@@ -875,6 +875,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._last_input_mono = 0.0
         self._input_audio_ms_sent = 0.0
         self._prestart_audio = bytearray()
+        self._hold_input = False
+        self._held_input = bytearray()
         self._input_audio_lock = asyncio.Lock()
         # True from open_session() until session.started (or the socket is
         # dropped): the only window in which device audio is worth holding.
@@ -1352,6 +1354,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._idle_input_dropped = 0
             self._idle_input_dropped_ms = 0.0
             self._prestart_audio.clear()
+            if self._hold_input:
+                # Said since a wake that landed while the last session closed.
+                self._prestart_audio.extend(self._held_input)
+                self._held_input = bytearray()
+                self._hold_input = False
             self._session_opening = True
             self.input_gain.reset_stats()
             self._input_bucket_ms = float(INPUT_BURST_MAX_MS)
@@ -1362,6 +1369,13 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except BaseException:
             self._session_opening = False
             raise
+
+    def hold_input_for_next_session(self) -> None:
+        """A wake landed with no session able to hear it yet (the last one is
+        closing, which takes seconds). The mic audio from now on is the request:
+        kept for the next session, not sent to the closing one or dropped."""
+        self._held_input = bytearray()
+        self._hold_input = True
 
     def _forget_stale_conversation(self) -> None:
         """Drop the conversation (not the system prompt) after a long gap."""
@@ -2197,6 +2211,12 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if not audio:
             return  # a partial block, carried into the next frame
         async with self._input_audio_lock:
+            if self._hold_input:
+                self._held_input.extend(audio)
+                limit = LIVE_SAMPLE_RATE * 2 * PRESTART_AUDIO_MAX_S
+                if len(self._held_input) > limit:
+                    del self._held_input[: len(self._held_input) - limit]
+                return
             if not self._session_started:
                 if not self._session_opening and self._websocket is None:
                     # No session and none opening: the device is streaming
@@ -4232,6 +4252,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             raise
         self._router_futures.pop(call_id, None)
         self._in_flight.pop(call_id, None)
+        raw = broadcast_reached_nothing(name, raw) or raw
         outcome = classify_result(raw)
         self.actions.record(name, arguments, outcome)
         if not shared.done():

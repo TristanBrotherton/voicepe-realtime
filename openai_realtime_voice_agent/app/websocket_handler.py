@@ -523,6 +523,7 @@ class ConnectionRecovery(FrameProcessor):
 # A wake this recent means the device is already in its next turn: a session
 # close must not send it to idle.
 WAKE_SUPERSEDES_IDLE_S = 1.5
+OPEN_FAILED_REASONS = ("open failed", "open cancelled", "open invalidated")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -709,12 +710,20 @@ class WebSocketHandler:
             # forever after the session itself was gone.
             phase_emitter = connection.phase_emitter
             woke = getattr(connection, "last_wake_mono", None)
-            if woke is not None and time.monotonic() - woke < WAKE_SUPERSEDES_IDLE_S:
+            began = gate.close_began_mono
+            if (woke is not None and getattr(charge, "reason", "") not in OPEN_FAILED_REASONS
+                    and (time.monotonic() - woke < WAKE_SUPERSEDES_IDLE_S
+                         or (began is not None and woke >= began))):
                 # A wake arrived as this session closed: the device has already
                 # started the next turn, and an idle now would stop its mic
                 # (rig 2026-10-16: the wake landed 1 ms after a close; the
-                # forced idle followed it and the turn heard nothing).
+                # forced idle followed it and the turn heard nothing). A close
+                # takes about 2.7 s, so "during the close" counts as well as
+                # "just now". An open that failed is different: nothing will
+                # hear the device, so it does go to idle.
                 logger.info("📞 not forcing idle at close: a new wake just started the next turn")
+                if phase_emitter is not None:
+                    phase_emitter.turn_superseded()
             elif phase_emitter is not None:
                 self._spawn(phase_emitter.force_idle(
                     f"GPT-Live session closed: {getattr(charge, 'reason', 'closed')}"
@@ -1181,7 +1190,12 @@ class WebSocketHandler:
                 # (utt1: interrupt_ack) without waiting for the session close.
                 await owner.acknowledge_interrupt()
             if gate is not None:
-                await gate.close("device stop")
+                # Spawned, not awaited: this loop also delivers the wake that
+                # follows a barge-in, and its audio. Awaited, the wake was only
+                # seen after the close, too late to stop the idle that shut its
+                # mic, and the request was lost.
+                self._spawn(gate.close("device stop"))
+                await asyncio.sleep(0)  # the close has begun when the next message is read
 
         async def _kill_racing_response():
             # Runs whenever a NEW assistant response starts; only one right
@@ -1268,6 +1282,12 @@ class WebSocketHandler:
 
         async def _on_device_wake(meta=None):
             connection.last_wake_mono = time.monotonic()
+            if gate is not None and not gate.is_open:
+                # The last session is still closing, or is gone: what the user
+                # says from here on is the request, not room noise.
+                hold_input = getattr(openai_service, "hold_input_for_next_session", None)
+                if hold_input is not None:
+                    hold_input()
             meta = dict(meta or {})
             source = meta.get("src") or "wake_word"
             if hold is not None:
