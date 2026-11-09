@@ -2046,9 +2046,6 @@ class Application:
             return probe.memory_author() if probe else None
 
         register_memory_tools(service, _memory_author)
-        if openclaw_url():
-            register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
-            logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
         logger.info("✅ Registered timer + memory tools")
 
         # Register MCP tool handlers if available
@@ -2066,7 +2063,8 @@ class Application:
         # couldn't send the text" at exactly 60s — while the text sent fine.
         if openclaw_url():
             register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
-            logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+            logger.info("✅ Registered DIRECT ask_openclaw tool after the MCP handlers "
+                        "(bypassing the HA MCP 60s cap)")
             if discussions_enabled():
                 register_discussion_tools(service)
                 logger.info("✅ Registered discussion tools (discussions_enabled)")
