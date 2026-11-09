@@ -2125,7 +2125,7 @@ class WebSocketHandler:
         """The link is gone: everything the speaker owner had not finished is
         lost (the device may still play what it holds; its next `start` says).
         Kept briefly so a reconnect can deliver again what must not be lost
-        (_redeliver). Idempotent: a closed owner is not recorded twice."""
+        (_redeliver). A closed owner is not recorded twice."""
         now = time.monotonic()
         for device_id, (_owner, lost_at) in list(self._lost_owners.items()):
             if now - lost_at > REDELIVER_WITHIN_S:
@@ -2142,8 +2142,8 @@ class WebSocketHandler:
             logger.warning(f"⚠️ teardown of the replaced connection for {connection.device_id}: {e!r}")
 
     async def _teardown(self, connection: DeviceConnection) -> None:
-        """Release one connection's pipeline and OpenAI session. Idempotent,
-        and safe to run while another teardown of the same connection runs.
+        """Release one connection's pipeline and OpenAI session. It can run
+        twice, also while another teardown of the same connection runs.
 
         Args:
             connection: The connection to tear down.
