@@ -874,6 +874,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         # A session socket taken off ``_websocket`` whose close is not yet
         # shown (cleared once it closed or its transport was aborted).
         self._unreleased_socket = None
+        self._owned_tasks: set = set()
+        self._session_watchers: set = set()
         self._receive_task: Optional[asyncio.Task] = None
         self._silence_task: Optional[asyncio.Task] = None
         self._disconnecting = False
@@ -1235,18 +1237,21 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         await self.disconnect()
         await self._drop_warm()
         await self._tasks_shutdown()
+        await self._cancel_owned()
 
     async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
         await self._disconnect()
         await self._drop_warm()
         await self._tasks_shutdown()
+        await self._cancel_owned()
 
     async def cleanup(self):
         await super().cleanup()
         await self._disconnect()
         await self._drop_warm()
         await self._tasks_shutdown()
+        await self._cancel_owned()
 
     async def _drop_warm(self) -> None:
         """Shutdown: no pre-opened socket outlives the service."""
@@ -1927,6 +1932,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._in_flight.clear()
             await self._cancel(self._silent_task)
             self._silent_task = None
+            for watcher in list(self._session_watchers):
+                await self._cancel(watcher)
             if self.router is not None:
                 await self._router_supersede("disconnect")
                 self._pending_appends.clear()
@@ -4715,14 +4722,15 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 self._result_acked = True
                 self._result_acked_mono = time.monotonic()
                 if not self._answer_nudged:
-                    self._spawn(self._answer_owed_watch(self._result_acked_mono), "live-answer-owed")
+                    self._spawn(self._answer_owed_watch(self._result_acked_mono), "live-answer-owed",
+                                session=True)
             # Non-acknowledgement speech still streaming when the result went
             # in ends its claim on the speaker at its first gap (GUESS_TAIL_*).
             if self._gate_drop_until_ack and self._guess_streaming():
                 self._guess_tail_since = time.monotonic()
                 self._guess_tail_held = []
                 self._guess_tail_open = True
-                self._spawn(self._guess_tail_watch(), "live-guess-tail")
+                self._spawn(self._guess_tail_watch(), "live-guess-tail", session=True)
                 self._post_guess_dropped = True
                 logger.info("⏹️ a dropped guess is still streaming at the acknowledgement: "
                             "its tail stays dropped until its first gap")
@@ -5853,6 +5861,11 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         await self._cancel(self._task_flush_task)
         self._task_flush_task = None
 
+    async def _cancel_owned(self) -> None:
+        """Shutdown: no task this service spawned outlives it."""
+        for task in list(self._owned_tasks):
+            await self._cancel(task)
+
     async def _router_progress_watch(self, op: RouterOp) -> None:
         """The pre-task narration: kept for reference and tests; no longer
         armed, since promotion (_task_promote_watch) replaces it. It held the
@@ -6046,14 +6059,23 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(f"live lifecycle observer failed: {e!r}")
 
-    def _spawn(self, coro, name: str = "") -> asyncio.Task:
+    def _spawn(self, coro, name: str = "", *, session: bool = False) -> asyncio.Task:
         """A background task owned (and cancelled on disconnect) by this service.
 
         Plain asyncio rather than pipecat's task manager: the manager refuses
         new tasks while the pipeline is being cancelled, which left transcript
         timers created by a late server event as never-awaited coroutines.
         """
-        return asyncio.create_task(coro, name=f"{self.__class__.__name__}::{name}")
+        task = asyncio.create_task(coro, name=f"{self.__class__.__name__}::{name}")
+        # asyncio holds tasks weakly: one nobody keeps can be collected before
+        # it runs. Every task is held until done; a session watcher is also
+        # cancelled when its session's socket goes (_disconnect).
+        self._owned_tasks.add(task)
+        task.add_done_callback(self._owned_tasks.discard)
+        if session:
+            self._session_watchers.add(task)
+            task.add_done_callback(self._session_watchers.discard)
+        return task
 
     async def _cancel(self, task: Optional[asyncio.Task]) -> None:
         if task is None or task.done() or task is asyncio.current_task():

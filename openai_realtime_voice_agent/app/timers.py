@@ -20,6 +20,9 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TYPE_CHECKING
 
 import httpx
 
+from app.background import spawn
+from app.transcript_logger import spoken_for_log
+
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
 
@@ -99,7 +102,7 @@ class TimerRegistry:
         # and a "pasta timer" label would say it twice ("your timer timer").
         name = re.sub(r"(?:^|\s+)timer(?:\s+\d+)?$", "", label.strip(), flags=re.I).strip()
         nice = f"{name} " if name else ""
-        logger.info(f"⏰ timer {tid} ('{label}', owner={owner or '-'}) expired")
+        logger.info(f"⏰ timer {tid} ({spoken_for_log(label)}, owner={owner or '-'}) expired")
         # 1. One personal spoken announcement (no nagging nudges). A wake,
         # button or "stop" from here on, during the line too, acknowledges it.
         t0 = time.monotonic()
@@ -146,11 +149,10 @@ class TimerRegistry:
             "wall": time.time() + seconds,
             "task": asyncio.get_running_loop().create_task(self._fire(tid)),
         }
-        logger.info(f"⏰ timer {tid} set: {seconds}s ('{label}')")
+        logger.info(f"⏰ timer {tid} set: {seconds}s ({spoken_for_log(label)})")
         try:
-            import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
+            spawn(PUBLISHER.timers(self, device_id), "timers-publish")
         except Exception:
             pass
         return {"id": tid, "label": self._timers[tid]["label"], "seconds": seconds}
@@ -173,9 +175,8 @@ class TimerRegistry:
         t["task"].cancel()
         logger.info(f"⏰ timer {tid} cancelled")
         try:
-            import asyncio as _a
             from .ha_sensors import PUBLISHER
-            _a.get_running_loop().create_task(PUBLISHER.timers(self, device_id))
+            spawn(PUBLISHER.timers(self, device_id), "timers-publish")
         except Exception:
             pass
         return {"cancelled": tid, "label": t["label"]}

@@ -208,3 +208,43 @@ class SpokenRefusal(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnedTasks(unittest.IsolatedAsyncioTestCase):
+    async def test_spawned_tasks_are_held_and_session_watchers_end_with_the_socket(self):
+        async with LiveHarness(self, on_demand=True) as h:
+            await h.open_session()
+            await h.start_session()
+            s = h.service
+            keep = s._spawn(asyncio.sleep(30), "kept")
+            watcher = s._spawn(asyncio.sleep(30), "watch", session=True)
+            self.assertIn(keep, s._owned_tasks)
+            self.assertIn(watcher, s._session_watchers)
+            with patch("app.live_service.SESSION_CLOSE_TIMEOUT_S", .01):
+                await s.close_session("idle")
+            self.assertTrue(watcher.cancelled())
+            self.assertFalse(keep.done(), "not a session watcher: it outlives the session")
+            await s._cancel_owned()
+            self.assertTrue(keep.cancelled())
+            self.assertEqual(s._owned_tasks, set())
+
+    async def test_background_spawn_holds_until_done(self):
+        from app import background
+        done = asyncio.Event()
+
+        async def work():
+            await done.wait()
+        task = background.spawn(work(), "t")
+        self.assertIn(task, background._TASKS)
+        done.set()
+        await task
+        await asyncio.sleep(0)
+        self.assertNotIn(task, background._TASKS)
+
+        async def fail():
+            raise ValueError("x")
+        failing = background.spawn(fail(), "f")
+        with self.assertLogs("app.background", "DEBUG"):
+            with self.assertRaises(ValueError):
+                await failing
+            await asyncio.sleep(0)

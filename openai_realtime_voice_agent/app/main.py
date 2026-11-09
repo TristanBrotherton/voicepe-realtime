@@ -10,6 +10,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
+from app.background import spawn
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
@@ -365,9 +366,9 @@ class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
                 f"out {out_text}txt+{out_audio}aud ≈ ${cost:.4f}"
             )
             from .ha_sensors import PUBLISHER
-            asyncio.get_running_loop().create_task(PUBLISHER.usage(cost, {
+            spawn(PUBLISHER.usage(cost, {
                 "in_text": in_text, "in_audio": in_audio, "cached": cached,
-                "out_text": out_text, "out_audio": out_audio}))
+                "out_text": out_text, "out_audio": out_audio}), "usage-publish")
         except Exception as e:
             logger.debug(f"usage accounting failed: {e!r}")
         silent = self._is_silent_response(evt)
@@ -931,7 +932,7 @@ class Application:
         # Surface enrolled voice prints in HA from boot (not just after builds).
         try:
             from .ha_sensors import PUBLISHER as _PUB
-            asyncio.get_running_loop().create_task(_PUB.voice_prints())
+            spawn(_PUB.voice_prints(), "voice-prints-publish")
         except Exception:
             pass
 
@@ -1141,7 +1142,7 @@ class Application:
             from app.live_router import HaIntentRecognizer, set_known_names
             set_known_names([speaker_male_name, speaker_female_name])
             self.ha_intents = HaIntentRecognizer(os.environ.get("SUPERVISOR_TOKEN", ""))
-            asyncio.get_running_loop().create_task(self.ha_intents.warm())
+            spawn(self.ha_intents.warm(), "ha-intents-warm")
             # What the home has and where each satellite is, from Home
             # Assistant's own registries and Assist prompt (app/ha_household.py).
             from app.ha_household import HouseholdDirectory, fetch_assist_prompt
@@ -1163,7 +1164,7 @@ class Application:
                 "local intents first, then the backend with all tools); the voice speaks "
                 "only verified results"
             )
-        asyncio.get_running_loop().create_task(self._warm_prompts())
+        spawn(self._warm_prompts(), "prompts-warm")
         self.openai_speed = openai_speed
         self.max_output_tokens = max_output_tokens
         self.noise_reduction = noise_reduction
@@ -1226,7 +1227,7 @@ class Application:
         if _t.monotonic() - state["checked"] > 30:
             state["checked"] = _t.monotonic()
             try:
-                asyncio.get_running_loop().create_task(self._refresh_guest_mode(entity))
+                spawn(self._refresh_guest_mode(entity), "guest-mode-refresh")
             except RuntimeError:
                 pass
         return state["value"]
@@ -1937,9 +1938,8 @@ class Application:
             # At every wake: a fresh HA socket before the first recognition
             # (a stale one stalled past the budget), the directory refreshed
             # when stale, and the household snapshot.
-            loop = asyncio.get_running_loop()
             if recognizer is not None:
-                loop.create_task(recognizer.warm())
+                spawn(recognizer.warm(), "ha-intents-warm")
             if household is not None:
                 household.ensure_fresh()
             if snapshot.enabled:
