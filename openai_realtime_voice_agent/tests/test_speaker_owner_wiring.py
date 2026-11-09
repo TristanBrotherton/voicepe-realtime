@@ -385,6 +385,21 @@ class TestRedelivery(unittest.IsolatedAsyncioTestCase):
         handler._redeliver(connection, None)
         self.assertEqual(new_owner.history(), [])
 
+    async def test_old_lost_owners_are_pruned_at_teardown(self):
+        handler, connection, owner, sent = _handler_with_owner()
+        stale = so.SpeakerOwner(AsyncMock(), AsyncMock())
+        handler._lost_owners["gone-device"] = (stale, time.monotonic() - 31)
+        handler._lost_owners["recent-device"] = (stale, time.monotonic())
+        handler._note_link_lost(connection)
+        self.assertNotIn("gone-device", handler._lost_owners)
+        self.assertIn("recent-device", handler._lost_owners)
+        self.assertIn("testdevice", handler._lost_owners)
+        before = handler._lost_owners["testdevice"]
+        handler._note_link_lost(connection)
+        self.assertIs(handler._lost_owners["testdevice"], before, "recorded once")
+        await owner.shutdown()
+        await stale.shutdown()
+
 
 class TestSessionWaitsForSpeech(unittest.IsolatedAsyncioTestCase):
     def _gate(self, service):

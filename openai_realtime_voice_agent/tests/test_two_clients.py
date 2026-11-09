@@ -142,6 +142,33 @@ class TestTwoClients(LiveServerTestCase):
         await self.wait_for_ids([])
         self.assertTrue(all(s.disconnected for s in self.services), "sessions leaked")
 
+    async def test_reconnect_does_not_wait_for_the_old_teardown(self):
+        release = asyncio.Event()
+        slow = []
+
+        async def slow_disconnect():
+            slow.append(True)
+            await release.wait()
+
+        async with websockets.connect(self.url("?device_id=kitchen")) as old:
+            self.assertEqual(json.loads(await asyncio.wait_for(old.recv(), 5))["type"], "hello")
+            await self.wait_for_ids(["kitchen"])
+            first = self.services[0]
+            first.disconnect = slow_disconnect
+            async with websockets.connect(self.url("?device_id=kitchen")) as new:
+                self.assertEqual(json.loads(await asyncio.wait_for(new.recv(), 5))["type"], "hello")
+                # The replacement runs while the old session's close hangs.
+                await new.send(json.dumps({"type": "ping"}))
+                self.assertEqual(json.loads(await asyncio.wait_for(new.recv(), 5)), {"type": "pong"})
+                self.assertTrue(slow, "the old teardown is still running")
+                self.assertTrue(self.handler._teardowns)
+                release.set()
+                for _ in range(100):
+                    if not self.handler._teardowns:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertFalse(self.handler._teardowns)
+
     async def test_legacy_firmware_without_device_id_uses_client_ip(self):
         async with websockets.connect(self.url()) as legacy:
             self.assertEqual(json.loads(await asyncio.wait_for(legacy.recv(), 5))["type"], "hello")

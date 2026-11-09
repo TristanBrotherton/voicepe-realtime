@@ -620,6 +620,8 @@ class WebSocketHandler:
         # Called with (connection, reason) when the spend cutoff refuses a turn.
         self.budget_refusal_speaker = None
         self._background: set = set()
+        # Teardowns of connections a reconnect replaced; awaited at shutdown.
+        self._teardowns: set = set()
 
         # Per-device connections. Everything that used to be a singleton here —
         # transport, serializer, OpenAI session, pipeline, task — now lives on a
@@ -1516,11 +1518,13 @@ class WebSocketHandler:
 
         return pipeline, runner, task
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro, into: Optional[set] = None) -> asyncio.Task:
         """Run a background coroutine, keeping a reference until it finishes."""
         task = asyncio.create_task(coro)
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        tasks = self._background if into is None else into
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
 
     async def _wake_liveness(self, connection: DeviceConnection) -> None:
         """Check the OpenAI socket while the wake chime plays.
@@ -2067,7 +2071,17 @@ class WebSocketHandler:
             await connection.send_json(self.hello_payload(connection.device_id))
 
             if displaced is not None:
-                await self._teardown(displaced)
+                # The reconnect must not wait for the old pipeline to unwind
+                # (the gate's close up to 15 s, pipecat's cancel up to 20 s).
+                # What the new connection relies on happens now: the old
+                # owner's unfinished speech is kept for redelivery and the old
+                # gate can no longer open. The rest runs in the background;
+                # _teardown is idempotent and already races the old
+                # connection's own cleanup.
+                self._note_link_lost(displaced)
+                if displaced.session_gate is not None:
+                    displaced.session_gate.note_device_disconnected()
+                self._spawn(self._teardown_displaced(displaced), self._teardowns)
                 displaced = None
 
             if on_client_connected:
@@ -2105,8 +2119,29 @@ class WebSocketHandler:
             await self._teardown(connection)
             logger.info(f"🔌 device {device_id} disconnected ({len(self.devices)} remaining)")
 
+    def _note_link_lost(self, connection: DeviceConnection) -> None:
+        """The link is gone: everything the speaker owner had not finished is
+        lost (the device may still play what it holds; its next `start` says).
+        Kept briefly so a reconnect can deliver again what must not be lost
+        (_redeliver). Idempotent: a closed owner is not recorded twice."""
+        now = time.monotonic()
+        for device_id, (_owner, lost_at) in list(self._lost_owners.items()):
+            if now - lost_at > REDELIVER_WITHIN_S:
+                del self._lost_owners[device_id]
+        owner = getattr(connection, "speaker_owner", None)
+        if owner is not None and owner.state != so.CLOSED:
+            owner.link_lost()
+            self._lost_owners[connection.device_id] = (owner, now)
+
+    async def _teardown_displaced(self, connection: DeviceConnection) -> None:
+        try:
+            await self._teardown(connection)
+        except Exception as e:
+            logger.warning(f"⚠️ teardown of the replaced connection for {connection.device_id}: {e!r}")
+
     async def _teardown(self, connection: DeviceConnection) -> None:
-        """Release one connection's pipeline and OpenAI session.
+        """Release one connection's pipeline and OpenAI session. Idempotent,
+        and safe to run while another teardown of the same connection runs.
 
         Args:
             connection: The connection to tear down.
@@ -2116,14 +2151,8 @@ class WebSocketHandler:
         # CancelFrame cannot reach its end; meanwhile a live recovery or phase
         # emitter would still act on the dead connection (refresh its OpenAI
         # session, send phases to its closed socket).
-        # The link is gone: everything the speaker owner had not finished is
-        # lost (the device may still play what it holds; its next `start`
-        # says). Kept briefly so a reconnect can deliver again what must not
-        # be lost (_redeliver).
         owner = getattr(connection, "speaker_owner", None)
-        if owner is not None and owner.state != so.CLOSED:
-            owner.link_lost()
-            self._lost_owners[connection.device_id] = (owner, time.monotonic())
+        self._note_link_lost(connection)
         # The session gate goes FIRST and for good: it must stop billing before
         # anything else is unwound, and a late wake or liveness probe from a
         # dying connection must not be able to open a new one. shutdown() also
@@ -2181,3 +2210,5 @@ class WebSocketHandler:
         """Tear down every connection at shutdown."""
         for connection in self.devices:
             await self._teardown(connection)
+        if self._teardowns:
+            await asyncio.gather(*list(self._teardowns), return_exceptions=True)
