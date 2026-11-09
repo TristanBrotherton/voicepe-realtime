@@ -302,8 +302,13 @@ INPUT_RATE_X = 1.2
 # A delegation that never finishes must not hold the thinking watchdog open
 # forever (tools are bounded individually; this bounds the backend itself).
 DELEGATION_TIMEOUT_S = 150.0
-# Consecutive session-start failures before auto-reconnects are refused.
+# Consecutive session-start failures (an error event before session.started)
+# before new opens back off: 30 s after the third, doubling per further
+# failure, at most 4 minutes. Never permanent: a fixed key, model or network
+# recovers without a restart.
 MAX_STARTUP_FAILURES = 3
+STARTUP_BACKOFF_BASE_S = 30.0
+STARTUP_BACKOFF_MAX_S = 240.0
 # Assembled output-audio chunks allowed to wait for the device transport. At
 # 100 ms per chunk this is ~30 s of reply audio; reaching it means the device
 # link has stalled, not that the model is fast.
@@ -878,6 +883,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._session_id: Optional[str] = None
         self._session_closed = asyncio.Event()
         self._startup_failures = 0
+        self._startup_retry_mono = 0.0
         self._context: Optional[LLMContext] = None
         self._last_session_closed_mono: Optional[float] = None
         self._resampler = create_stream_resampler()
@@ -1311,12 +1317,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # are what a spend cutoff reads, and wiping them on a redundant
             # open would make a long session look brand new.
             return
-        if self._startup_failures >= MAX_STARTUP_FAILURES:
-            raise RuntimeError(
-                f"live session failed to start {self._startup_failures} times in a row; "
-                "not opening again until the configuration is fixed and the add-on "
-                "restarted"
-            )
+        self._check_startup_backoff("opening")
         # A reopened session has no server-side memory of the last one, so seed
         # it with the recent text conversation the same way a reconnect does,
         # ending on the last reply: anything after it would be answered again.
@@ -1378,6 +1379,31 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         except BaseException:
             self._session_opening = False
             raise
+
+    def _startup_backoff_s(self) -> float:
+        """Seconds still to wait before the next open after repeated startup
+        failures; 0 when an open may go ahead."""
+        if self._startup_failures < MAX_STARTUP_FAILURES:
+            return 0.0
+        return max(0.0, self._startup_retry_mono - time.monotonic())
+
+    def _check_startup_backoff(self, doing: str) -> None:
+        wait = self._startup_backoff_s()
+        if wait > 0:
+            raise RuntimeError(
+                f"live session failed to start {self._startup_failures} times in a row; "
+                f"not {doing} for another {wait:.0f}s"
+            )
+
+    def _note_startup_failure(self) -> None:
+        self._startup_failures += 1
+        excess = self._startup_failures - MAX_STARTUP_FAILURES
+        if excess < 0:
+            return
+        backoff = min(STARTUP_BACKOFF_MAX_S, STARTUP_BACKOFF_BASE_S * (2 ** min(excess, 16)))
+        self._startup_retry_mono = time.monotonic() + backoff
+        logger.warning(f"⏳ live: {self._startup_failures} session starts failed in a row; "
+                       f"the next open waits {backoff:.0f}s")
 
     def hold_input_for_next_session(self) -> None:
         """A wake landed with no session able to hear it yet (the last one is
@@ -1984,11 +2010,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         """
         if self.on_demand:
             raise RuntimeError("on-demand recovery must use LiveSessionGate.recover")
-        if self._startup_failures >= MAX_STARTUP_FAILURES:
-            raise RuntimeError(
-                f"live session failed to start {self._startup_failures} times in a row; "
-                "not reconnecting again until the configuration is fixed and the add-on restarted"
-            )
+        self._check_startup_backoff("reconnecting")
         self._resetting_conversation = True
         try:
             await self._close_open_turns()
@@ -2115,7 +2137,10 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self._session_id = session_id
         self._session_started = True
         self._session_started_mono = time.monotonic()
+        if self._startup_failures >= MAX_STARTUP_FAILURES:
+            logger.info("✅ live: session started; startup backoff cleared")
         self._startup_failures = 0
+        self._startup_retry_mono = 0.0
         self._closing = False
         # The server states its own deadline up front; the gate closes ahead of
         # it so `expired` never lands mid-turn (and so a stuck session has a
@@ -2216,7 +2241,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         if error.get("param"):
             details += f" (param: {error['param']})"
         if not self._session_started:
-            self._startup_failures += 1
+            self._note_startup_failure()
             logger.error(f"❌ live session startup failed ({self._startup_failures}): {details}")
             await self.push_error(error_msg=f"live session startup failed: {details}")
             return
