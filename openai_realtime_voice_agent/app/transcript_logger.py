@@ -49,6 +49,18 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 logger = logging.getLogger(__name__)
 
 
+def transcripts_logged() -> bool:
+    """Whether spoken content may be written to the log (LOG_TRANSCRIPTS)."""
+    return os.environ.get("LOG_TRANSCRIPTS", "false").strip().lower() == "true"
+
+
+def spoken_for_log(text) -> str:
+    """Spoken or user-given text as the log may show it: the text itself with
+    log_transcripts on, otherwise only its length."""
+    text = "" if text is None else str(text)
+    return repr(text) if transcripts_logged() else f"<{len(text)} chars>"
+
+
 class TranscriptLogger(FrameProcessor):
     """Forward-only processor that logs assistant and/or user transcript lines.
 
@@ -60,7 +72,7 @@ class TranscriptLogger(FrameProcessor):
     def __init__(self, capture: str = "both", enabled: bool = None, **kwargs):
         super().__init__(**kwargs)
         if enabled is None:
-            enabled = os.environ.get("LOG_TRANSCRIPTS", "false").strip().lower() == "true"
+            enabled = transcripts_logged()
         self._capture = capture if enabled else "none"
         self._assistant_buf: list[str] = []
 
