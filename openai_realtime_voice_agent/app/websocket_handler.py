@@ -15,13 +15,10 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
-    EndFrame,
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
     MetricsFrame,
-    OutputAudioRawFrame,
-    StartFrame,
 )
 from pipecat.audio.utils import create_stream_resampler
 
@@ -57,34 +54,6 @@ PIPELINE_SAMPLE_RATE = 24000
 # After a lost link, what must not be lost is delivered again only this soon
 # after it was lost (docs/device-protocol.md).
 REDELIVER_WITHIN_S = 30.0
-
-
-class SessionActivityTracker(FrameProcessor):
-    """Processor that tracks session activity by monitoring audio frames."""
-    
-    def __init__(self, activity_callback, **kwargs):
-        super().__init__(**kwargs)
-        self.activity_callback = activity_callback
-    
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, StartFrame):
-            logger.debug("🎬 SessionActivityTracker: Received StartFrame")
-            await super().process_frame(frame, direction)
-            await self.push_frame(frame, direction)
-            return
-        elif isinstance(frame, EndFrame):
-            logger.debug("🏁 SessionActivityTracker: Received EndFrame")
-            await self.push_frame(frame, direction)
-            return
-        
-        # Track activity on any audio frame
-        if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
-            if self.activity_callback:
-                self.activity_callback()
-            logger.debug(f"🎵 SessionActivityTracker: Processing {type(frame).__name__} ({len(frame.audio)} bytes)")
-        
-        # Pass frame through to next processor
-        await self.push_frame(frame, direction)
 
 
 class InputResampler(FrameProcessor):
@@ -828,14 +797,12 @@ class WebSocketHandler:
     def build_pipeline(
         self,
         connection: DeviceConnection,
-        activity_callback: Optional[Callable[[], None]] = None
     ) -> tuple[Pipeline, PipelineRunner, PipelineTask]:
         """Build the pipeline from one connection's resources.
 
         Args:
             connection: The device's connection, with its transport,
                 serializer and OpenAI service already set.
-            activity_callback: Optional callback for session activity tracking
 
         Returns:
             Tuple of (Pipeline, PipelineRunner, PipelineTask)
@@ -857,14 +824,6 @@ class WebSocketHandler:
         controls = controls_for(openai_service)
         
         logger.info(f"🔗 Building pipeline with WebSocket transport and OpenAI service: {type(openai_service).__name__}")
-        
-        # Create activity trackers
-        input_activity_tracker = SessionActivityTracker(
-            activity_callback=activity_callback or (lambda: None)
-        )
-        output_activity_tracker = SessionActivityTracker(
-            activity_callback=activity_callback or (lambda: None)
-        )
         
         # Create context aggregator with cached context if available
         context_aggregator = None
@@ -926,7 +885,6 @@ class WebSocketHandler:
             InputResampler(out_rate=PIPELINE_SAMPLE_RATE),
             # Keeps the request in progress so a reconnect can replay it.
             connection.replay,
-            input_activity_tracker,
         ]
         
         # Add input audio recorder to capture ONLY InputAudioRawFrame.
@@ -963,7 +921,6 @@ class WebSocketHandler:
                 TranscriptLogger(capture="assistant"),
             ])
 
-        pipeline_components.append(output_activity_tracker)
         pipeline_components.append(TimelineMetricsTap(lambda: connection.turn_timeline))
 
         # Emit va_client phase messages (listening/thinking/replying/idle) to
@@ -1971,7 +1928,6 @@ class WebSocketHandler:
         websocket,
         on_client_connected: Optional[Callable[[str], Awaitable[None]]] = None,
         on_client_disconnected: Optional[Callable[[DeviceConnection], None]] = None,
-        activity_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         """Own one device connection from accept to close.
 
@@ -1985,7 +1941,6 @@ class WebSocketHandler:
             websocket: The FastAPI/starlette WebSocket, not yet accepted.
             on_client_connected: Optional async callback(device_id).
             on_client_disconnected: Optional callback(connection).
-            activity_callback: Optional session-activity callback.
         """
         decision = self.device_auth.check(websocket)
         if not decision.allowed:
@@ -2041,7 +1996,7 @@ class WebSocketHandler:
                 raise RuntimeError("openai_service_factory must be set before serving connections")
             connection.openai_service = await self.openai_service_factory(connection)
 
-            pipeline, runner, task = self.build_pipeline(connection, activity_callback)
+            pipeline, runner, task = self.build_pipeline(connection)
             connection.pipeline = pipeline
             connection.runner = runner
             connection.task = task

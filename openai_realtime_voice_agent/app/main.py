@@ -1550,10 +1550,6 @@ class Application:
             # Firmware plays its error chime for audible errors.
             await connection.send_json({"type": "error", "audible": True, "kind": key})
 
-    def _update_session_activity(self):
-        """Update session activity timestamp (called by SessionActivityTracker)."""
-        pass
-
     def _speaker_name(self, connection) -> Optional[str]:
         """Return the current speaker name for one connection."""
         probe = getattr(connection, "speaker_probe", None)
@@ -2166,7 +2162,6 @@ class Application:
             await self.websocket_handler.serve_connection(
                 websocket,
                 on_client_disconnected=_on_client_disconnected,
-                activity_callback=self._update_session_activity,
             )
 
         from fastapi import Request

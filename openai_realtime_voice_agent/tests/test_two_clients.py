@@ -55,7 +55,7 @@ class LiveServerTestCase(unittest.IsolatedAsyncioTestCase):
         # Replace the pipeline with a stub that still runs the transport's
         # real read loop, so control frames and binary/text multiplexing are
         # genuinely exercised.
-        def fake_build(connection, activity_callback=None):
+        def fake_build(connection):
             class Runner:
                 async def run(self, _task):
                     async for message in connection.transport.client.receive():
