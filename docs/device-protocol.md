@@ -111,7 +111,8 @@ its reply; a new model response always opens its own utterance.
   speech, and never inside an utterance that is playing.
 - Model speech is sent as soon as it exists (no hold, no real-time pacer).
 - No audio is sent more than 2 s ahead of what the device has played, so a
-  control message never waits behind a long burst.
+  control message never waits behind a long burst. The limit is the
+  per-device option `speaker_lead_cap_ms` (500 to 5000, default 2000).
 
 ## Start rule (device, utterance framing)
 

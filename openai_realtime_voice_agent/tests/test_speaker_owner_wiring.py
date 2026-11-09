@@ -276,6 +276,35 @@ class TestOption(unittest.TestCase):
         self.assertIsInstance(owner, so.SpeakerOwner)
         self.assertEqual(owner.framing, so.LEGACY, "legacy framing until the device offers utt1")
         self.assertEqual(owner.prime_ms, 200)
+        self.assertEqual(owner.cap_ms, so.CAP_MS)
+        self.assertEqual(so.CAP_MS, 2000, "the default is unchanged")
+
+    def test_the_lead_cap_is_a_per_device_option(self):
+        from app.device_registry import DeviceConnection
+
+        class Client:
+            async def send(self, _data):
+                pass
+
+        class Transport:
+            client = Client()
+        directory = DeviceDirectory.from_json(json.dumps([
+            {"name": "a", "speaker_lead_cap_ms": 3000},
+            {"name": "b", "speaker_lead_cap_ms": 100},
+            {"name": "c", "speaker_lead_cap_ms": 9000},
+        ]))
+        self.assertEqual(directory.get("a").speaker_lead_cap_ms, 3000)
+        self.assertIsNone(directory.get("b").speaker_lead_cap_ms, "below 500 is ignored")
+        self.assertIsNone(directory.get("c").speaker_lead_cap_ms, "above 5000 is ignored")
+        handler = WebSocketHandler()
+        handler.device_directory = directory
+        handler.speaker_owner_enabled = True
+        caps = {}
+        for name in ("a", "b", "unknown"):
+            connection = DeviceConnection(device_id=name, websocket=None)
+            connection.transport = Transport()
+            caps[name] = handler._build_speaker_owner(connection).cap_ms
+        self.assertEqual(caps, {"a": 3000, "b": 2000, "unknown": 2000})
 
     def test_a_device_on_older_firmware_gets_legacy_framing(self):
         async def _noop(_data):

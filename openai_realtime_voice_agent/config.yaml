@@ -236,6 +236,7 @@ schema:
       output_lead_buffer_ms: "int(0,2000)?"
       chain_prime_ms: "int(0,600)?"
       utt_cushion_ms: "int(0,1000)?"
+      speaker_lead_cap_ms: "int(500,5000)?"
       live_max_usd_per_day: "float(0,1000)?"
       live_max_session_minutes_per_day: "float(0,1440)?"
       timer_ring_entity: str?

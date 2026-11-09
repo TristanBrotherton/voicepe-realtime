@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Overrides a device may set; None means "use the instance value".
 _INT_FIELDS = ("port", "announce_port", "follow_up_listen_seconds", "follow_up_open_delay_ms",
                "wake_open_delay_ms", "playback_prebuffer_ms", "output_lead_buffer_ms",
-               "chain_prime_ms", "utt_cushion_ms")
+               "chain_prime_ms", "utt_cushion_ms", "speaker_lead_cap_ms")
 _FLOAT_FIELDS = ("live_max_usd_per_day", "live_max_session_minutes_per_day")
 _STR_FIELDS = ("timer_ring_entity", "room", "voice")
 
@@ -54,6 +54,9 @@ class DeviceProfile:
     # (app/speaker_owner.py, docs/device-protocol.md).
     chain_prime_ms: Optional[int] = None
     utt_cushion_ms: Optional[int] = None
+    # GPT-Live: how far the speaker owner may send audio ahead of the device's
+    # estimated playout (app/speaker_owner.py CAP_MS, default 2000).
+    speaker_lead_cap_ms: Optional[int] = None
     live_max_usd_per_day: Optional[float] = None
     live_max_session_minutes_per_day: Optional[float] = None
     timer_ring_entity: Optional[str] = None
@@ -96,9 +99,10 @@ def _profile(raw: Any) -> Optional[DeviceProfile]:
         if key in values and not 1024 <= values[key] <= 65535:
             logger.warning(f"⚠️ device {name}: ignoring {key}={values[key]} (outside 1024-65535)")
             values.pop(key)
-    for key, high in (("chain_prime_ms", 600), ("utt_cushion_ms", 1000)):
-        if key in values and not 0 <= values[key] <= high:
-            logger.warning(f"⚠️ device {name}: ignoring {key}={values[key]} (outside 0-{high})")
+    for key, low, high in (("chain_prime_ms", 0, 600), ("utt_cushion_ms", 0, 1000),
+                           ("speaker_lead_cap_ms", 500, 5000)):
+        if key in values and not low <= values[key] <= high:
+            logger.warning(f"⚠️ device {name}: ignoring {key}={values[key]} (outside {low}-{high})")
             values.pop(key)
     return DeviceProfile(**values)
 

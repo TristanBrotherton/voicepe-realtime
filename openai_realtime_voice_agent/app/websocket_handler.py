@@ -1713,10 +1713,12 @@ class WebSocketHandler:
         owner = so.SpeakerOwner(
             client.send, client.send, framing=so.LEGACY, device_id=connection.device_id,
             prime_ms=self._device_value(connection.device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS),
+            cap_ms=self._device_value(connection.device_id, "speaker_lead_cap_ms", so.CAP_MS),
             turn=_turn,
         )
         logger.info(f"🔈 speaker owner on for {connection.device_id}: cold-start lead "
-                    f"{owner.prime_ms} ms (legacy framing until the device offers utt1)")
+                    f"{owner.prime_ms} ms, sends at most {owner.cap_ms} ms ahead "
+                    "(legacy framing until the device offers utt1)")
         return owner
 
     async def play_owned(self, pcm: bytes, device_id: Optional[str], kind: str, *,
