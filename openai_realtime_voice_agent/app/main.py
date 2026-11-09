@@ -1510,12 +1510,15 @@ class Application:
         the one thing an operator must learn from a refused turn is that it was
         refused on purpose.
         """
+        from app.live_cost import is_close_unconfirmed
         logger.error(f"⛔ turn refused on {connection.device_id}: {reason}")
+        # A refusal while an unconfirmed close is held is a pause, not a limit.
+        key = "error_close_pending" if is_close_unconfirmed(reason) else "error_budget"
         spoken = False
         if self.speak_errors and self.spoken_prompts is not None:
-            spoken = await self.spoken_prompts.say("error_budget", connection.device_id)
+            spoken = await self.spoken_prompts.say(key, connection.device_id)
         if not spoken:
-            await connection.send_json({"type": "error", "audible": True, "kind": "error_budget"})
+            await connection.send_json({"type": "error", "audible": True, "kind": key})
         try:
             phase_emitter = getattr(connection, "phase_emitter", None)
             if phase_emitter is not None:

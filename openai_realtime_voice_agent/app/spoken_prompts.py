@@ -66,6 +66,9 @@ PROMPTS: Dict[str, str] = {
         "I've reached today's voice usage limit, so I can't answer right now. "
         "Raise the limit in the add-on settings if you need more."
     ),
+    # The last session's close was not confirmed and its socket not shown
+    # closed, so a new session waits a moment (app/live_cost.py). Not a limit.
+    "error_close_pending": "Sorry, I'm still finishing the last conversation. Please try again in a moment.",
 }
 # Every contextual progress cue the runtime can play in a Live voice, so the
 # warm-up renders them all and no filler waits on synthesis.

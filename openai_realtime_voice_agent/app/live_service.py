@@ -269,6 +269,12 @@ def should_rescue_silent_tool_request(text: str) -> bool:
 # Graceful close: the server drains for up to ~10 s; the device is gone by
 # then, so wait less.
 SESSION_CLOSE_TIMEOUT_S = 3.0
+# Every other close step is bounded too, so a close always ends well inside the
+# gate's own limit: sending session.close, and the socket's closing handshake
+# (websockets' default waits 10 s). A socket that does not close in time is
+# aborted, which ends the connection the server bills.
+CLOSE_SEND_TIMEOUT_S = 2.0
+SOCKET_CLOSE_TIMEOUT_S = 2.0
 # A session opened this long after the last one closed starts a new
 # conversation: the old one is not seeded into it. Seeding it anyway made the
 # model repeat an old answer over the new tool result (2026-10-25: "What time
@@ -860,6 +866,9 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
         self.on_session_opening: Optional[Callable[[], None]] = None
 
         self._websocket = None
+        # A session socket taken off ``_websocket`` whose close is not yet
+        # shown (cleared once it closed or its transport was aborted).
+        self._unreleased_socket = None
         self._receive_task: Optional[asyncio.Task] = None
         self._silence_task: Optional[asyncio.Task] = None
         self._disconnecting = False
@@ -1678,6 +1687,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                 uri=self.base_url,
                 additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 max_size=16 * 1024 * 1024,
+                close_timeout=SOCKET_CLOSE_TIMEOUT_S,
             )
             if warm is not None:
                 logger.info("🔌 live: reusing a pre-opened socket for this wake")
@@ -1732,9 +1742,46 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     async def _close_quietly(self, socket) -> None:
         try:
-            await socket.close()
+            await self._close_socket(socket)
         except Exception:
             pass
+
+    @property
+    def socket_released(self) -> bool:
+        """True when no session socket can still carry a session: none is held
+        and the last one closed, or its transport was aborted."""
+        return self._websocket is None and self._unreleased_socket is None
+
+    @staticmethod
+    def _abort_transport(socket) -> bool:
+        """Drop the TCP connection under ``socket``. True when it is shown
+        closed (closing or aborted); False when there is no transport to ask."""
+        transport = getattr(socket, "transport", None)
+        if transport is None or not hasattr(transport, "is_closing"):
+            return False
+        try:
+            if not transport.is_closing():
+                transport.abort()
+                logger.warning("⚠️ live: socket did not close in time; connection aborted")
+            return True
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"live socket abort: {e!r}")
+            return False
+
+    async def _close_socket(self, socket) -> bool:
+        """Close ``socket`` within SOCKET_CLOSE_TIMEOUT_S, aborting its
+        transport when the handshake does not finish (or is cancelled).
+        Returns True when the connection is shown closed."""
+        try:
+            await asyncio.wait_for(socket.close(), SOCKET_CLOSE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            self._abort_transport(socket)
+            raise
+        except Exception as e:
+            logger.info(f"live: socket close did not finish: {e!r}")
+            return self._abort_transport(socket)
+        self._abort_transport(socket)  # a no-op once the handshake closed it
+        return True
 
     def prewarm_socket(self, force: bool = False) -> None:
         """Open (not start) the next session's socket ahead of the wake.
@@ -1758,6 +1805,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
                     uri=self.base_url,
                     additional_headers={"Authorization": f"Bearer {self.api_key}"},
                     max_size=16 * 1024 * 1024,
+                    close_timeout=SOCKET_CLOSE_TIMEOUT_S,
                 )
                 self._warm_socket, self._warm_socket_mono = socket, time.monotonic()
             except Exception as e:
@@ -1769,6 +1817,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
 
     async def _disconnect(self) -> bool:
         socket_closed = True
+        cancelled: Optional[BaseException] = None
         try:
             self._disconnecting = True
             self._session_started = False
@@ -1796,11 +1845,18 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             self._silence_task = None
             socket, self._websocket = self._websocket, None
             if socket is not None:
+                self._unreleased_socket = socket
                 try:
-                    await socket.close()
-                except Exception as e:  # pragma: no cover - defensive
-                    socket_closed = False
-                    logger.debug(f"live socket close: {e!r}")
+                    socket_closed = await self._close_socket(socket)
+                except asyncio.CancelledError as e:
+                    # A close cancelled here (the gate's own limit) must not
+                    # leave the receive task reading a session nobody owns:
+                    # the transport is aborted, and the rest of the release
+                    # still runs before the cancellation is passed on.
+                    cancelled = e
+                    socket_closed = self._abort_transport(socket)
+                if socket_closed:
+                    self._unreleased_socket = None
             receive, self._receive_task = self._receive_task, None
             await self._cancel(receive)
             audio, self._audio_task = self._audio_task, None
@@ -1860,6 +1916,8 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             # through the fallback chain (a short new session, an
             # announcement, a text).
             self._task_flush_soon("session closed")
+        if cancelled is not None:
+            raise cancelled
         return socket_closed
 
     def _log_audio_summary(self, context: str) -> None:
@@ -1906,7 +1964,7 @@ class OpenAILiveLLMService(GuardedToolsMixin, LLMService):
             return self._session_closed.is_set()
         self._closing = True
         try:
-            await self._send(session_close())
+            await asyncio.wait_for(self._send(session_close()), CLOSE_SEND_TIMEOUT_S)
             await asyncio.wait_for(self._session_closed.wait(), SESSION_CLOSE_TIMEOUT_S)
             return True
         except asyncio.TimeoutError:
