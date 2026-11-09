@@ -55,6 +55,37 @@ class TestAnnounceHttp(AnnounceServerTestCase):
             self.assertEqual(response.status, 401)
         self.assertEqual(self.attempts, [])
 
+    async def test_malformed_bodies_are_400_not_500(self):
+        for path in ("/announce", "/task-result"):
+            for body in ([1, 2], "text", 42, None, True):
+                async with self.session.post(f"http://127.0.0.1:{self.port}{path}", json=body,
+                                             headers={"Authorization": f"Bearer {TOKEN}"}) as response:
+                    self.assertEqual(response.status, 400, (path, body))
+            async with self.session.post(f"http://127.0.0.1:{self.port}{path}", data=b"{not json",
+                                         headers={"Authorization": f"Bearer {TOKEN}"}) as response:
+                self.assertEqual(response.status, 400, path)
+        for payload in ({"message": ["a"]}, {"message": {"x": 1}}, {"message": "hi", "device_id": ["kitchen"]}):
+            async with self.post(payload) as response:
+                self.assertLess(response.status, 500, payload)
+        self.assertEqual(self.attempts, [("hi", None)])
+
+    async def test_token_check_tolerates_odd_headers(self):
+        for header in ("Bearer", "Bearer test-token-and-more", "bearer test-token",
+                       "Bearer t\u00e9st"):
+            async with self.session.post(f"http://127.0.0.1:{self.port}/announce", json={"message": "hi"},
+                                         headers={"Authorization": header}) as response:
+                self.assertEqual(response.status, 401, header)
+        self.assertEqual(self.attempts, [])
+
+    async def test_spoken_text_is_not_logged_without_log_transcripts(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"LOG_TRANSCRIPTS": "false"}), \
+                self.assertLogs("app.announce_http", "INFO") as logs:
+            async with self.post({"message": "the pineapple is ripe"}) as response:
+                self.assertEqual(response.status, 200)
+        self.assertNotIn("pineapple", "\n".join(logs.output))
+
     async def test_rejects_empty_message(self):
         async with self.post({"message": "   "}) as response:
             self.assertEqual(response.status, 400)

@@ -20,11 +20,14 @@ routed the same way, so a bridge that only knows the announce contract still
 lands its answer in the conversation.
 """
 import asyncio
+import hmac
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from aiohttp import web
+
+from app.transcript_logger import spoken_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -63,27 +66,49 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
             logger.warning(f"⚠️ task result sink failed: {e!r}")
             return False
 
-    def task_detail(body: dict) -> str:
-        return str(body.get("detail") or body.get("writeup") or "").strip()[:MAX_TASK_DETAIL_CHARS]
+    expected = f"Bearer {token}".encode()
 
-    async def handle_task_result(request: web.Request) -> web.Response:
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {token}":
-            return web.json_response({"error": "unauthorized"}, status=401)
+    def authorized(request: web.Request) -> bool:
+        presented = request.headers.get("Authorization", "").encode("utf-8", "replace")
+        return bool(token) and hmac.compare_digest(presented, expected)
+
+    async def json_object(request: web.Request):
+        """The request's JSON object, or an error response (never a 500)."""
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
+            return None, web.json_response({"error": "invalid json"}, status=400)
+        if not isinstance(body, dict):
+            return None, web.json_response({"error": "body must be a JSON object"}, status=400)
+        return body, None
+
+    def text(value: Any) -> str:
+        """A string field; a number is taken as its text, anything else as empty."""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return ""
+
+    def task_detail(body: dict) -> str:
+        return (text(body.get("detail")) or text(body.get("writeup")))[:MAX_TASK_DETAIL_CHARS]
+
+    async def handle_task_result(request: web.Request) -> web.Response:
+        if not authorized(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        body, error = await json_object(request)
+        if error is not None:
+            return error
         task_id = str(body.get("task_id") or body.get("request_id") or "").strip()[:200]
-        text = str(body.get("answer") or body.get("message") or "").strip()[:MAX_TASK_TEXT_CHARS]
+        answer = (text(body.get("answer")) or text(body.get("message")))[:MAX_TASK_TEXT_CHARS]
         # A missing "ok" is NOT ok: bridge error text must never be framed as
         # a verified result (longtask review ii).
         ok = body.get("ok") is True and not body.get("error")
-        if not ok and not text:
-            text = str(body.get("error") or "").strip()[:MAX_MESSAGE_CHARS]
+        if not ok and not answer:
+            answer = str(body.get("error") or "").strip()[:MAX_MESSAGE_CHARS]
         if not task_id:
             return web.json_response({"error": "task_id required"}, status=400)
-        if not text:
+        if not answer:
             return web.json_response({"error": "empty answer"}, status=400)
         async with _announce_lock:
             now = time.monotonic()
@@ -91,22 +116,20 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
             if any(key == f"task:{task_id}" for _, _, key in _recent):
                 return web.json_response({"status": "duplicate_suppressed",
                                           "note": "this task result was already delivered — do not retry"})
-        if not await claim_task(task_id, text, ok, task_detail(body) if ok else ""):
+        if not await claim_task(task_id, answer, ok, task_detail(body) if ok else ""):
             return web.json_response({"error": "unknown task", "task_id": task_id}, status=404)
         async with _announce_lock:
             _recent.append((time.monotonic(), None, f"task:{task_id}"))
-        logger.info(f"📬 task result accepted for {task_id}: {text[:80]}")
+        logger.info(f"📬 task result accepted for {task_id}: {spoken_for_log(answer[:80])}")
         return web.json_response({"status": "accepted", "task_id": task_id})
 
     async def handle(request: web.Request) -> web.Response:
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {token}":
+        if not authorized(request):
             return web.json_response({"error": "unauthorized"}, status=401)
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        full = (body.get("message") or "").strip()
+        body, error = await json_object(request)
+        if error is not None:
+            return error
+        full = text(body.get("message"))
         message = full[:MAX_MESSAGE_CHARS]
         if not message:
             return web.json_response({"error": "empty message"}, status=400)
@@ -120,14 +143,15 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
                                             task_detail(body) if ok else ""):
                 async with _announce_lock:
                     _recent.append((time.monotonic(), None, f"task:{task_id}"))
-                logger.info(f"📬 announce routed to pending task {task_id}: {message[:80]}")
+                logger.info(f"📬 announce routed to pending task {task_id}: "
+                            f"{spoken_for_log(message[:80])}")
                 return web.json_response({"status": "accepted", "task_id": task_id,
                                           "note": "delivered through the conversation — do not re-announce"})
         # Optional room selection. With several devices connected, "the
         # device" is ambiguous: an explicit device_id names the room, and
         # omitting it speaks on whichever device was last used.
-        device_id = (body.get("device_id") or "").strip() or default_device_id or None
-        announcement_id = (body.get("announcement_id") or "").strip()[:200]
+        device_id = text(body.get("device_id")) or default_device_id or None
+        announcement_id = str(body.get("announcement_id") or "").strip()[:200]
         if not is_connected(device_id):
             error = "device not connected" if device_id else "no device connected"
             return web.json_response({"error": error, "device_id": device_id}, status=503)
@@ -143,11 +167,11 @@ async def start_announce_server(port: int, token: str, announcer, is_connected,
                 (target, key) for _, target, key in _recent
             ] + _pending:
                 if cached_device_id == device_id and idempotency_key == previous_key:
-                    logger.info(f"📢 duplicate announce suppressed: {message[:60]}")
+                    logger.info(f"📢 duplicate announce suppressed: {spoken_for_log(message[:60])}")
                     return web.json_response({"status": "duplicate_suppressed",
                                               "note": "already announced — do not retry or re-announce"})
             _pending.append((device_id, idempotency_key))
-        logger.info(f"📢 announce{f' [{device_id}]' if device_id else ''}: {message[:80]}")
+        logger.info(f"📢 announce{f' [{device_id}]' if device_id else ''}: {spoken_for_log(message[:80])}")
         delivered = False
         try:
             delivered = await announcer(message, device_id)
