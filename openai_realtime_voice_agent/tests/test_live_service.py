@@ -568,15 +568,60 @@ class TestReconnect(unittest.IsolatedAsyncioTestCase):
             await h.source.wait_for(ErrorFrame, count=2, direction=FrameDirection.UPSTREAM)
             self.assertIn("receive loop ended", h.source.of(ErrorFrame)[1].error)
 
-    async def test_startup_failures_block_reconnect_after_three(self):
+    async def test_startup_failures_back_off_after_three(self):
         async with LiveHarness(self) as h:
             for i in range(3):
                 h.socket.push({"type": "error", "error": {"type": "invalid_request_error",
                                                           "code": "model_not_found", "message": "no"}})
                 await h.source.wait_for(ErrorFrame, count=i + 1, direction=FrameDirection.UPSTREAM)
             self.assertIn("startup failed", h.source.of(ErrorFrame)[0].error)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as refused:
                 await h.service.reset_conversation()
+            self.assertIn("for another", str(refused.exception))
+            self.assertAlmostEqual(h.service._startup_backoff_s(),
+                                   live_service_module.STARTUP_BACKOFF_BASE_S, delta=2)
+
+    async def test_startup_backoff_expires_doubles_and_clears(self):
+        async with LiveHarness(self, on_demand=True) as h:
+            s = h.service
+            # Failures stamped well before the real clock, so the backoff has
+            # expired once the patch ends (a fresh CI runner's monotonic clock
+            # can be below any fixed value).
+            clock = [live_service_module.time.monotonic() - 10_000.0]
+            with patch.object(live_service_module.time, "monotonic", lambda: clock[0]):
+                for _ in range(3):
+                    s._note_startup_failure()
+                self.assertEqual(s._startup_backoff_s(), 30.0)
+                clock[0] += 31
+                self.assertEqual(s._startup_backoff_s(), 0.0, "never permanent")
+                s._note_startup_failure()
+                self.assertEqual(s._startup_backoff_s(), 60.0)
+                for _ in range(10):
+                    s._note_startup_failure()
+                self.assertEqual(s._startup_backoff_s(), live_service_module.STARTUP_BACKOFF_MAX_S)
+            await h.open_session()
+            await h.start_session()
+            self.assertEqual(s._startup_failures, 0)
+            self.assertEqual(s._startup_backoff_s(), 0.0)
+
+    async def test_slow_connect_and_slow_start_do_not_count_as_startup_failures(self):
+        async with LiveHarness(self, on_demand=True) as h:
+            s = h.service
+
+            async def slow_connect(uri, additional_headers=None, **_kwargs):
+                await asyncio.sleep(10)
+            with patch.object(live_service_module, "websocket_connect", slow_connect):
+                for _ in range(4):
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await asyncio.wait_for(s.open_session(), 0.02)
+            self.assertEqual(s._startup_failures, 0)
+            with patch.object(live_service_module, "SESSION_CLOSE_TIMEOUT_S", 0.01):
+                for _ in range(4):
+                    await h.open_session()  # session.started never arrives
+                    await s.close_session("handshake timeout")
+            self.assertEqual(s._startup_failures, 0)
+            await h.open_session()
+            await h.start_session()
 
     async def test_rejected_command_does_not_wake_recovery(self):
         async with LiveHarness(self) as h:

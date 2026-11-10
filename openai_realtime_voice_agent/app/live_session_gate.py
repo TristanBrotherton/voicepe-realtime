@@ -202,6 +202,9 @@ class LiveSessionGate:
         # down before the gate's shutdown runs, so the supervisor can see the
         # session vanish first; this names that close for what it is.
         self._device_gone = False
+        # Set when this gate's unconfirmed close put a hold on the ledger; only
+        # this gate can show that its own socket has since closed.
+        self._holds_close = False
         # Telemetry for a spend watchdog.
         self.opens = 0
         self.open_failures = 0
@@ -288,6 +291,7 @@ class LiveSessionGate:
         if self._state in (OPENING, OPEN):
             self._touch(self._mono())
             return True
+        self._lift_close_hold()
         verdict = self.ledger.check()
         if not verdict.allowed:
             self.refusals += 1
@@ -686,11 +690,12 @@ class LiveSessionGate:
         except asyncio.CancelledError:
             cancelled = True
             seconds = max(seconds, self._reserved_seconds)
-            self.ledger.persistence_error = "Live close cancelled; further sessions refused"
+            self._unconfirmed_close("close cancelled")
         except Exception as e:
             seconds = max(seconds, self._reserved_seconds)
-            self.ledger.persistence_error = "Live close unconfirmed; further sessions refused"
-            logger.warning(f"⚠️ GPT-Live session close ({reason}) failed: {e!r}")
+            logger.warning(f"⚠️ GPT-Live session close ({reason}) failed: {e!r}; "
+                           "charged its full reservation")
+            self._unconfirmed_close("close failed")
         finally:
             seconds = max(seconds, self.open_seconds)
             self._opened_mono = None
@@ -717,6 +722,24 @@ class LiveSessionGate:
         if cancelled:
             raise asyncio.CancelledError
         return True
+
+    def _socket_released(self) -> bool:
+        """Whether the service shows its session socket closed (or aborted)."""
+        return getattr(self._service, "socket_released", None) is True
+
+    def _unconfirmed_close(self, detail: str) -> None:
+        """A close nobody confirmed. The reservation is charged in full either
+        way; new sessions wait only while the socket may still be open."""
+        if self._socket_released():
+            logger.info(f"GPT-Live {detail}, but its socket is closed: the next session may open")
+            return
+        self._holds_close = True
+        self.ledger.hold_after_unconfirmed_close(detail)
+
+    def _lift_close_hold(self) -> None:
+        if self._holds_close and self._socket_released():
+            self._holds_close = False
+            self.ledger.clear_unconfirmed_close("socket closed")
 
     async def shutdown(self, reason: str = "shutdown") -> None:
         """Close for good: no later wake can re-open this gate."""

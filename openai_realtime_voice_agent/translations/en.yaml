@@ -676,6 +676,8 @@ configuration:
       known by that port), its own announce port, and its own follow-up
       window, delays, buffers, timer ring switch, room, voice and GPT-Live
       daily caps, and on GPT-Live the silence before a cold reply start
-      (chain_prime_ms, default 200) and its start cushion (utt_cushion_ms,
-      default 0; see docs/device-protocol.md). Anything left out uses the
+      (chain_prime_ms, default 200), its start cushion (utt_cushion_ms,
+      default 0) and how far ahead of the device's playout audio is sent
+      (speaker_lead_cap_ms, 500 to 5000, default 2000; see
+      docs/device-protocol.md). Anything left out uses the
       setting above. Empty: one set of settings for every device, as before.

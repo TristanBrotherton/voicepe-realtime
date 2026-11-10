@@ -55,6 +55,19 @@ DEFAULT_MAX_SESSION_MINUTES_PER_DAY = 60.0
 DEFAULT_MAX_USD_PER_DAY = 3.0
 # Where the ledger survives a restart. /data is the add-on's persistent volume.
 LEDGER_PATH = "/data/live_spend.json"
+# A session whose close was not confirmed and whose socket could not be shown
+# closed is charged its full reservation, and new sessions wait this long (or
+# until the socket is shown closed) so a ghost session is never doubled. It is
+# not a spend cap and does not last the day.
+CLOSE_UNCONFIRMED_HOLD_S = 60.0
+# Every refusal reason for an unconfirmed close starts with this, so the turn
+# that hits it is explained as a pause, not as a usage limit.
+CLOSE_UNCONFIRMED_PREFIX = "Live close unconfirmed"
+
+
+def is_close_unconfirmed(reason: str) -> bool:
+    """True for a refusal caused by an unconfirmed close (not by a cap)."""
+    return str(reason or "").startswith(CLOSE_UNCONFIRMED_PREFIX)
 
 
 def session_cost_usd(seconds: float) -> float:
@@ -133,8 +146,36 @@ class LiveSpendLedger:
     def __post_init__(self) -> None:
         self._active = {}
         self._readers = {}
+        # Only about the ledger file: once set, nothing it records is durable,
+        # so it refuses until the add-on restarts.
         self.persistence_error = ""
+        # A close that could not be confirmed (see CLOSE_UNCONFIRMED_HOLD_S).
+        self.close_unconfirmed = ""
+        self._close_unconfirmed_until = 0.0
         self._load()
+
+    def hold_after_unconfirmed_close(self, detail: str, hold_s: float = CLOSE_UNCONFIRMED_HOLD_S) -> None:
+        """Refuse new sessions for ``hold_s`` after a close nobody confirmed."""
+        self.close_unconfirmed = f"{CLOSE_UNCONFIRMED_PREFIX} ({detail}); new sessions wait"
+        self._close_unconfirmed_until = self.clock() + max(0.0, float(hold_s))
+        logger.warning(f"⚠️ {self.close_unconfirmed} up to {hold_s:.0f}s")
+
+    def clear_unconfirmed_close(self, why: str = "") -> None:
+        if self.close_unconfirmed:
+            logger.info(f"✅ GPT-Live close hold lifted{f' ({why})' if why else ''}")
+        self.close_unconfirmed = ""
+        self._close_unconfirmed_until = 0.0
+
+    @property
+    def refusal(self) -> str:
+        """Why no session may be bought right now, before any cap; "" if none."""
+        if self.persistence_error:
+            return self.persistence_error
+        if self.close_unconfirmed:
+            if self.clock() < self._close_unconfirmed_until:
+                return self.close_unconfirmed
+            self.clear_unconfirmed_close("hold expired")
+        return ""
 
     def reserve(self, maximum_seconds, reader, minimum_seconds=15.):
         """Persist worst-case ownership BEFORE buying a socket.
@@ -143,7 +184,7 @@ class LiveSpendLedger:
         restart. Separate add-on instances require separate caps; this ledger
         does not coordinate unrelated processes or claim household accounting.
         """
-        if self.persistence_error:
+        if self.refusal:
             return None
         remaining = self.remaining_seconds()
         reserved = sum(v["reserved"] for v in self._active.values())
@@ -165,7 +206,7 @@ class LiveSpendLedger:
     def extend(self, owner, maximum_seconds):
         """Grow an open session's reservation toward ``maximum_seconds``, never
         past what the daily budget still allows. Returns the reserved seconds."""
-        if owner not in self._active or self.persistence_error:
+        if owner not in self._active or self.refusal:
             return self._active.get(owner, {}).get("reserved", 0.)
         current = self._active[owner]["reserved"]
         remaining = self.remaining_seconds()
@@ -247,8 +288,9 @@ class LiveSpendLedger:
         already accrued but not yet charged, so a single long session cannot
         outrun the cutoff by never closing.
         """
-        if self.persistence_error:
-            return BudgetVerdict(False, self.persistence_error)
+        refusal = self.refusal
+        if refusal:
+            return BudgetVerdict(False, refusal)
         open_seconds = self.active_seconds if self._active else open_seconds
         remaining = self.remaining_seconds()
         if remaining is None:

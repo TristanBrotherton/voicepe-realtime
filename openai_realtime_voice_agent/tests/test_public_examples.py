@@ -221,6 +221,18 @@ def tracked_files():
     return [line for line in out.stdout.splitlines() if line]
 
 
+def setUpModule():
+    """These checks read the repository through git; outside a checkout (an
+    add-on image, an unpacked release) there is nothing to check."""
+    try:
+        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=REPOSITORY_ROOT,
+                                capture_output=True, text=True, check=False).stdout.strip() == "true"
+    except OSError:
+        inside = False
+    if not inside:
+        raise unittest.SkipTest("not a git checkout of the repository")
+
+
 def denylist_hits(terms, rel, lines):
     """``rel:line`` for every private term found, case-insensitively.
 

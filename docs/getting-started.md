@@ -303,5 +303,6 @@ play whole and one after another, and reply audio goes to the device as soon
 as it exists. Firmware that offers utterance framing reports what it actually
 played; older firmware gets the same queue with plain audio. `chain_prime_ms`
 (default 200) and `utt_cushion_ms` (default 0) tune the device's start on newer
-firmware, per device and without a rebuild. See
+firmware, and `speaker_lead_cap_ms` (default 2000) how far ahead of its playout
+audio is sent, per device and without a rebuild. See
 [the device protocol](device-protocol.md).

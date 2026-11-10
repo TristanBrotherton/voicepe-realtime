@@ -2,6 +2,47 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.21.1 (fork)
+
+Works with any firmware; firmware 1.3.3 adds the device-side half of the
+cut-off reply fixes.
+
+### Fixed: a stuck close no longer silences a device
+
+- Every step of closing a GPT-Live session is bounded (the close message 2 s,
+  the socket 2 s, then the transport is aborted). A close that can't be
+  confirmed holds new sessions on that device for at most 60 s, and less once
+  the socket is gone; it used to hold them until the add-on restarted. While it
+  holds, the device says it is still finishing the last conversation instead of
+  claiming a usage limit. A session closed during reconnect no longer stays
+  open in the background.
+- Repeated failures to open a session back off (30 s, doubling, at most 4 min)
+  instead of refusing every turn until a restart.
+
+### Fixed: replies cut off on reconnect
+
+- A device that reconnects no longer waits for its old connection to be torn
+  down: the new one is served at once and the old one is closed in the
+  background.
+- How far ahead of its playout the speaker queue may run is a per-device option,
+  `speaker_lead_cap_ms` (500 to 5000, default 2000).
+
+### Changed: "forget"
+
+- Forgetting needs a phrase of at least three characters that matches whole
+  words. Removing more than two notes asks first and lists them; what was
+  removed is read back, and the memory file is backed up before each change.
+
+### Smaller fixes
+
+- The announce endpoint checks its token in constant time and answers 400 to a
+  malformed body.
+- With transcript logging off, spoken text is left out of the logs too.
+- Background tasks are held until they finish and are cancelled with their
+  session; a cancelled tool call is reported instead of raised.
+- `ask_openclaw` is registered once. Expired cached contexts are dropped.
+- Repository checks in the tests skip outside a git checkout.
+
 ## 0.21.0 (fork)
 
 Needs firmware with the same release for "stop" after a timer and for less

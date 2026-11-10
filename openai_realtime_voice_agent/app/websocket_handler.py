@@ -15,13 +15,10 @@ from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
-    EndFrame,
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
     MetricsFrame,
-    OutputAudioRawFrame,
-    StartFrame,
 )
 from pipecat.audio.utils import create_stream_resampler
 
@@ -57,34 +54,6 @@ PIPELINE_SAMPLE_RATE = 24000
 # After a lost link, what must not be lost is delivered again only this soon
 # after it was lost (docs/device-protocol.md).
 REDELIVER_WITHIN_S = 30.0
-
-
-class SessionActivityTracker(FrameProcessor):
-    """Processor that tracks session activity by monitoring audio frames."""
-    
-    def __init__(self, activity_callback, **kwargs):
-        super().__init__(**kwargs)
-        self.activity_callback = activity_callback
-    
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, StartFrame):
-            logger.debug("🎬 SessionActivityTracker: Received StartFrame")
-            await super().process_frame(frame, direction)
-            await self.push_frame(frame, direction)
-            return
-        elif isinstance(frame, EndFrame):
-            logger.debug("🏁 SessionActivityTracker: Received EndFrame")
-            await self.push_frame(frame, direction)
-            return
-        
-        # Track activity on any audio frame
-        if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
-            if self.activity_callback:
-                self.activity_callback()
-            logger.debug(f"🎵 SessionActivityTracker: Processing {type(frame).__name__} ({len(frame.audio)} bytes)")
-        
-        # Pass frame through to next processor
-        await self.push_frame(frame, direction)
 
 
 class InputResampler(FrameProcessor):
@@ -620,6 +589,8 @@ class WebSocketHandler:
         # Called with (connection, reason) when the spend cutoff refuses a turn.
         self.budget_refusal_speaker = None
         self._background: set = set()
+        # Teardowns of connections a reconnect replaced; awaited at shutdown.
+        self._teardowns: set = set()
 
         # Per-device connections. Everything that used to be a singleton here —
         # transport, serializer, OpenAI session, pipeline, task — now lives on a
@@ -826,14 +797,12 @@ class WebSocketHandler:
     def build_pipeline(
         self,
         connection: DeviceConnection,
-        activity_callback: Optional[Callable[[], None]] = None
     ) -> tuple[Pipeline, PipelineRunner, PipelineTask]:
         """Build the pipeline from one connection's resources.
 
         Args:
             connection: The device's connection, with its transport,
                 serializer and OpenAI service already set.
-            activity_callback: Optional callback for session activity tracking
 
         Returns:
             Tuple of (Pipeline, PipelineRunner, PipelineTask)
@@ -855,14 +824,6 @@ class WebSocketHandler:
         controls = controls_for(openai_service)
         
         logger.info(f"🔗 Building pipeline with WebSocket transport and OpenAI service: {type(openai_service).__name__}")
-        
-        # Create activity trackers
-        input_activity_tracker = SessionActivityTracker(
-            activity_callback=activity_callback or (lambda: None)
-        )
-        output_activity_tracker = SessionActivityTracker(
-            activity_callback=activity_callback or (lambda: None)
-        )
         
         # Create context aggregator with cached context if available
         context_aggregator = None
@@ -924,7 +885,6 @@ class WebSocketHandler:
             InputResampler(out_rate=PIPELINE_SAMPLE_RATE),
             # Keeps the request in progress so a reconnect can replay it.
             connection.replay,
-            input_activity_tracker,
         ]
         
         # Add input audio recorder to capture ONLY InputAudioRawFrame.
@@ -961,7 +921,6 @@ class WebSocketHandler:
                 TranscriptLogger(capture="assistant"),
             ])
 
-        pipeline_components.append(output_activity_tracker)
         pipeline_components.append(TimelineMetricsTap(lambda: connection.turn_timeline))
 
         # Emit va_client phase messages (listening/thinking/replying/idle) to
@@ -1516,11 +1475,13 @@ class WebSocketHandler:
 
         return pipeline, runner, task
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro, into: Optional[set] = None) -> asyncio.Task:
         """Run a background coroutine, keeping a reference until it finishes."""
         task = asyncio.create_task(coro)
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        tasks = self._background if into is None else into
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
 
     async def _wake_liveness(self, connection: DeviceConnection) -> None:
         """Check the OpenAI socket while the wake chime plays.
@@ -1709,10 +1670,12 @@ class WebSocketHandler:
         owner = so.SpeakerOwner(
             client.send, client.send, framing=so.LEGACY, device_id=connection.device_id,
             prime_ms=self._device_value(connection.device_id, "chain_prime_ms", so.DEFAULT_PRIME_MS),
+            cap_ms=self._device_value(connection.device_id, "speaker_lead_cap_ms", so.CAP_MS),
             turn=_turn,
         )
         logger.info(f"🔈 speaker owner on for {connection.device_id}: cold-start lead "
-                    f"{owner.prime_ms} ms (legacy framing until the device offers utt1)")
+                    f"{owner.prime_ms} ms, sends at most {owner.cap_ms} ms ahead "
+                    "(legacy framing until the device offers utt1)")
         return owner
 
     async def play_owned(self, pcm: bytes, device_id: Optional[str], kind: str, *,
@@ -1965,7 +1928,6 @@ class WebSocketHandler:
         websocket,
         on_client_connected: Optional[Callable[[str], Awaitable[None]]] = None,
         on_client_disconnected: Optional[Callable[[DeviceConnection], None]] = None,
-        activity_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         """Own one device connection from accept to close.
 
@@ -1979,7 +1941,6 @@ class WebSocketHandler:
             websocket: The FastAPI/starlette WebSocket, not yet accepted.
             on_client_connected: Optional async callback(device_id).
             on_client_disconnected: Optional callback(connection).
-            activity_callback: Optional session-activity callback.
         """
         decision = self.device_auth.check(websocket)
         if not decision.allowed:
@@ -2035,7 +1996,7 @@ class WebSocketHandler:
                 raise RuntimeError("openai_service_factory must be set before serving connections")
             connection.openai_service = await self.openai_service_factory(connection)
 
-            pipeline, runner, task = self.build_pipeline(connection, activity_callback)
+            pipeline, runner, task = self.build_pipeline(connection)
             connection.pipeline = pipeline
             connection.runner = runner
             connection.task = task
@@ -2067,7 +2028,17 @@ class WebSocketHandler:
             await connection.send_json(self.hello_payload(connection.device_id))
 
             if displaced is not None:
-                await self._teardown(displaced)
+                # The reconnect must not wait for the old pipeline to unwind
+                # (the gate's close up to 15 s, pipecat's cancel up to 20 s).
+                # What the new connection relies on happens now: the old
+                # owner's unfinished speech is kept for redelivery and the old
+                # gate can no longer open. The rest runs in the background;
+                # _teardown is idempotent and already races the old
+                # connection's own cleanup.
+                self._note_link_lost(displaced)
+                if displaced.session_gate is not None:
+                    displaced.session_gate.note_device_disconnected()
+                self._spawn(self._teardown_displaced(displaced), self._teardowns)
                 displaced = None
 
             if on_client_connected:
@@ -2105,8 +2076,29 @@ class WebSocketHandler:
             await self._teardown(connection)
             logger.info(f"🔌 device {device_id} disconnected ({len(self.devices)} remaining)")
 
+    def _note_link_lost(self, connection: DeviceConnection) -> None:
+        """The link is gone: everything the speaker owner had not finished is
+        lost (the device may still play what it holds; its next `start` says).
+        Kept briefly so a reconnect can deliver again what must not be lost
+        (_redeliver). A closed owner is not recorded twice."""
+        now = time.monotonic()
+        for device_id, (_owner, lost_at) in list(self._lost_owners.items()):
+            if now - lost_at > REDELIVER_WITHIN_S:
+                del self._lost_owners[device_id]
+        owner = getattr(connection, "speaker_owner", None)
+        if owner is not None and owner.state != so.CLOSED:
+            owner.link_lost()
+            self._lost_owners[connection.device_id] = (owner, now)
+
+    async def _teardown_displaced(self, connection: DeviceConnection) -> None:
+        try:
+            await self._teardown(connection)
+        except Exception as e:
+            logger.warning(f"⚠️ teardown of the replaced connection for {connection.device_id}: {e!r}")
+
     async def _teardown(self, connection: DeviceConnection) -> None:
-        """Release one connection's pipeline and OpenAI session.
+        """Release one connection's pipeline and OpenAI session. It can run
+        twice, also while another teardown of the same connection runs.
 
         Args:
             connection: The connection to tear down.
@@ -2116,14 +2108,8 @@ class WebSocketHandler:
         # CancelFrame cannot reach its end; meanwhile a live recovery or phase
         # emitter would still act on the dead connection (refresh its OpenAI
         # session, send phases to its closed socket).
-        # The link is gone: everything the speaker owner had not finished is
-        # lost (the device may still play what it holds; its next `start`
-        # says). Kept briefly so a reconnect can deliver again what must not
-        # be lost (_redeliver).
         owner = getattr(connection, "speaker_owner", None)
-        if owner is not None and owner.state != so.CLOSED:
-            owner.link_lost()
-            self._lost_owners[connection.device_id] = (owner, time.monotonic())
+        self._note_link_lost(connection)
         # The session gate goes FIRST and for good: it must stop billing before
         # anything else is unwound, and a late wake or liveness probe from a
         # dying connection must not be able to open a new one. shutdown() also
@@ -2181,3 +2167,5 @@ class WebSocketHandler:
         """Tear down every connection at shutdown."""
         for connection in self.devices:
             await self._teardown(connection)
+        if self._teardowns:
+            await asyncio.gather(*list(self._teardowns), return_exceptions=True)

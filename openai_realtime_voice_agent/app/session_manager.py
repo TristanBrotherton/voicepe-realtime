@@ -94,6 +94,15 @@ class SessionManager:
             del self.context_caches[client_id]
             return None
     
+    def _prune_expired(self) -> None:
+        """Drop cached contexts past the reuse timeout. Only a reconnecting
+        client read its own entry, so a client that never came back (an old
+        IP-named legacy device, a renamed device) was kept forever."""
+        now = time.time()
+        for client_id in [c for c, e in self.context_caches.items()
+                          if now - e.timestamp >= self.reuse_timeout]:
+            del self.context_caches[client_id]
+
     def cache_context_from_service(self, client_id: str, service: OpenAIRealtimeLLMService):
         """Extract and cache context from a service before it's closed.
         
@@ -120,6 +129,7 @@ class SessionManager:
         if context:
             messages = context.get_messages() if hasattr(context, 'get_messages') else []
             message_count = len(messages) if messages else 0
+            self._prune_expired()
             self.context_caches[client_id] = ContextCacheEntry(
                 context=context,
                 timestamp=time.time()

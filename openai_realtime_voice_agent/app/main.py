@@ -10,6 +10,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
+from app.background import spawn
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
@@ -365,9 +366,9 @@ class SafeRealtimeLLMService(GuardedToolsMixin, OpenAIRealtimeLLMService):
                 f"out {out_text}txt+{out_audio}aud ≈ ${cost:.4f}"
             )
             from .ha_sensors import PUBLISHER
-            asyncio.get_running_loop().create_task(PUBLISHER.usage(cost, {
+            spawn(PUBLISHER.usage(cost, {
                 "in_text": in_text, "in_audio": in_audio, "cached": cached,
-                "out_text": out_text, "out_audio": out_audio}))
+                "out_text": out_text, "out_audio": out_audio}), "usage-publish")
         except Exception as e:
             logger.debug(f"usage accounting failed: {e!r}")
         silent = self._is_silent_response(evt)
@@ -931,7 +932,7 @@ class Application:
         # Surface enrolled voice prints in HA from boot (not just after builds).
         try:
             from .ha_sensors import PUBLISHER as _PUB
-            asyncio.get_running_loop().create_task(_PUB.voice_prints())
+            spawn(_PUB.voice_prints(), "voice-prints-publish")
         except Exception:
             pass
 
@@ -1141,7 +1142,7 @@ class Application:
             from app.live_router import HaIntentRecognizer, set_known_names
             set_known_names([speaker_male_name, speaker_female_name])
             self.ha_intents = HaIntentRecognizer(os.environ.get("SUPERVISOR_TOKEN", ""))
-            asyncio.get_running_loop().create_task(self.ha_intents.warm())
+            spawn(self.ha_intents.warm(), "ha-intents-warm")
             # What the home has and where each satellite is, from Home
             # Assistant's own registries and Assist prompt (app/ha_household.py).
             from app.ha_household import HouseholdDirectory, fetch_assist_prompt
@@ -1163,7 +1164,7 @@ class Application:
                 "local intents first, then the backend with all tools); the voice speaks "
                 "only verified results"
             )
-        asyncio.get_running_loop().create_task(self._warm_prompts())
+        spawn(self._warm_prompts(), "prompts-warm")
         self.openai_speed = openai_speed
         self.max_output_tokens = max_output_tokens
         self.noise_reduction = noise_reduction
@@ -1226,7 +1227,7 @@ class Application:
         if _t.monotonic() - state["checked"] > 30:
             state["checked"] = _t.monotonic()
             try:
-                asyncio.get_running_loop().create_task(self._refresh_guest_mode(entity))
+                spawn(self._refresh_guest_mode(entity), "guest-mode-refresh")
             except RuntimeError:
                 pass
         return state["value"]
@@ -1510,12 +1511,15 @@ class Application:
         the one thing an operator must learn from a refused turn is that it was
         refused on purpose.
         """
+        from app.live_cost import is_close_unconfirmed
         logger.error(f"⛔ turn refused on {connection.device_id}: {reason}")
+        # A refusal while an unconfirmed close is held is a pause, not a limit.
+        key = "error_close_pending" if is_close_unconfirmed(reason) else "error_budget"
         spoken = False
         if self.speak_errors and self.spoken_prompts is not None:
-            spoken = await self.spoken_prompts.say("error_budget", connection.device_id)
+            spoken = await self.spoken_prompts.say(key, connection.device_id)
         if not spoken:
-            await connection.send_json({"type": "error", "audible": True, "kind": "error_budget"})
+            await connection.send_json({"type": "error", "audible": True, "kind": key})
         try:
             phase_emitter = getattr(connection, "phase_emitter", None)
             if phase_emitter is not None:
@@ -1545,10 +1549,6 @@ class Application:
         if not spoken:
             # Firmware plays its error chime for audible errors.
             await connection.send_json({"type": "error", "audible": True, "kind": key})
-
-    def _update_session_activity(self):
-        """Update session activity timestamp (called by SessionActivityTracker)."""
-        pass
 
     def _speaker_name(self, connection) -> Optional[str]:
         """Return the current speaker name for one connection."""
@@ -1934,9 +1934,8 @@ class Application:
             # At every wake: a fresh HA socket before the first recognition
             # (a stale one stalled past the budget), the directory refreshed
             # when stale, and the household snapshot.
-            loop = asyncio.get_running_loop()
             if recognizer is not None:
-                loop.create_task(recognizer.warm())
+                spawn(recognizer.warm(), "ha-intents-warm")
             if household is not None:
                 household.ensure_fresh()
             if snapshot.enabled:
@@ -2043,9 +2042,6 @@ class Application:
             return probe.memory_author() if probe else None
 
         register_memory_tools(service, _memory_author)
-        if openclaw_url():
-            register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
-            logger.info("✅ Registered DIRECT ask_openclaw tool (bypassing HA MCP 60s cap)")
         logger.info("✅ Registered timer + memory tools")
 
         # Register MCP tool handlers if available
@@ -2063,7 +2059,8 @@ class Application:
         # couldn't send the text" at exactly 60s — while the text sent fine.
         if openclaw_url():
             register_openclaw_tool(service, connection.device_id, self._room_for(connection.device_id))
-            logger.info("✅ DIRECT ask_openclaw re-registered after MCP handlers (wins)")
+            logger.info("✅ Registered DIRECT ask_openclaw tool after the MCP handlers "
+                        "(bypassing the HA MCP 60s cap)")
             if discussions_enabled():
                 register_discussion_tools(service)
                 logger.info("✅ Registered discussion tools (discussions_enabled)")
@@ -2165,7 +2162,6 @@ class Application:
             await self.websocket_handler.serve_connection(
                 websocket,
                 on_client_disconnected=_on_client_disconnected,
-                activity_callback=self._update_session_activity,
             )
 
         from fastapi import Request

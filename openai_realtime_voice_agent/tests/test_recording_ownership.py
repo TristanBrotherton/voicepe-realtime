@@ -48,7 +48,7 @@ class TestRecordingOwnership(unittest.IsolatedAsyncioTestCase):
         async def factory(_connection):
             return object()
 
-        def fail_after_claim(connection, _activity_callback):
+        def fail_after_claim(connection):
             connection.records_audio = handler._claim_recording(connection.device_id)
             raise RuntimeError("pipeline setup failed")
 

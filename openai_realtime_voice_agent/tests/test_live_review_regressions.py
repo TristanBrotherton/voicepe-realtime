@@ -145,7 +145,7 @@ class ReviewRegressions(unittest.IsolatedAsyncioTestCase):
             h.socket.close=fail
             with patch('app.live_service.SESSION_CLOSE_TIMEOUT_S',.001): await gate.close('uncertain')
             self.assertGreaterEqual(gate.last_charge.seconds,reserved)
-            self.assertIn('unconfirmed',ledger.persistence_error)
+            self.assertIn('unconfirmed',ledger.refusal); self.assertEqual(ledger.persistence_error,'')
             self.assertFalse(await gate.open('late wake'))
             self.assertIsNone(s._websocket); self.assertIsNone(s._receive_task)
             await gate.shutdown()

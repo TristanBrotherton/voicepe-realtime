@@ -1011,7 +1011,9 @@ class BackendRouter:
         seen = set()
         for call, key in keyed:
             task = unique[key]
-            if task.exception() is not None:
+            # A cancelled tool (its own timeout, a shutdown) has no exception
+            # to ask for: task.exception() would raise CancelledError here.
+            if task.cancelled() or task.exception() is not None:
                 result, outcome = {"error": f"{call.get('name')} could not be run; do not retry."}, None
             else:
                 result, outcome = task.result()

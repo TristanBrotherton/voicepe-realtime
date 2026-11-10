@@ -178,8 +178,10 @@ Full guide:
 
 Say "remember that..." / "from now on..." and the note becomes a standing
 instruction in every future conversation (it takes effect at the next session —
-minutes, at most an hour). "Forget about..." removes matching notes; "what do you
-remember" reads them back. Notes are stored in `/share/voice-memory/memory.md`
+minutes, at most an hour). "Forget about..." removes the notes that contain
+that word or phrase (at least three letters, whole words) and reads back what it
+removed; removing more than two notes, or every note, asks first, and the file
+as it was is kept as `memory.md.bak`. "What do you remember" reads them back. Notes are stored in `/share/voice-memory/memory.md`
 on this host (plain markdown — you can edit it by hand), capped at 60 notes,
 each attributed to the household member whose voice gave it, and sent to OpenAI
 as part of the assistant's instructions in every session. Only a recognized
