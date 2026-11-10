@@ -584,7 +584,10 @@ class TestReconnect(unittest.IsolatedAsyncioTestCase):
     async def test_startup_backoff_expires_doubles_and_clears(self):
         async with LiveHarness(self, on_demand=True) as h:
             s = h.service
-            clock = [1000.0]
+            # Failures stamped well before the real clock, so the backoff has
+            # expired once the patch ends (a fresh CI runner's monotonic clock
+            # can be below any fixed value).
+            clock = [live_service_module.time.monotonic() - 10_000.0]
             with patch.object(live_service_module.time, "monotonic", lambda: clock[0]):
                 for _ in range(3):
                     s._note_startup_failure()
